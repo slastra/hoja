@@ -343,6 +343,19 @@ pub fn is_valid_drop(sources: &[PathBuf], dest: &Path) -> bool {
     })
 }
 
+/// The closest ancestor of `path` that is still a directory, including `path`
+/// itself.
+///
+/// Used when a pane's directory goes away — deleted elsewhere, or on a volume
+/// that was unmounted. Walking up beats sitting on an error, because the error
+/// state has no way out except typing a new path. `/` always exists, so the
+/// walk terminates.
+pub fn nearest_existing_dir(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .find(|ancestor| ancestor.is_dir())
+        .map(Path::to_path_buf)
+}
+
 pub fn step_row(len: usize, cursor: Option<usize>, delta: isize) -> Option<usize> {
     let last = len.checked_sub(1)?;
     Some(match cursor.filter(|&ix| ix <= last) {
@@ -383,6 +396,27 @@ pub fn format_time(time: SystemTime) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn falling_back_to_an_existing_ancestor() {
+        use super::nearest_existing_dir;
+
+        // Read-only probes of paths that certainly do and do not exist.
+        assert_eq!(nearest_existing_dir(Path::new("/")), Some(PathBuf::from("/")));
+        assert_eq!(
+            nearest_existing_dir(Path::new("/tmp")),
+            Some(PathBuf::from("/tmp"))
+        );
+        assert_eq!(
+            nearest_existing_dir(Path::new("/tmp/pane-no-such-dir/deeper/still")),
+            Some(PathBuf::from("/tmp"))
+        );
+        // Nothing under the root survives, so the root is the floor.
+        assert_eq!(
+            nearest_existing_dir(Path::new("/pane-no-such-top-level/x")),
+            Some(PathBuf::from("/"))
+        );
+    }
+
     #[test]
     fn valid_drops() {
         use super::is_valid_drop;

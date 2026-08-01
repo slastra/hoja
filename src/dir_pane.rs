@@ -80,6 +80,8 @@ pub enum PaneEvent {
     /// Asks the workspace to remove this pane from the tree.
     #[allow(dead_code)]
     Remove,
+    /// Something worth saying that has no job to attach to.
+    Notice(String),
     /// A drop landed here. The workspace owns the engine and the job strip, so
     /// it starts the transfer.
     Transfer {
@@ -813,6 +815,30 @@ impl DirPane {
                         this.error = None;
                     }
                     Err(err) => {
+                        // A directory that has gone away is not a state to sit
+                        // in: the pane would show a message with no way out but
+                        // typing a path. Fall back to the nearest ancestor that
+                        // still exists — the parent of a deleted folder, or the
+                        // mount point's parent when a volume is unplugged.
+                        //
+                        // Only when it is *gone*. A directory that exists but
+                        // cannot be read is a real, actionable error, and
+                        // bouncing to the parent would hide it.
+                        let gone = !this.dir.is_dir();
+                        let fallback = gone
+                            .then(|| fs::nearest_existing_dir(&this.dir))
+                            .flatten()
+                            .filter(|dir| dir != &this.dir);
+
+                        if let Some(dir) = fallback {
+                            cx.emit(PaneEvent::Notice(format!(
+                                "{} is gone. Showing {}.",
+                                this.dir.display(),
+                                dir.display()
+                            )));
+                            this.navigate_to(dir, cx);
+                            return;
+                        }
                         this.entries.clear();
                         this.error = Some(err.to_string());
                     }

@@ -47,6 +47,8 @@ for important data.
   plugged in but not mounted is listed too; choosing it mounts the drive first.
 - **Live listings.** pane watches the directory it shows. If another program
   adds, removes, or changes a file, the pane re-lists and keeps your selection.
+  If the directory itself goes away, the pane moves to the nearest directory
+  above it that still exists and tells you.
 - **Git status.** In a git repository, the colour of a file name shows its
   status: added, modified, deleted, renamed, or in conflict. A folder shows
   the status of the files in it. Ignored files are dim. pane asks `git`

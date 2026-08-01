@@ -110,6 +110,9 @@ pub struct Workspace {
     undo_stack: Vec<Vec<TrashedItem>>,
     notice: Option<Notice>,
     palette: Option<Entity<CommandPalette>>,
+    /// Last title pushed to the compositor, so an unchanged one is not re-sent
+    /// on every frame.
+    title: String,
     places: Option<Entity<PlaceFinder>>,
     poll_task: Option<Task<()>>,
     /// Conflicts wait here while one dialog is up; one worker blocks per job,
@@ -135,6 +138,7 @@ impl Workspace {
             undo_stack: Vec::new(),
             notice: None,
             palette: None,
+            title: String::new(),
             places: None,
             poll_task: None,
             pending_conflicts: VecDeque::new(),
@@ -150,6 +154,9 @@ impl Workspace {
         cx.subscribe_in(pane, window, |this, pane, event, window, cx| match event {
             PaneEvent::Focus => this.set_active_pane(pane, cx),
             PaneEvent::Remove => this.remove_pane(&pane.clone(), window, cx),
+            PaneEvent::Notice(message) => {
+                this.set_notice(Some(Notice::Problem(message.clone())), cx)
+            }
             PaneEvent::Transfer { op, sources, dest } => {
                 this.spawn_transfer(*op, sources.clone(), dest.clone(), window, cx)
             }
@@ -944,6 +951,18 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The window had no title at all, which leaves an empty entry in the
+        // task switcher. Name it for the active pane's directory.
+        let dir = self.active_pane.read(cx).dir().to_path_buf();
+        let title = dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| dir.display().to_string());
+        if title != self.title {
+            window.set_window_title(&title);
+            self.title = title;
+        }
+
         // Bindings are scoped to the focused pane's "DirPane" context, but the actions
         // bubble from the focused pane up to here, so the handlers live on the
         // workspace where the active pane is known.
