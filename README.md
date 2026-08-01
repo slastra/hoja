@@ -158,6 +158,7 @@ These features are planned and not complete:
 
 - Parallel copy for many small files
 - A job journal, for undo of a transfer and resume after a crash
+- Drag and drop, between panes and with other applications
 - Tabs, search, previews, and thumbnails
 - Delta sync between machines
 
