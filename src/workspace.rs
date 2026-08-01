@@ -13,6 +13,7 @@ use pane_transfer::{
 use theme::ActiveTheme;
 
 use crate::clipboard::{self, ClipboardSet};
+use crate::command_palette::{self, CommandPalette};
 use crate::conflict_dialog::ConflictDialog;
 use crate::dir_pane::{DirPane, PaneEvent};
 use crate::fs::ViewSettings;
@@ -107,6 +108,7 @@ pub struct Workspace {
     /// restores a multi-selection in one go.
     undo_stack: Vec<Vec<TrashedItem>>,
     notice: Option<Notice>,
+    palette: Option<Entity<CommandPalette>>,
     poll_task: Option<Task<()>>,
     /// Conflicts wait here while one dialog is up; one worker blocks per job,
     /// so concurrent jobs can queue several. Tagged with the job so cancelling
@@ -130,6 +132,7 @@ impl Workspace {
             jobs: Vec::new(),
             undo_stack: Vec::new(),
             notice: None,
+            palette: None,
             poll_task: None,
             pending_conflicts: VecDeque::new(),
             conflict_dialog: None,
@@ -592,6 +595,41 @@ impl Workspace {
         }
     }
 
+    /// `ctrl-shift-p`. Pressing it again closes, matching every editor.
+    fn toggle_palette(
+        &mut self,
+        _: &command_palette::Toggle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.palette.take().is_some() {
+            window.focus(&self.active_pane.focus_handle(cx), cx);
+            cx.notify();
+            return;
+        }
+
+        // Captured before the palette takes focus: the action list, the key
+        // bindings shown, and where a confirmed action dispatches all hang off
+        // this handle.
+        let origin = self.active_pane.focus_handle(cx);
+        let palette = cx.new(|cx| CommandPalette::new(origin, window, cx));
+
+        cx.subscribe_in(&palette, window, |this, _, _: &DismissEvent, window, cx| {
+            this.palette = None;
+            window.focus(&this.active_pane.focus_handle(cx), cx);
+            cx.notify();
+        })
+        .detach();
+
+        // The query field takes focus, not the palette shell: typing has to
+        // reach the editor, and the palette's own bindings still fire because
+        // the field is inside its dispatch path.
+        let query_focus = palette.read(cx).query_focus(cx);
+        window.focus(&query_focus, cx);
+        self.palette = Some(palette);
+        cx.notify();
+    }
+
     fn dismiss_jobs(&mut self, _: &DismissJobs, _window: &mut Window, cx: &mut Context<Self>) {
         let dropped: Vec<JobId> = self
             .jobs
@@ -855,9 +893,31 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::new_folder))
             .on_action(cx.listener(|this, action, _, cx| this.delete(action, cx)))
             .on_action(cx.listener(|this, action, _, cx| this.undo(action, cx)))
+            .on_action(cx.listener(Self::toggle_palette))
             .child(self.center.render(&self.active_pane, window, cx))
             .when(!self.jobs.is_empty() || self.notice.is_some(), |el| {
                 el.child(self.render_job_strip(cx))
+            })
+            .when_some(self.palette.clone(), |el, palette| {
+                el.child(
+                    div()
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(hsla(0., 0., 0., 0.45))
+                        .flex()
+                        .justify_center()
+                        // Anchored near the top rather than centred: the list
+                        // grows downward, so a centred modal would shift under
+                        // the cursor as results narrow.
+                        .pt(px(80.))
+                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
+                            this.palette = None;
+                            window.focus(&this.active_pane.focus_handle(cx), cx);
+                            cx.notify();
+                        }))
+                        .child(palette),
+                )
             })
             .when_some(self.conflict_dialog.clone(), |el, dialog| {
                 el.child(

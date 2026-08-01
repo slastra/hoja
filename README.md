@@ -38,6 +38,9 @@ for important data.
   the files on one filesystem and copies them across filesystems, which is the
   usual behaviour. Hold `ctrl` to copy or `shift` to move. Files that come from
   another application are always copied.
+- **Command palette.** Press `ctrl-shift-p`, type part of a command name, and
+  press enter. The list shows only the commands that apply right now, with
+  their keys. Commands you use often move to the top.
 - **Live listings.** pane watches the directory it shows. If another program
   adds, removes, or changes a file, the pane re-lists and keeps your selection.
 - **Git status.** In a git repository, the colour of a file name shows its
@@ -124,6 +127,7 @@ not next to each other.
 | `ctrl-k ctrl-w` | Close the active pane |
 | `ctrl-h` | Show or hide hidden files |
 | `ctrl-shift-d` | Dismiss finished transfers |
+| `ctrl-shift-p` | Open the command palette |
 
 **Mouse**
 
@@ -151,7 +155,7 @@ not next to each other.
 | `ctrl-backspace` `ctrl-delete` | Delete one word |
 | `enter` or `escape` | Go to the path, or cancel |
 
-**In a menu or a dialog**
+**In a menu, a dialog, or the command palette**
 
 | Key | Function |
 |---|---|

@@ -1,5 +1,6 @@
 mod assets;
 mod clipboard;
+mod command_palette;
 mod conflict_dialog;
 mod dir_pane;
 mod file_menu;
@@ -26,6 +27,7 @@ use dir_pane::{
     MoveToBottom, MoveToTop, MoveUp, NavBack, NavForward, OpenSelected, RenameSelected,
     SelectAll, ToggleHiddenFiles, ToggleSelection,
 };
+use command_palette as palette;
 use file_menu::{Cancel as MenuCancel, Confirm as MenuConfirm, SelectNext, SelectPrevious};
 use path_editor as ab;
 use workspace::{
@@ -147,6 +149,16 @@ fn main() {
             KeyBinding::new("delete", workspace::Delete, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-z", Undo, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-shift-d", DismissJobs, Some("DirPane && !AddressBar")),
+            // The palette toggles from anywhere, including from inside itself,
+            // so it is not scoped to the pane.
+            KeyBinding::new("ctrl-shift-p", palette::Toggle, None),
+            // Its own context, so menu and dialog keys cannot leak in. The
+            // query field carries the AddressBar context inside this one, so
+            // these must not collide with the editor's own bindings.
+            KeyBinding::new("escape", palette::Cancel, Some("palette")),
+            KeyBinding::new("enter", palette::Confirm, Some("palette")),
+            KeyBinding::new("down", palette::SelectNext, Some("palette")),
+            KeyBinding::new("up", palette::SelectPrevious, Some("palette")),
             // Address-bar editing. Every binding here MUST have a matching
             // on_action listener on the editor div, or it silently falls
             // through to the (now-guarded) DirPane binding.

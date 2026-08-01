@@ -136,6 +136,9 @@ pub enum PathEditorEvent {
     Committed(String),
     /// Escape, or focus left the editor.
     Cancelled,
+    /// The text changed. The command palette re-matches on this; the address
+    /// bar ignores it.
+    Edited,
 }
 
 pub struct PathEditor {
@@ -155,6 +158,8 @@ pub struct PathEditor {
     is_selecting: bool,
     /// Set by the pane when a committed path wasn't a directory.
     pub error: bool,
+    /// Drawn in place of the content while it is empty.
+    placeholder: SharedString,
 }
 
 impl PathEditor {
@@ -193,12 +198,19 @@ impl PathEditor {
             scroll_x: px(0.),
             is_selecting: false,
             error: false,
+            placeholder: SharedString::default(),
         }
     }
 
     #[allow(dead_code)] // handy for tests/debugging of the widget
     pub fn text(&self) -> &str {
         &self.content
+    }
+
+    /// Grey prompt shown while the field is empty.
+    pub fn with_placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
+        self.placeholder = placeholder.into();
+        self
     }
 
     fn cursor_offset(&self) -> usize {
@@ -556,6 +568,7 @@ impl EntityInputHandler for PathEditor {
         self.selected_range = cursor..cursor;
         self.selection_reversed = false;
         self.error = false;
+        cx.emit(PathEditorEvent::Edited);
         cx.notify();
     }
 
@@ -748,13 +761,23 @@ impl gpui::Element for PathElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let editor = self.editor.read(cx);
-        let content = editor.content.clone();
+        let showing_placeholder = editor.content.is_empty() && !editor.placeholder.is_empty();
+        let content = if showing_placeholder {
+            editor.placeholder.clone()
+        } else {
+            editor.content.clone()
+        };
         let selected_range = editor.selected_range.clone();
         let cursor_offset = editor.cursor_offset();
         let mut scroll_x = editor.scroll_x;
 
         let style = window.text_style();
-        let text_color = cx.theme().colors().text;
+        let colors = cx.theme().colors();
+        let text_color = if showing_placeholder {
+            colors.text_muted
+        } else {
+            colors.text
+        };
         let run = TextRun {
             len: content.len(),
             font: style.font(),

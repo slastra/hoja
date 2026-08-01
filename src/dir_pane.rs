@@ -1158,6 +1158,7 @@ impl DirPane {
                     }
                 }
             }
+            PathEditorEvent::Edited => {}
             PathEditorEvent::Cancelled => {
                 this.renaming = None;
                 window.focus(&this.focus_handle, cx);
@@ -1223,6 +1224,7 @@ impl DirPane {
                     }
                 }
             }
+            PathEditorEvent::Edited => {}
             PathEditorEvent::Cancelled => {
                 this.path_editor = None;
                 window.focus(&this.focus_handle, cx);
