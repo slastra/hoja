@@ -232,7 +232,11 @@ impl DirPane {
 
         cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {
             this.context_menu = None;
-            window.focus(&this.focus_handle, cx);
+            // A menu item may have started an inline edit (Rename, path edit);
+            // refocusing the pane here would stomp the editor's focus.
+            if this.renaming.is_none() && this.path_editor.is_none() {
+                window.focus(&this.focus_handle, cx);
+            }
             cx.notify();
         })
         .detach();
@@ -441,7 +445,12 @@ impl DirPane {
         })
         .detach();
 
-        window.focus(&editor.focus_handle(cx), cx);
+        let editor_focus = editor.focus_handle(cx);
+        window.on_next_frame(move |window, _| {
+            window.on_next_frame(move |window, cx| {
+                window.focus(&editor_focus, cx);
+            });
+        });
         self.renaming = Some((ix, editor));
         cx.notify();
     }
