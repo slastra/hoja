@@ -1,18 +1,19 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{
-    App, Context, Entity, EntityId, FocusHandle, Focusable, PromptLevel, Subscription, Task,
-    Window, actions, div, prelude::*, px, relative,
+    App, Context, DismissEvent, Entity, EntityId, FocusHandle, Focusable, Subscription, Task,
+    Window, actions, div, hsla, prelude::*, px, relative,
 };
 use pane_transfer::{
-    ConflictChoice, ConflictDecision, Event as JobEvent, JobHandle, JobPolicy, JobSpec, Operation,
+    ConflictDecision, Event as JobEvent, JobHandle, JobPolicy, JobSpec, Operation,
     Outcome, Phase,
 };
 use theme::ActiveTheme;
 
 use crate::clipboard::{self, ClipboardSet};
+use crate::conflict_dialog::ConflictDialog;
 use crate::dir_pane::{DirPane, PaneEvent};
 use crate::fs;
 use crate::pane_group::{PaneGroup, SplitDirection};
@@ -69,6 +70,10 @@ pub struct Workspace {
     clipboard: Option<ClipboardSet>,
     jobs: Vec<JobView>,
     poll_task: Option<Task<()>>,
+    /// Conflicts wait here while one dialog is up; one worker blocks per job,
+    /// so concurrent jobs can queue several.
+    pending_conflicts: VecDeque<(PathBuf, PathBuf, std::sync::mpsc::Sender<ConflictDecision>)>,
+    conflict_dialog: Option<Entity<ConflictDialog>>,
 }
 
 impl Workspace {
@@ -85,6 +90,8 @@ impl Workspace {
             clipboard: None,
             jobs: Vec::new(),
             poll_task: None,
+            pending_conflicts: VecDeque::new(),
+            conflict_dialog: None,
         }
     }
 
@@ -311,7 +318,7 @@ impl Workspace {
             while let Some(event) = job.handle.try_recv_event() {
                 match event {
                     JobEvent::Conflict { src, dest, reply } => {
-                        Self::prompt_for_conflict(src, dest, reply, window, cx);
+                        self.pending_conflicts.push_back((src, dest, reply));
                     }
                     JobEvent::FileError { path, error } => {
                         job.errors += 1;
@@ -336,6 +343,8 @@ impl Workspace {
         self.jobs
             .retain(|job| !(job.done.is_some() && job.errors == 0));
 
+        self.maybe_show_conflict(window, cx);
+
         if !finished_dirs.is_empty() {
             for pane in &self.panes {
                 let pane_dir = pane.read(cx).dir().to_path_buf();
@@ -347,63 +356,33 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Raise the overwrite dialog. The engine's worker is blocked (cancel-aware)
-    /// until `reply` is answered; the UI thread never blocks.
-    ///
-    /// gpui has no native dialogs on Wayland; `window.prompt` falls back to a
-    /// gpui-rendered in-window modal automatically.
-    fn prompt_for_conflict(
-        src: PathBuf,
-        dest: PathBuf,
-        reply: std::sync::mpsc::Sender<ConflictDecision>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let name = dest
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let detail = format!(
-            "Pasting \"{}\" into \"{}\"",
-            src.display(),
-            dest.parent().map(|p| p.display().to_string()).unwrap_or_default(),
-        );
+    /// Show the next queued conflict in the themed dialog. The engine's worker
+    /// stays blocked (cancel-aware) until the dialog answers into `reply`; the
+    /// UI thread never blocks.
+    fn maybe_show_conflict(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.conflict_dialog.is_some() {
+            return;
+        }
+        let Some((src, dest, reply)) = self.pending_conflicts.pop_front() else {
+            return;
+        };
 
-        let answers = ["Replace", "Replace All", "Skip", "Skip All", "Keep Both", "Cancel"];
-        let rx = window.prompt(
-            PromptLevel::Warning,
-            &format!("\"{name}\" already exists"),
-            Some(&detail),
-            &answers,
-            cx,
-        );
-        cx.spawn(async move |_, _| {
-            let decision = match rx.await {
-                Ok(0) => ConflictDecision::Apply {
-                    choice: ConflictChoice::Overwrite,
-                    apply_to_all: false,
-                },
-                Ok(1) => ConflictDecision::Apply {
-                    choice: ConflictChoice::Overwrite,
-                    apply_to_all: true,
-                },
-                Ok(2) => ConflictDecision::Apply {
-                    choice: ConflictChoice::Skip,
-                    apply_to_all: false,
-                },
-                Ok(3) => ConflictDecision::Apply {
-                    choice: ConflictChoice::Skip,
-                    apply_to_all: true,
-                },
-                Ok(4) => ConflictDecision::Apply {
-                    choice: ConflictChoice::KeepBoth,
-                    apply_to_all: false,
-                },
-                _ => ConflictDecision::CancelJob,
-            };
-            let _ = reply.send(decision);
-        })
+        let dialog = cx.new(|cx| ConflictDialog::new(&src, &dest, reply, window, cx));
+        cx.subscribe_in(
+            &dialog,
+            window,
+            |this, _, _: &DismissEvent, window, cx| {
+                this.conflict_dialog = None;
+                window.focus(&this.active_pane.focus_handle(cx), cx);
+                this.maybe_show_conflict(window, cx);
+                cx.notify();
+            },
+        )
         .detach();
+
+        window.focus(&dialog.focus_handle(cx), cx);
+        self.conflict_dialog = Some(dialog);
+        cx.notify();
     }
 
     fn new_folder(&mut self, _: &NewFolder, _window: &mut Window, cx: &mut Context<Self>) {
@@ -610,6 +589,19 @@ impl Render for Workspace {
             .child(self.center.render(&self.active_pane, window, cx))
             .when(!self.jobs.is_empty(), |el| {
                 el.child(self.render_job_strip(cx))
+            })
+            .when_some(self.conflict_dialog.clone(), |el, dialog| {
+                el.child(
+                    div()
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(hsla(0., 0., 0., 0.45))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(dialog),
+                )
             })
     }
 }

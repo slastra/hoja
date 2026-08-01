@@ -1,5 +1,6 @@
 mod assets;
 mod clipboard;
+mod conflict_dialog;
 mod dir_pane;
 mod file_menu;
 mod history;
