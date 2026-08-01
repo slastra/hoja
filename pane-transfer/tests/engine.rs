@@ -565,3 +565,37 @@ fn random_sparse_files_round_trip() {
         std::fs::remove_file(&src).unwrap();
     }
 }
+
+#[test]
+fn a_directory_cannot_be_moved_into_itself() {
+    let root = ext4_dir();
+    let tree = root.path().join("project");
+    std::fs::create_dir_all(tree.join("src")).unwrap();
+    write_file(&tree.join("src"), "main.rs", b"fn main() {}");
+
+    // Into its own descendant: the rename fast path would fail with EINVAL and
+    // the fallback would copy a tree into itself.
+    let rejected = |spec| match spawn_job(spec) {
+        Ok(_) => panic!("expected the job to be refused"),
+        Err(err) => err.kind(),
+    };
+    assert_eq!(
+        rejected(move_spec(vec![tree.clone()], &tree.join("src"))),
+        std::io::ErrorKind::InvalidInput
+    );
+
+    // Into itself.
+    assert_eq!(
+        rejected(copy_spec(vec![tree.clone()], &tree)),
+        std::io::ErrorKind::InvalidInput
+    );
+
+    // Nothing was touched.
+    assert!(tree.join("src/main.rs").exists());
+    assert_eq!(std::fs::read_dir(tree.join("src")).unwrap().count(), 1);
+
+    // A sibling is still fine, and a shared prefix is not containment.
+    let sibling = root.path().join("project-notes");
+    std::fs::create_dir(&sibling).unwrap();
+    assert!(spawn_job(copy_spec(vec![tree], &sibling)).is_ok());
+}

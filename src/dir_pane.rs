@@ -5,11 +5,12 @@ use std::time::{Duration, Instant};
 
 use file_icons::FileIcons;
 use gpui::{
-    App, ClickEvent, Context, DismissEvent, DragMoveEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, MouseButton, MouseDownEvent, Pixels, Point, Subscription, Task,
-    UniformListScrollHandle, Window, actions, anchored, deferred, div, prelude::*, px,
+    App, ClickEvent, Context, DismissEvent, DragMoveEvent, Entity, EventEmitter, ExternalPaths,
+    FocusHandle, Focusable, MouseButton, MouseDownEvent, Pixels, Point, SharedString, Subscription,
+    Task, UniformListScrollHandle, Window, actions, anchored, deferred, div, prelude::*, px,
     uniform_list,
 };
+use pane_transfer::Operation;
 use theme::ActiveTheme;
 
 use crate::file_menu::{FileMenu, MenuItem};
@@ -75,6 +76,63 @@ pub enum PaneEvent {
     /// Asks the workspace to remove this pane from the tree.
     #[allow(dead_code)]
     Remove,
+    /// A drop landed here. The workspace owns the engine and the job strip, so
+    /// it starts the transfer.
+    Transfer {
+        op: Operation,
+        sources: Vec<PathBuf>,
+        dest: PathBuf,
+    },
+}
+
+/// Whether a drag may land on `target`, for either payload type.
+///
+/// `can_drop` runs before the drop and also gates the highlight, so refusing
+/// here means an illegal target never lights up. Note that a refusal *consumes*
+/// the drop rather than passing it to the element behind — which is what we
+/// want, but is not a fall-through.
+fn drop_allowed(dragged: &dyn std::any::Any, target: &Path) -> bool {
+    if let Some(paths) = dragged.downcast_ref::<DraggedPaths>() {
+        return fs::is_valid_drop(&paths.paths, target);
+    }
+    if let Some(paths) = dragged.downcast_ref::<ExternalPaths>() {
+        return fs::is_valid_drop(paths.paths(), target);
+    }
+    false
+}
+
+/// Rows being dragged, and where they came from so a drop back onto their own
+/// directory can be refused.
+///
+/// The paths are shared rather than cloned: `on_drag` takes its value eagerly
+/// at render time, so a plain `Vec` would copy the whole selection once per
+/// visible row per frame.
+#[derive(Clone)]
+pub struct DraggedPaths {
+    pub paths: std::rc::Rc<Vec<PathBuf>>,
+    pub source_dir: PathBuf,
+}
+
+/// What the cursor carries during a drag. The platform draws its own icons for
+/// a drag that leaves the window, so this is only ever seen inside pane.
+struct DragPreview {
+    label: SharedString,
+}
+
+impl Render for DragPreview {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors();
+        div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(colors.border_selected)
+            .bg(colors.elevated_surface_background)
+            .text_sm()
+            .text_color(colors.text)
+            .child(self.label.clone())
+    }
 }
 
 /// A fixed-width column after the Name column.
@@ -766,6 +824,52 @@ impl DirPane {
             .collect()
     }
 
+    /// Turn a completed drop into a transfer request.
+    ///
+    /// `dest` is the folder that was dropped on, which is a row's own path for a
+    /// folder row and the pane's directory for the body.
+    fn accept_drop(
+        &mut self,
+        sources: Vec<PathBuf>,
+        source_dir: Option<&Path>,
+        dest: PathBuf,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if sources.is_empty() || !fs::is_valid_drop(&sources, &dest) {
+            return;
+        }
+
+        let op = match source_dir {
+            // An internal drag: the events are real, so the modifiers are live.
+            // Within one filesystem a move is a rename and free; across one it
+            // is a copy plus a delete, so the convention is to move within and
+            // copy across.
+            Some(from) => {
+                let modifiers = window.modifiers();
+                let move_it = !modifiers.control
+                    && (modifiers.shift || pane_transfer::same_filesystem(from, &dest));
+                if move_it {
+                    Operation::Move
+                } else {
+                    Operation::Copy
+                }
+            }
+            // From another application. gpui accepts external offers with
+            // DndAction::Copy hardcoded, so the source has been told this is a
+            // copy — moving would delete data it still believes it owns. The
+            // same translation also wipes the modifiers, so there is nothing to
+            // read even if we wanted to offer a choice.
+            None => Operation::Copy,
+        };
+
+        cx.emit(PaneEvent::Transfer {
+            op,
+            sources,
+            dest,
+        });
+    }
+
     /// Ask git about this directory off the UI thread.
     ///
     /// `git status` spawns a process and walks the work tree — 142ms in a 17k
@@ -1315,7 +1419,12 @@ impl DirPane {
     /// `use<>` opts out of capturing the `&self` / `&Context` lifetimes: the returned
     /// element owns every value it needs, and `uniform_list`'s callback must return
     /// something with no borrows outstanding.
-    fn render_entry(&self, ix: usize, cx: &Context<Self>) -> impl IntoElement + use<> {
+    fn render_entry(
+        &self,
+        ix: usize,
+        selection: &std::rc::Rc<Vec<PathBuf>>,
+        cx: &Context<Self>,
+    ) -> impl IntoElement + use<> {
         let entry = &self.entries[ix];
         let rename_editor = self
             .renaming
@@ -1385,6 +1494,21 @@ impl DirPane {
         // and this keeps the cells in lockstep with the header.
         let cells = Column::ALL.map(|column| (self.widths.get(column), column.value(entry)));
 
+        // Dragging a selected row takes the whole selection; dragging an
+        // unselected one takes only itself, without disturbing the selection.
+        let dragged = DraggedPaths {
+            paths: if selected && !selection.is_empty() {
+                selection.clone()
+            } else {
+                std::rc::Rc::new(vec![entry.path.clone()])
+            },
+            source_dir: self.dir.clone(),
+        };
+        let drag_label: SharedString = match dragged.paths.len() {
+            1 => entry.name.clone().into(),
+            n => format!("{n} items").into(),
+        };
+
         let row = div()
             .id(ix)
             // Uniform row height is what lets `uniform_list` virtualize.
@@ -1436,6 +1560,48 @@ impl DirPane {
             .into_iter()
             .fold(row, |row, (width, text)| {
                 row.child(spacer()).child(cell(width, text))
+            })
+            .when(is_dir, |row| {
+                let target = path.clone();
+                let highlight = colors.drop_target_background;
+                row.can_drop({
+                    let target = target.clone();
+                    move |dragged, _, _| drop_allowed(dragged, &target)
+                })
+                .drag_over::<DraggedPaths>(move |style, _, _, _| style.bg(highlight))
+                .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(highlight))
+                .on_drop(cx.listener({
+                    let target = target.clone();
+                    move |this, dragged: &DraggedPaths, window, cx| {
+                        let sources = dragged.paths.as_ref().clone();
+                        this.accept_drop(
+                            sources,
+                            Some(&dragged.source_dir.clone()),
+                            target.clone(),
+                            window,
+                            cx,
+                        );
+                    }
+                }))
+                .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
+                    this.accept_drop(paths.paths().to_vec(), None, target.clone(), window, cx);
+                }))
+            })
+            .on_drag(dragged, move |_, _, _, cx| {
+                cx.new(|_| DragPreview {
+                    label: drag_label.clone(),
+                })
+            })
+            // Promotes the same drag to a native one when it leaves the window.
+            // The resolver runs once, at promotion — never per frame — which is
+            // why the is_dir probes belong here and not in the payload.
+            .external_drag_payload(|dragged: &DraggedPaths, _, _| {
+                Some(gpui::ExternalDragPayload::Files(gpui::FileDragPaths::new(
+                    dragged
+                        .paths
+                        .iter()
+                        .map(|path| (path.clone(), path.is_dir())),
+                )))
             })
             .on_mouse_down(
                 MouseButton::Right,
@@ -1501,7 +1667,13 @@ impl DirPane {
             "entries",
             self.entries.len(),
             cx.processor(|this, range: Range<usize>, _window, cx| {
-                range.map(|ix| this.render_entry(ix, cx)).collect()
+                // Shared once per batch: dragging any selected row carries the
+                // whole selection, and cloning that per row per frame is what
+                // the Rc exists to avoid.
+                let selection = std::rc::Rc::new(this.selected_paths());
+                range
+                    .map(|ix| this.render_entry(ix, &selection, cx))
+                    .collect()
             }),
         )
         .track_scroll(&self.scroll)
@@ -1520,9 +1692,34 @@ impl EventEmitter<PaneEvent> for DirPane {}
 
 impl Render for DirPane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let here = self.dir.clone();
+        let drop_border = cx.theme().colors().drop_target_background;
+
         div()
             .track_focus(&self.focus_handle)
             .key_context("DirPane")
+            // The pane body is the fallback target: anything not dropped on a
+            // folder row lands in the directory being shown. A folder row that
+            // accepts consumes the drop first, so the two never both fire.
+            .can_drop({
+                let here = here.clone();
+                move |dragged, _, _| drop_allowed(dragged, &here)
+            })
+            // A border rather than a fill: the whole pane going solid would hide
+            // the listing you are aiming at.
+            .drag_over::<DraggedPaths>(move |style, _, _, _| style.border_color(drop_border))
+            .drag_over::<ExternalPaths>(move |style, _, _, _| style.border_color(drop_border))
+            .on_drop(cx.listener({
+                let here = here.clone();
+                move |this, dragged: &DraggedPaths, window, cx| {
+                    let sources = dragged.paths.as_ref().clone();
+                    let source_dir = dragged.source_dir.clone();
+                    this.accept_drop(sources, Some(&source_dir), here.clone(), window, cx);
+                }
+            }))
+            .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
+                this.accept_drop(paths.paths().to_vec(), None, here.clone(), window, cx);
+            }))
             .on_action(cx.listener(Self::go_up))
             .on_action(cx.listener(Self::open_selected))
             .on_action(cx.listener(Self::nav_back))

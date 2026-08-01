@@ -33,6 +33,11 @@ for important data.
   specification, on the same filesystem, so a delete is instant and other
   file managers can empty what pane deletes. pane has no other trash
   controls: no browser, no restore list, no empty command.
+- **Drag and drop.** Drag rows to another pane, onto a folder, or to another
+  application. Drag files from another application into a pane. A drag moves
+  the files on one filesystem and copies them across filesystems, which is the
+  usual behaviour. Hold `ctrl` to copy or `shift` to move. Files that come from
+  another application are always copied.
 - **Git status.** In a git repository, the colour of a file name shows its
   status: added, modified, deleted, renamed, or in conflict. A folder shows
   the status of the files in it. Ignored files are dim. pane asks `git`
@@ -129,6 +134,9 @@ not next to each other.
 | Right-click | Open the context menu |
 | Click a column header | Sort. Click again to reverse the order. |
 | Drag a header divider | Resize the column |
+| Drag rows | Move them. Across filesystems, pane copies them. |
+| `ctrl`-drag / `shift`-drag | Always copy / always move |
+| Drop on a folder row | Put the files in that folder |
 | Back and forward buttons | Go back and forward in the history |
 
 **While you edit a path**
@@ -173,7 +181,6 @@ These features are planned and not complete:
 
 - Parallel copy for many small files
 - A job journal, for undo of a transfer and resume after a crash
-- Drag and drop, between panes and with other applications
 - A relative time option for the Modified column, such as "2 hours ago"
 - Optional columns for the owner, the group, and the permissions
 - Tabs, search, previews, and thumbnails

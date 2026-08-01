@@ -32,6 +32,22 @@ pub fn mount_key(path: &Path) -> std::io::Result<MountKey> {
     }
 }
 
+/// Whether two paths live on the same filesystem.
+///
+/// Drives the drag-and-drop default: within one filesystem a move is a rename
+/// and effectively free, across filesystems it is a full copy plus a delete, so
+/// the convention every file manager follows is to move within and copy across.
+///
+/// Unknowable answers are `false`. Treating "I could not tell" as "different
+/// filesystem" degrades to a copy, which leaves the source in place; the
+/// opposite mistake deletes it.
+pub fn same_filesystem(a: &Path, b: &Path) -> bool {
+    match (mount_key(a), mount_key(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Whether the filesystem holding `path` is on hot-unpluggable media.
 ///
 /// `/sys/block/<dev>/removable` alone is wrong: it reflects the SCSI RMB bit

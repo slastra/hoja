@@ -328,6 +328,21 @@ pub fn name_problem(name: &str) -> Option<&'static str> {
 /// what every list does when you first reach for the arrow keys. Steps past
 /// either end clamp rather than wrap: wrapping a file list turns one keypress
 /// too many into a jump across the whole directory.
+/// Whether `dest` is a legal destination for a drag carrying `sources`.
+///
+/// Refuses the two drops that are wrong rather than merely useless:
+/// a folder dropped into itself or into its own descendant, which the engine
+/// would otherwise try to copy into a tree that grows as it writes, and a drop
+/// onto a source itself. A drop back into the directory the files came from is
+/// refused too — it is a no-op, and refusing it means no target lights up.
+pub fn is_valid_drop(sources: &[PathBuf], dest: &Path) -> bool {
+    sources.iter().all(|source| {
+        // `starts_with` compares whole components, so `/a/bc` is not inside
+        // `/a/b` even though the strings share a prefix.
+        !dest.starts_with(source) && source.parent() != Some(dest)
+    })
+}
+
 pub fn step_row(len: usize, cursor: Option<usize>, delta: isize) -> Option<usize> {
     let last = len.checked_sub(1)?;
     Some(match cursor.filter(|&ix| ix <= last) {
@@ -368,6 +383,31 @@ pub fn format_time(time: SystemTime) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn valid_drops() {
+        use super::is_valid_drop;
+        let src = vec![PathBuf::from("/a/project")];
+
+        assert!(is_valid_drop(&src, Path::new("/b")));
+        assert!(is_valid_drop(&src, Path::new("/a/other")));
+
+        // Into itself, or into its own descendant.
+        assert!(!is_valid_drop(&src, Path::new("/a/project")));
+        assert!(!is_valid_drop(&src, Path::new("/a/project/src")));
+        assert!(!is_valid_drop(&src, Path::new("/a/project/src/deep")));
+
+        // Back where it came from: a no-op.
+        assert!(!is_valid_drop(&src, Path::new("/a")));
+
+        // A shared string prefix is not containment.
+        assert!(is_valid_drop(&src, Path::new("/a/project-notes")));
+
+        // One bad source spoils the drop, since the job is one unit.
+        let many = vec![PathBuf::from("/x/one"), PathBuf::from("/a/project")];
+        assert!(!is_valid_drop(&many, Path::new("/a/project/src")));
+        assert!(is_valid_drop(&many, Path::new("/somewhere/else")));
+    }
+
     #[test]
     fn stepping_rows() {
         use super::step_row;

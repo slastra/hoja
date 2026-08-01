@@ -144,6 +144,9 @@ impl Workspace {
         cx.subscribe_in(pane, window, |this, pane, event, window, cx| match event {
             PaneEvent::Focus => this.set_active_pane(pane, cx),
             PaneEvent::Remove => this.remove_pane(&pane.clone(), window, cx),
+            PaneEvent::Transfer { op, sources, dest } => {
+                this.spawn_transfer(*op, sources.clone(), dest.clone(), window, cx)
+            }
         })
     }
 

@@ -149,6 +149,24 @@ pub fn spawn_job(spec: JobSpec) -> std::io::Result<JobHandle> {
             "no sources",
         ));
     }
+    // A directory copied into its own descendant walks a tree that grows as it
+    // writes. The rename fast path fails safely with EINVAL, but the fallback
+    // would not, so refuse here rather than at each call site: drag-and-drop
+    // makes this one gesture, and cut-then-paste-inside-itself reaches it too.
+    if let Some(source) = spec
+        .sources
+        .iter()
+        .find(|source| spec.dest_dir.starts_with(source))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "destination {} is inside source {}",
+                spec.dest_dir.display(),
+                source.display()
+            ),
+        ));
+    }
 
     let id = JobId(NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed));
     let label = {
