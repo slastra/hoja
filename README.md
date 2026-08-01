@@ -171,6 +171,7 @@ These features are planned and not complete:
 - A job journal, for undo of a transfer and resume after a crash
 - Drag and drop, between panes and with other applications
 - A relative time option for the Modified column, such as "2 hours ago"
+- Optional columns for the owner, the group, and the permissions
 - Tabs, search, previews, and thumbnails
 - Delta sync between machines
 
