@@ -1,0 +1,18 @@
+[package]
+name = "pane-transfer"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Tiered file transfer engine: rename, reflink, plain copy — boring fast paths first"
+
+# std-only by design: no gpui, no async runtime, no anyhow. The UI consumes this
+# through JobHandle (atomics + mpsc); everything here must stay Send and
+# runtime-agnostic so an M3 thread pool can slot in behind the same API.
+#
+# rustix is already in the app's graph at 1.x with `fs` enabled (via gpui's smol
+# chain), so this dependency is pure feature unification.
+[dependencies]
+rustix = { version = "1.1", features = ["fs"] }
+
+[dev-dependencies]
+tempfile = "3"

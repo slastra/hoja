@@ -1,0 +1,161 @@
+mod assets;
+mod clipboard;
+mod dir_pane;
+mod file_menu;
+mod history;
+mod fs;
+mod icon;
+mod opener;
+mod pane_group;
+mod path_editor;
+mod theming;
+mod workspace;
+
+use std::path::PathBuf;
+
+use gpui::{App, Bounds, KeyBinding, WindowBounds, WindowOptions, prelude::*, px, size};
+use gpui_platform::application;
+use theme::LoadThemes;
+
+use assets::Assets;
+use dir_pane::{ClearSelection, EditPath, GoHome, GoUp, NavBack, NavForward, OpenSelected, SelectAll};
+use file_menu::{Cancel as MenuCancel, Confirm as MenuConfirm, SelectNext, SelectPrevious};
+use path_editor as ab;
+use workspace::{
+    ClosePane, Copy, Cut, DismissJobs, FocusDown, FocusLeft, FocusRight, FocusUp, Paste,
+    SplitDown, SplitLeft, SplitRight, SplitUp, Workspace,
+};
+
+struct Args {
+    dir: PathBuf,
+    /// `--theme <name>`, else `$PANE_THEME`, else the default dark theme.
+    theme: Option<String>,
+    list_themes: bool,
+}
+
+/// Usage: `pane [DIR] [--theme NAME] [--list-themes]`
+fn parse_args() -> Args {
+    let mut dir = None;
+    let mut theme = std::env::var("PANE_THEME").ok();
+    let mut list_themes = false;
+    let mut args = std::env::args().skip(1);
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--theme" => theme = args.next(),
+            "--list-themes" => list_themes = true,
+            other => dir = Some(PathBuf::from(other)),
+        }
+    }
+
+    Args {
+        dir: dir.unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/"))
+        }),
+        theme,
+        list_themes,
+    }
+}
+
+fn main() {
+    let args = parse_args();
+
+    application().with_assets(Assets).run(move |cx: &mut App| {
+        // Sets up ThemeRegistry, FontFamilyCache, SystemAppearance, and GlobalTheme so
+        // `cx.theme()` resolves. The asset source is what `svg()` and the registry read
+        // bundled icons and themes through. It does NOT parse bundled theme JSON —
+        // that's the two calls below.
+        theme::init(LoadThemes::All(Box::new(Assets)), cx);
+        if let Err(err) = theming::load_bundled_themes(cx) {
+            eprintln!("[pane] bundled themes failed to load: {err:#}");
+        }
+        theming::load_user_themes(cx);
+
+        if args.list_themes {
+            for name in theming::list_names(cx) {
+                println!("{name}");
+            }
+            // `cx.quit()` before any window exists does not unwind the run loop, so
+            // exit the process directly. This is a debug flag, not a real subcommand.
+            std::process::exit(0);
+        }
+
+        if let Some(name) = &args.theme {
+            match theming::apply(name, cx) {
+                Ok(()) => theming::watch_user_themes(name.clone(), cx),
+                Err(err) => eprintln!("[pane] theme {name:?} not available: {err}"),
+            }
+        }
+
+        // All bindings are scoped to the "DirPane" key context, which each pane declares
+        // via `.key_context(...)` on a div that also calls `.track_focus(...)`. Both are
+        // required or the binding never resolves. Split/focus actions bubble past the
+        // focused pane up to the workspace, which handles them.
+        //
+        // Space-separated keystrokes form a chord. `ctrl-` is literal Control — note
+        // that `cmd`/`super`/`win` are all aliases for the *platform* modifier, which on
+        // Linux is Super, a key Hyprland grabs. Use `ctrl-` or `secondary-`, never
+        // `cmd-`.
+        cx.bind_keys([
+            KeyBinding::new("backspace", GoUp, Some("DirPane && !AddressBar")),
+            KeyBinding::new("alt-up", GoUp, Some("DirPane && !AddressBar")),
+            KeyBinding::new("alt-left", NavBack, Some("DirPane && !AddressBar")),
+            KeyBinding::new("alt-right", NavForward, Some("DirPane && !AddressBar")),
+            KeyBinding::new("alt-home", GoHome, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-l", EditPath, Some("DirPane && !AddressBar")),
+            KeyBinding::new("enter", OpenSelected, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-k ctrl-left", SplitLeft, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-k ctrl-right", SplitRight, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-k ctrl-up", SplitUp, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-k ctrl-down", SplitDown, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-k left", FocusLeft, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-k right", FocusRight, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-k up", FocusUp, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-k down", FocusDown, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-k ctrl-w", ClosePane, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-c", Copy, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-x", Cut, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-v", Paste, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-a", SelectAll, Some("DirPane && !AddressBar")),
+            KeyBinding::new("escape", ClearSelection, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-shift-d", DismissJobs, Some("DirPane && !AddressBar")),
+            // Address-bar editing. Every binding here MUST have a matching
+            // on_action listener on the editor div, or it silently falls
+            // through to the (now-guarded) DirPane binding.
+            KeyBinding::new("backspace", ab::Backspace, Some("AddressBar")),
+            KeyBinding::new("delete", ab::Delete, Some("AddressBar")),
+            KeyBinding::new("left", ab::Left, Some("AddressBar")),
+            KeyBinding::new("right", ab::Right, Some("AddressBar")),
+            KeyBinding::new("shift-left", ab::SelectLeft, Some("AddressBar")),
+            KeyBinding::new("shift-right", ab::SelectRight, Some("AddressBar")),
+            KeyBinding::new("ctrl-a", ab::SelectAll, Some("AddressBar")),
+            KeyBinding::new("home", ab::Home, Some("AddressBar")),
+            KeyBinding::new("end", ab::End, Some("AddressBar")),
+            KeyBinding::new("ctrl-c", ab::Copy, Some("AddressBar")),
+            KeyBinding::new("ctrl-x", ab::Cut, Some("AddressBar")),
+            KeyBinding::new("ctrl-v", ab::Paste, Some("AddressBar")),
+            KeyBinding::new("enter", ab::Confirm, Some("AddressBar")),
+            KeyBinding::new("escape", ab::CancelEdit, Some("AddressBar")),
+            // Context-menu navigation, scoped to the "menu" key context.
+            KeyBinding::new("escape", MenuCancel, Some("menu")),
+            KeyBinding::new("enter", MenuConfirm, Some("menu")),
+            KeyBinding::new("down", SelectNext, Some("menu")),
+            KeyBinding::new("up", SelectPrevious, Some("menu")),
+        ]);
+
+        let bounds = Bounds::centered(None, size(px(1100.0), px(700.0)), cx);
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                // Lets Hyprland window rules target this app.
+                app_id: Some("pane".into()),
+                ..Default::default()
+            },
+            |window, cx| cx.new(|cx| Workspace::new(args.dir.clone(), window, cx)),
+        )
+        .unwrap();
+        cx.activate(true);
+    });
+}

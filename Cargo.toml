@@ -1,0 +1,57 @@
+[workspace]
+members = ["pane-transfer"]
+
+[package]
+name = "pane"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "A GPU-accelerated file manager with Zed-style splittable panes"
+
+# Pinned to a specific zed revision. Safe to pin by `rev` here only because gpui is
+# our sole git source — nothing else in the graph depends on it, so there is no
+# source-unification hazard. Bump deliberately; `main` moves daily.
+#
+# `gpui_platform` is mandatory and not published on crates.io: since the Feb 2026
+# split, `gpui` holds the framework and platform traits while the actual backends
+# live behind this facade. `gpui::Application` has no `new()`.
+#
+# The `wayland` feature is NOT optional. gpui_platform's default feature set is
+# empty and the workspace pulls gpui_linux with default-features = false, so
+# without it `current_platform()` compiles fine and then hits an `unreachable!()`
+# at startup. `font-kit` alone is a macOS-only no-op on Linux.
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23", features = [
+    "wayland",
+    "x11",
+] }
+
+# GPL-3.0-or-later, which is why this crate is too. `theme` became genuinely
+# standalone in Mar 2026 (its settings dependency was inverted behind a
+# `ThemeSettingsProvider` trait we simply never register).
+theme = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
+file_icons = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
+theme_settings = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
+
+pane-transfer = { path = "pane-transfer" }
+
+anyhow = "1"
+chrono = "0.4"
+rust-embed = "8"
+# Lenient JSON: hand-edited themes routinely carry comments and trailing commas.
+serde_json_lenient = "0.2"
+notify = "8"
+parking_lot = "0.12"
+smallvec = "1"
+xdg-mime = "0.4"
+freedesktop-desktop-entry = { version = "0.8", default-features = false }
+unicode-segmentation = "1"
+
+[profile.dev]
+# The gpui dependency tree is large; without this every debug build of a
+# dependency is unusably slow to link and run.
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 2

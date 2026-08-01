@@ -1,0 +1,611 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use gpui::{
+    App, Context, Entity, EntityId, FocusHandle, Focusable, PromptLevel, Subscription, Task,
+    Window, actions, div, prelude::*, px, relative,
+};
+use pane_transfer::{
+    ConflictChoice, ConflictDecision, Event as JobEvent, JobHandle, JobPolicy, JobSpec, Operation,
+    Outcome, Phase,
+};
+use theme::ActiveTheme;
+
+use crate::clipboard::{self, ClipboardSet};
+use crate::dir_pane::{DirPane, PaneEvent};
+use crate::fs;
+use crate::pane_group::{PaneGroup, SplitDirection};
+
+actions!(
+    pane,
+    [
+        SplitLeft,
+        SplitRight,
+        SplitUp,
+        SplitDown,
+        FocusLeft,
+        FocusRight,
+        FocusUp,
+        FocusDown,
+        ClosePane,
+        Copy,
+        Cut,
+        Paste,
+        DismissJobs,
+        NewFolder,
+    ]
+);
+
+const JOB_POLL_INTERVAL: Duration = Duration::from_millis(120);
+
+/// A running or finished transfer job as the UI tracks it.
+struct JobView {
+    handle: JobHandle,
+    /// Where the job writes, for refreshing affected panes on completion.
+    dest_dir: PathBuf,
+    /// Source parent dirs, refreshed after moves.
+    src_parents: Vec<PathBuf>,
+    done: Option<Outcome>,
+    errors: usize,
+    last_error: Option<String>,
+}
+
+/// Owns the pane tree and the notion of which pane is active.
+///
+/// Following Zed: the tree is *not* the source of truth for activation. A separate
+/// `active_pane` handle plus a flat `panes` list track that, and focus drives it — a
+/// pane emits `PaneEvent::Focus` on focus-in and we make it active in response. Clicking
+/// a pane focuses it, so activation needs no separate click plumbing.
+pub struct Workspace {
+    center: PaneGroup,
+    panes: Vec<Entity<DirPane>>,
+    active_pane: Entity<DirPane>,
+    focus_handle: FocusHandle,
+    pane_subscriptions: HashMap<EntityId, Subscription>,
+    /// Internal file clipboard — the source of truth for in-app paste. The
+    /// system clipboard is mirrored on write and consulted on read only to
+    /// interoperate with other applications.
+    clipboard: Option<ClipboardSet>,
+    jobs: Vec<JobView>,
+    poll_task: Option<Task<()>>,
+}
+
+impl Workspace {
+    pub fn new(start_dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let pane = cx.new(|cx| DirPane::new(start_dir, window, cx));
+        let subscription = Self::subscribe_to_pane(&pane, window, cx);
+
+        Self {
+            center: PaneGroup::new(pane.clone()),
+            panes: vec![pane.clone()],
+            active_pane: pane.clone(),
+            focus_handle: cx.focus_handle(),
+            pane_subscriptions: HashMap::from([(pane.entity_id(), subscription)]),
+            clipboard: None,
+            jobs: Vec::new(),
+            poll_task: None,
+        }
+    }
+
+    fn subscribe_to_pane(
+        pane: &Entity<DirPane>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        cx.subscribe_in(pane, window, |this, pane, event, window, cx| match event {
+            PaneEvent::Focus => this.set_active_pane(pane, cx),
+            PaneEvent::Remove => this.remove_pane(&pane.clone(), window, cx),
+        })
+    }
+
+    fn set_active_pane(&mut self, pane: &Entity<DirPane>, cx: &mut Context<Self>) {
+        if &self.active_pane != pane {
+            self.active_pane = pane.clone();
+            cx.notify();
+        }
+    }
+
+    /// Create a pane starting in `dir`, register it, and focus it.
+    fn add_pane(
+        &mut self,
+        dir: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<DirPane> {
+        let pane = cx.new(|cx| DirPane::new(dir, window, cx));
+        let subscription = Self::subscribe_to_pane(&pane, window, cx);
+        self.pane_subscriptions
+            .insert(pane.entity_id(), subscription);
+        self.panes.push(pane.clone());
+        window.focus(&pane.focus_handle(cx), cx);
+        pane
+    }
+
+    fn split(&mut self, direction: SplitDirection, window: &mut Window, cx: &mut Context<Self>) {
+        // The new pane inherits the source pane's directory, so a split is a cheap way
+        // to get a second view of where you already are.
+        let dir = self.active_pane.read(cx).dir().to_path_buf();
+        let source = self.active_pane.clone();
+        let new_pane = self.add_pane(dir, window, cx);
+        self.center.split(&source, &new_pane, direction);
+        #[cfg(debug_assertions)]
+        eprintln!("[pane] split {direction:?} -> {}", self.center.shape());
+        cx.notify();
+    }
+
+    fn remove_pane(&mut self, pane: &Entity<DirPane>, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.center.contains(pane) {
+            return;
+        }
+
+        // Refuses when this is the last pane in the window.
+        match self.center.remove(pane) {
+            Ok(true) => {}
+            _ => return,
+        }
+
+        let was_active = &self.active_pane == pane;
+        self.panes.retain(|p| p != pane);
+        self.pane_subscriptions.remove(&pane.entity_id());
+
+        if was_active
+            && let Some(fallback) = self.panes.last().cloned()
+        {
+            self.active_pane = fallback.clone();
+            window.focus(&fallback.focus_handle(cx), cx);
+        }
+        #[cfg(debug_assertions)]
+        eprintln!("[pane] close -> {}", self.center.shape());
+        cx.notify();
+    }
+
+    fn activate_in_direction(
+        &mut self,
+        direction: SplitDirection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Geometric, using bounding boxes cached during the previous prepaint. Returns
+        // nothing before the first paint — a chord pressed at startup does nothing.
+        let Some(target) = self
+            .center
+            .find_pane_in_direction(&self.active_pane, direction)
+            .cloned()
+        else {
+            return;
+        };
+        window.focus(&target.focus_handle(cx), cx);
+    }
+
+    // ---- clipboard + jobs -------------------------------------------------
+
+    fn stash_selection(&mut self, cut: bool, cx: &mut Context<Self>) {
+        let paths = self.active_pane.read(cx).selected_paths();
+        if paths.is_empty() {
+            return;
+        }
+        let set = ClipboardSet { paths, cut };
+        clipboard::mirror_to_system(&set);
+        self.clipboard = Some(set);
+    }
+
+    fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
+        self.stash_selection(false, cx);
+    }
+
+    fn cut(&mut self, _: &Cut, _window: &mut Window, cx: &mut Context<Self>) {
+        self.stash_selection(true, cx);
+    }
+
+    fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        let dest_dir = self.active_pane.read(cx).dir().to_path_buf();
+        let internal = self.clipboard.clone();
+
+        // The external read shells out to wl-paste, which blocks on the current
+        // clipboard owner — so it runs on the background executor. External
+        // content wins when another app owns the selection; internal otherwise.
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let external = cx
+                .background_spawn(async move { clipboard::read_external() })
+                .await;
+
+            let set = match (external, internal) {
+                // Our own mirror read back through wl-paste is not "another app".
+                (Some(ext), Some(int)) if ext.paths == int.paths => Some(int),
+                (Some(ext), _) => Some(ext),
+                (None, int) => int,
+            };
+            let Some(set) = set else { return };
+
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.spawn_transfer(
+                    if set.cut {
+                        Operation::Move
+                    } else {
+                        Operation::Copy
+                    },
+                    set.paths.clone(),
+                    dest_dir,
+                    window,
+                    cx,
+                );
+                // A cut pastes once; a copy pastes repeatedly.
+                if set.cut {
+                    this.clipboard = None;
+                }
+            });
+        });
+        task.detach();
+    }
+
+    fn spawn_transfer(
+        &mut self,
+        op: Operation,
+        sources: Vec<PathBuf>,
+        dest_dir: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let src_parents: Vec<PathBuf> = sources
+            .iter()
+            .filter_map(|p| p.parent().map(std::path::Path::to_path_buf))
+            .collect();
+
+        let spec = JobSpec {
+            op,
+            sources,
+            dest_dir: dest_dir.clone(),
+            policy: JobPolicy::default(),
+        };
+        match pane_transfer::spawn_job(spec) {
+            Ok(handle) => {
+                self.jobs.push(JobView {
+                    handle,
+                    dest_dir,
+                    src_parents,
+                    done: None,
+                    errors: 0,
+                    last_error: None,
+                });
+                self.ensure_polling(window, cx);
+                cx.notify();
+            }
+            Err(err) => eprintln!("[pane] job rejected: {err}"),
+        }
+    }
+
+    /// One poll loop for all jobs, alive only while jobs exist. 120ms matches
+    /// the "sample progress on a timer" design — frame-driven polling would
+    /// couple a ~8Hz progress bar to vsync for no benefit. Spawned in the
+    /// window so conflict prompts can be raised from inside the poll.
+    fn ensure_polling(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.poll_task.is_some() {
+            return;
+        }
+        self.poll_task = Some(cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(JOB_POLL_INTERVAL).await;
+                let keep_going = this
+                    .update_in(cx, |this, window, cx| {
+                        this.poll_jobs(window, cx);
+                        !this.jobs.is_empty()
+                    })
+                    .unwrap_or(false);
+                if !keep_going {
+                    let _ = this.update(cx, |this, _| this.poll_task = None);
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn poll_jobs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut finished_dirs: Vec<PathBuf> = Vec::new();
+
+        for job in &mut self.jobs {
+            while let Some(event) = job.handle.try_recv_event() {
+                match event {
+                    JobEvent::Conflict { src, dest, reply } => {
+                        Self::prompt_for_conflict(src, dest, reply, window, cx);
+                    }
+                    JobEvent::FileError { path, error } => {
+                        job.errors += 1;
+                        job.last_error = Some(format!("{}: {error}", path.display()));
+                    }
+                    JobEvent::Warning { .. } => {}
+                    JobEvent::Done(summary) => {
+                        job.done = Some(summary.outcome);
+                        job.errors = summary.errors.len();
+                        if let Some((path, error)) = summary.errors.first() {
+                            job.last_error = Some(format!("{}: {error}", path.display()));
+                        }
+                        finished_dirs.push(job.dest_dir.clone());
+                        finished_dirs.extend(job.src_parents.iter().cloned());
+                    }
+                }
+            }
+        }
+
+        // Clean finished jobs disappear on their own; failed ones persist until
+        // dismissed so the error is actually seen.
+        self.jobs
+            .retain(|job| !(job.done.is_some() && job.errors == 0));
+
+        if !finished_dirs.is_empty() {
+            for pane in &self.panes {
+                let pane_dir = pane.read(cx).dir().to_path_buf();
+                if finished_dirs.contains(&pane_dir) {
+                    pane.update(cx, |pane, cx| pane.refresh(cx));
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Raise the overwrite dialog. The engine's worker is blocked (cancel-aware)
+    /// until `reply` is answered; the UI thread never blocks.
+    ///
+    /// gpui has no native dialogs on Wayland; `window.prompt` falls back to a
+    /// gpui-rendered in-window modal automatically.
+    fn prompt_for_conflict(
+        src: PathBuf,
+        dest: PathBuf,
+        reply: std::sync::mpsc::Sender<ConflictDecision>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = dest
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let detail = format!(
+            "Pasting \"{}\" into \"{}\"",
+            src.display(),
+            dest.parent().map(|p| p.display().to_string()).unwrap_or_default(),
+        );
+
+        let answers = ["Replace", "Replace All", "Skip", "Skip All", "Keep Both", "Cancel"];
+        let rx = window.prompt(
+            PromptLevel::Warning,
+            &format!("\"{name}\" already exists"),
+            Some(&detail),
+            &answers,
+            cx,
+        );
+        cx.spawn(async move |_, _| {
+            let decision = match rx.await {
+                Ok(0) => ConflictDecision::Apply {
+                    choice: ConflictChoice::Overwrite,
+                    apply_to_all: false,
+                },
+                Ok(1) => ConflictDecision::Apply {
+                    choice: ConflictChoice::Overwrite,
+                    apply_to_all: true,
+                },
+                Ok(2) => ConflictDecision::Apply {
+                    choice: ConflictChoice::Skip,
+                    apply_to_all: false,
+                },
+                Ok(3) => ConflictDecision::Apply {
+                    choice: ConflictChoice::Skip,
+                    apply_to_all: true,
+                },
+                Ok(4) => ConflictDecision::Apply {
+                    choice: ConflictChoice::KeepBoth,
+                    apply_to_all: false,
+                },
+                _ => ConflictDecision::CancelJob,
+            };
+            let _ = reply.send(decision);
+        })
+        .detach();
+    }
+
+    fn new_folder(&mut self, _: &NewFolder, _window: &mut Window, cx: &mut Context<Self>) {
+        let dir = self.active_pane.read(cx).dir().to_path_buf();
+        let mut candidate = dir.join("New Folder");
+        let mut n = 1;
+        while candidate.exists() {
+            n += 1;
+            candidate = dir.join(format!("New Folder {n}"));
+        }
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => self.active_pane.update(cx, |pane, cx| pane.refresh(cx)),
+            Err(err) => eprintln!("[pane] new folder failed: {err}"),
+        }
+    }
+
+    fn dismiss_jobs(&mut self, _: &DismissJobs, _window: &mut Window, cx: &mut Context<Self>) {
+        self.jobs.retain(|job| job.done.is_none());
+        cx.notify();
+    }
+
+    fn render_job_strip(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let colors = cx.theme().colors();
+        let text = colors.text;
+        let muted = colors.text_muted;
+        let error_color = cx.theme().status().error;
+        let bar_bg = colors.element_background;
+        let bar_fill = colors.border_selected;
+
+        let rows: Vec<_> = self
+            .jobs
+            .iter()
+            .enumerate()
+            .map(|(ix, job)| {
+                let progress = job.handle.progress();
+                let bytes_done = progress
+                    .bytes_done
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let bytes_total = progress
+                    .bytes_total
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let walk_complete = progress
+                    .walk_complete
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let phase =
+                    Phase::from_u8(progress.phase.load(std::sync::atomic::Ordering::Relaxed));
+
+                let status = match (job.done, phase) {
+                    (Some(Outcome::Cancelled), _) => "cancelled".to_string(),
+                    (Some(_), _) if job.errors > 0 => {
+                        job.last_error.clone().unwrap_or_else(|| "errors".into())
+                    }
+                    (Some(_), _) => "done".to_string(),
+                    (None, Phase::Flushing) => "flushing to device…".to_string(),
+                    (None, Phase::AwaitingConflict) => "waiting for answer…".to_string(),
+                    _ => format!(
+                        "{} / {}",
+                        fs::format_size(bytes_done),
+                        if walk_complete {
+                            fs::format_size(bytes_total)
+                        } else {
+                            "…".to_string()
+                        }
+                    ),
+                };
+
+                let fraction = if walk_complete && bytes_total > 0 {
+                    (bytes_done as f32 / bytes_total as f32).clamp(0., 1.)
+                } else if job.done.is_some() {
+                    1.
+                } else {
+                    0. // indeterminate until the walk finishes; no backwards bars
+                };
+
+                let is_done = job.done.is_some();
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .h(px(26.))
+                    .text_xs()
+                    .text_color(text)
+                    .child(
+                        div()
+                            .flex_none()
+                            .max_w(px(280.))
+                            .truncate()
+                            .child(job.handle.label().to_string()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .h(px(4.))
+                            .rounded_sm()
+                            .bg(bar_bg)
+                            .child(div().h_full().rounded_sm().bg(bar_fill).w(relative(fraction))),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .max_w(px(320.))
+                            .truncate()
+                            .text_color(if job.errors > 0 { error_color } else { muted })
+                            .child(status),
+                    )
+                    .child(
+                        div()
+                            .id(("job-x", ix))
+                            .flex_none()
+                            .px_1()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(colors.element_hover))
+                            .child(if is_done { "dismiss" } else { "✕" })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(job) = this.jobs.get(ix) {
+                                    if job.done.is_some() {
+                                        this.jobs.remove(ix);
+                                    } else {
+                                        job.handle.cancel();
+                                    }
+                                    cx.notify();
+                                }
+                            })),
+                    )
+            })
+            .collect();
+
+        div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .bg(colors.title_bar_background)
+            .border_t_1()
+            .border_color(colors.border)
+            .children(rows)
+    }
+
+    // ---- split/focus handlers --------------------------------------------
+
+    fn split_left(&mut self, _: &SplitLeft, window: &mut Window, cx: &mut Context<Self>) {
+        self.split(SplitDirection::Left, window, cx);
+    }
+    fn split_right(&mut self, _: &SplitRight, window: &mut Window, cx: &mut Context<Self>) {
+        self.split(SplitDirection::Right, window, cx);
+    }
+    fn split_up(&mut self, _: &SplitUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.split(SplitDirection::Up, window, cx);
+    }
+    fn split_down(&mut self, _: &SplitDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.split(SplitDirection::Down, window, cx);
+    }
+
+    fn focus_left(&mut self, _: &FocusLeft, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate_in_direction(SplitDirection::Left, window, cx);
+    }
+    fn focus_right(&mut self, _: &FocusRight, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate_in_direction(SplitDirection::Right, window, cx);
+    }
+    fn focus_up(&mut self, _: &FocusUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate_in_direction(SplitDirection::Up, window, cx);
+    }
+    fn focus_down(&mut self, _: &FocusDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate_in_direction(SplitDirection::Down, window, cx);
+    }
+
+    fn close_pane(&mut self, _: &ClosePane, window: &mut Window, cx: &mut Context<Self>) {
+        let pane = self.active_pane.clone();
+        self.remove_pane(&pane, window, cx);
+    }
+}
+
+impl Focusable for Workspace {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for Workspace {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Bindings are scoped to the focused pane's "DirPane" context, but the actions
+        // bubble from the focused pane up to here, so the handlers live on the
+        // workspace where the active pane is known.
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::split_left))
+            .on_action(cx.listener(Self::split_right))
+            .on_action(cx.listener(Self::split_up))
+            .on_action(cx.listener(Self::split_down))
+            .on_action(cx.listener(Self::focus_left))
+            .on_action(cx.listener(Self::focus_right))
+            .on_action(cx.listener(Self::focus_up))
+            .on_action(cx.listener(Self::focus_down))
+            .on_action(cx.listener(Self::close_pane))
+            .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::cut))
+            .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::dismiss_jobs))
+            .on_action(cx.listener(Self::new_folder))
+            .child(self.center.render(&self.active_pane, window, cx))
+            .when(!self.jobs.is_empty(), |el| {
+                el.child(self.render_job_strip(cx))
+            })
+    }
+}
