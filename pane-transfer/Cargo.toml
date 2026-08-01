@@ -12,7 +12,11 @@ description = "Tiered file transfer engine: rename, reflink, plain copy — bori
 # rustix is already in the app's graph at 1.x with `fs` enabled (via gpui's smol
 # chain), so this dependency is pure feature unification.
 [dependencies]
-rustix = { version = "1.1", features = ["fs"] }
+rustix = { version = "1.1", features = ["fs", "process"] }
+# Only for the trash spec's DeletionDate, which is mandated to be *local* time —
+# std gives UTC epoch seconds and no timezone database. Already in the app's
+# graph (fs.rs formats mtimes with it), so this adds nothing to the tree.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -4759,6 +4759,7 @@ dependencies = [
 name = "pane-transfer"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "rustix 1.1.4",
  "tempfile",
 ]

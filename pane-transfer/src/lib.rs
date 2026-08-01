@@ -18,6 +18,7 @@ mod events;
 mod job;
 mod meta;
 mod sys;
+mod trash;
 
 pub use events::{
     ConflictChoice, ConflictDecision, Event, JobSummary, Operation, Outcome, Stage, TierStats,
@@ -25,3 +26,4 @@ pub use events::{
 };
 pub use job::{JobHandle, JobId, JobPolicy, JobSpec, Phase, Progress, spawn_job};
 pub use sys::{is_partial_name, rename_no_replace, stem_end};
+pub use trash::{TrashedItem, restore, trash};

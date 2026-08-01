@@ -246,6 +246,36 @@ impl DirPane {
         self.reload(cx);
     }
 
+    /// Select these names once the next listing lands.
+    pub fn select_on_next_load(&mut self, names: Vec<String>) {
+        self.pending_select = names;
+    }
+
+    /// Aim the selection at whatever survives `removed`, then re-list.
+    ///
+    /// Deleting the row under the cursor and landing on nothing loses your
+    /// place in a long listing, so the selection walks forward to the next
+    /// survivor — or back to the previous one when the removed items were at
+    /// the end. The listing still holds the departing entries at this point,
+    /// which is what makes "next" meaningful.
+    pub fn select_after_removal(&mut self, removed: &[PathBuf], cx: &mut Context<Self>) {
+        let gone: Vec<&std::ffi::OsStr> = removed.iter().filter_map(|p| p.file_name()).collect();
+        let surviving = |entry: &DirEntry| !gone.iter().any(|name| *name == entry.name.as_str());
+
+        let first_gone = self
+            .entries
+            .iter()
+            .position(|entry| !surviving(entry))
+            .unwrap_or(0);
+        let successor = self.entries[first_gone..]
+            .iter()
+            .find(|entry| surviving(entry))
+            .or_else(|| self.entries[..first_gone].iter().rev().find(|e| surviving(e)));
+
+        self.pending_select = successor.map(|entry| vec![entry.name.clone()]).unwrap_or_default();
+        self.reload(cx);
+    }
+
     /// Summon the context menu at `position` (window coords, from the mouse event).
     fn open_context_menu(
         &mut self,
@@ -282,6 +312,10 @@ impl DirPane {
             items.push(MenuItem::action(
                 "Rename",
                 dispatch(Box::new(RenameSelected)),
+            ));
+            items.push(MenuItem::action(
+                "Delete",
+                dispatch(Box::new(workspace::Delete)),
             ));
             items.push(MenuItem::Separator);
             items.push(MenuItem::action("Cut", dispatch(Box::new(workspace::Cut))));

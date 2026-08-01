@@ -8,7 +8,7 @@ use gpui::{
 };
 use pane_transfer::{
     ConflictDecision, Event as JobEvent, JobHandle, JobId, JobPolicy, JobSpec, Operation, Outcome,
-    Phase,
+    Phase, TrashedItem,
 };
 use theme::ActiveTheme;
 
@@ -36,8 +36,35 @@ actions!(
         Paste,
         DismissJobs,
         NewFolder,
+        Delete,
+        Undo,
     ]
 );
+
+/// A one-line status-strip message for work with no job to attach to.
+/// `Problem` is coloured as an error; `Info` is not, because "nothing to undo"
+/// is an answer, not a failure.
+enum Notice {
+    Info(String),
+    Problem(String),
+}
+
+impl Notice {
+    fn text(&self) -> &str {
+        match self {
+            Notice::Info(text) | Notice::Problem(text) => text,
+        }
+    }
+
+    fn is_problem(&self) -> bool {
+        matches!(self, Notice::Problem(_))
+    }
+}
+
+/// How many deletions `Undo` can walk back through. Deep enough that a burst of
+/// mistakes is recoverable, shallow enough that the trash entries a session
+/// pins open stay bounded.
+const UNDO_DEPTH: usize = 32;
 
 const JOB_POLL_INTERVAL: Duration = Duration::from_millis(120);
 
@@ -76,6 +103,10 @@ pub struct Workspace {
     /// interoperate with other applications.
     clipboard: Option<ClipboardSet>,
     jobs: Vec<JobView>,
+    /// Deletions, newest last. Each entry is one `Delete` press, so undo
+    /// restores a multi-selection in one go.
+    undo_stack: Vec<Vec<TrashedItem>>,
+    notice: Option<Notice>,
     poll_task: Option<Task<()>>,
     /// Conflicts wait here while one dialog is up; one worker blocks per job,
     /// so concurrent jobs can queue several. Tagged with the job so cancelling
@@ -97,6 +128,8 @@ impl Workspace {
             pane_subscriptions: HashMap::from([(pane.entity_id(), subscription)]),
             clipboard: None,
             jobs: Vec::new(),
+            undo_stack: Vec::new(),
+            notice: None,
             poll_task: None,
             pending_conflicts: VecDeque::new(),
             conflict_dialog: None,
@@ -416,6 +449,146 @@ impl Workspace {
         }
     }
 
+    /// Delete the active pane's selection by moving it to the trash directory,
+    /// which is what makes `Undo` possible — an unlinked file cannot come back.
+    ///
+    /// There is deliberately no confirmation dialog: undo is the safety net, and
+    /// a dialog that is always dismissed protects nobody.
+    fn delete(&mut self, _: &Delete, cx: &mut Context<Self>) {
+        let paths = self.active_pane.read(cx).selected_paths();
+        if paths.is_empty() {
+            return;
+        }
+        let parents = parent_dirs(&paths);
+        let pane = self.active_pane.clone();
+
+        // Each item is a rename, so this is fast — but "fast" is a property of
+        // the filesystem, and a stalled network mount must not take the UI with
+        // it.
+        cx.spawn(async move |this, cx| {
+            let results = cx
+                .background_spawn(async move {
+                    paths
+                        .into_iter()
+                        .map(|path| pane_transfer::trash(&path).map_err(|err| (path, err)))
+                        .collect::<Vec<_>>()
+                })
+                .await;
+
+            let _ = this.update(cx, |this, cx| {
+                let mut trashed = Vec::new();
+                let mut failures = Vec::new();
+                for result in results {
+                    match result {
+                        Ok(item) => trashed.push(item),
+                        Err(failure) => failures.push(failure),
+                    }
+                }
+
+                if !trashed.is_empty() {
+                    let names: Vec<PathBuf> =
+                        trashed.iter().map(|item| item.original.clone()).collect();
+                    pane.update(cx, |pane, cx| pane.select_after_removal(&names, cx));
+                    this.undo_stack.push(trashed);
+                    if this.undo_stack.len() > UNDO_DEPTH {
+                        this.undo_stack.remove(0);
+                    }
+                }
+                this.set_notice(delete_failure_notice(&failures), cx);
+                this.refresh_dirs(&parents, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Put the most recent deletion back.
+    fn undo(&mut self, _: &Undo, cx: &mut Context<Self>) {
+        let Some(batch) = self.undo_stack.pop() else {
+            self.set_notice(Some(Notice::Info("Nothing to undo".to_string())), cx);
+            return;
+        };
+        let parents = parent_dirs(&batch.iter().map(|i| i.original.clone()).collect::<Vec<_>>());
+
+        cx.spawn(async move |this, cx| {
+            let (restored, failures) = cx
+                .background_spawn(async move {
+                    let mut restored = Vec::new();
+                    let mut failures = Vec::new();
+                    for item in batch {
+                        match pane_transfer::restore(&item) {
+                            Ok(()) => restored.push(item.original),
+                            Err(err) => failures.push((item, err)),
+                        }
+                    }
+                    (restored, failures)
+                })
+                .await;
+
+            let _ = this.update(cx, |this, cx| {
+                // Anything that could not go back stays on the stack, so a
+                // second ctrl-z retries it rather than losing the record.
+                if !failures.is_empty() {
+                    let (first_path, first_err) = failures
+                        .first()
+                        .map(|(item, err)| (item.original.clone(), err.to_string()))
+                        .unwrap();
+                    this.undo_stack
+                        .push(failures.into_iter().map(|(item, _)| item).collect());
+                    this.set_notice(
+                        Some(Notice::Problem(format!(
+                            "Could not restore {}: {first_err}",
+                            file_label(&first_path)
+                        ))),
+                        cx,
+                    );
+                } else {
+                    this.set_notice(None, cx);
+                }
+                if !restored.is_empty() {
+                    this.select_in_panes(&restored, cx);
+                }
+                this.refresh_dirs(&parents, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Set or clear the strip's message. Clearing is a no-op when there is
+    /// nothing to clear, so routine work does not repaint the strip.
+    fn set_notice(&mut self, notice: Option<Notice>, cx: &mut Context<Self>) {
+        if notice.is_none() && self.notice.is_none() {
+            return;
+        }
+        self.notice = notice;
+        cx.notify();
+    }
+
+    /// Re-list every pane showing one of `dirs`.
+    fn refresh_dirs(&mut self, dirs: &[PathBuf], cx: &mut Context<Self>) {
+        for pane in &self.panes {
+            let pane_dir = pane.read(cx).dir().to_path_buf();
+            if dirs.contains(&pane_dir) {
+                pane.update(cx, |pane, cx| pane.refresh(cx));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Put the selection back on restored items, in whichever pane shows them.
+    fn select_in_panes(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        for pane in &self.panes {
+            let pane_dir = pane.read(cx).dir().to_path_buf();
+            let names: Vec<String> = paths
+                .iter()
+                .filter(|p| p.parent() == Some(pane_dir.as_path()))
+                .map(|p| file_label(p))
+                .collect();
+            if !names.is_empty() {
+                pane.update(cx, |pane, _| pane.select_on_next_load(names));
+            }
+        }
+    }
+
     fn dismiss_jobs(&mut self, _: &DismissJobs, _window: &mut Window, cx: &mut Context<Self>) {
         let dropped: Vec<JobId> = self
             .jobs
@@ -552,6 +725,40 @@ impl Workspace {
             .bg(colors.title_bar_background)
             .border_t_1()
             .border_color(colors.border)
+            .when_some(self.notice.as_ref(), |el, notice| {
+                let color = if notice.is_problem() { error_color } else { muted };
+                el.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .h(px(26.))
+                        .text_xs()
+                        .child(
+                            div()
+                                .flex_1()
+                                .truncate()
+                                .text_color(color)
+                                .child(notice.text().to_string()),
+                        )
+                        .child(
+                            div()
+                                .id("notice-x")
+                                .flex_none()
+                                .px_1()
+                                .text_color(muted)
+                                .cursor_pointer()
+                                .hover(|s| s.bg(colors.element_hover))
+                                .child("dismiss")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.notice = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
             .children(rows)
     }
 
@@ -589,6 +796,30 @@ impl Workspace {
     }
 }
 
+fn parent_dirs(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = paths
+        .iter()
+        .filter_map(|p| p.parent().map(std::path::Path::to_path_buf))
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+fn file_label(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn delete_failure_notice(failures: &[(PathBuf, std::io::Error)]) -> Option<Notice> {
+    let (path, err) = failures.first()?;
+    Some(Notice::Problem(match failures.len() {
+        1 => format!("Could not delete {}: {err}", file_label(path)),
+        n => format!("Could not delete {n} items. {}: {err}", file_label(path)),
+    }))
+}
+
 impl Focusable for Workspace {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -619,8 +850,10 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::dismiss_jobs))
             .on_action(cx.listener(Self::new_folder))
+            .on_action(cx.listener(|this, action, _, cx| this.delete(action, cx)))
+            .on_action(cx.listener(|this, action, _, cx| this.undo(action, cx)))
             .child(self.center.render(&self.active_pane, window, cx))
-            .when(!self.jobs.is_empty(), |el| {
+            .when(!self.jobs.is_empty() || self.notice.is_some(), |el| {
                 el.child(self.render_job_strip(cx))
             })
             .when_some(self.conflict_dialog.clone(), |el, dialog| {

@@ -24,7 +24,7 @@ use file_menu::{Cancel as MenuCancel, Confirm as MenuConfirm, SelectNext, Select
 use path_editor as ab;
 use workspace::{
     ClosePane, Copy, Cut, DismissJobs, FocusDown, FocusLeft, FocusRight, FocusUp, Paste,
-    SplitDown, SplitLeft, SplitRight, SplitUp, Workspace,
+    SplitDown, SplitLeft, SplitRight, SplitUp, Undo, Workspace,
 };
 
 struct Args {
@@ -123,6 +123,8 @@ fn main() {
             KeyBinding::new("ctrl-v", Paste, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-a", SelectAll, Some("DirPane && !AddressBar")),
             KeyBinding::new("escape", ClearSelection, Some("DirPane && !AddressBar")),
+            KeyBinding::new("delete", workspace::Delete, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-z", Undo, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-shift-d", DismissJobs, Some("DirPane && !AddressBar")),
             // Address-bar editing. Every binding here MUST have a matching
             // on_action listener on the editor div, or it silently falls
