@@ -664,8 +664,8 @@ impl Workspace {
                         .update(cx, |pane, cx| pane.navigate_to(path.clone(), cx));
                     window.focus(&this.active_pane.focus_handle(cx), cx);
                 }
-                PlaceEvent::Failed(message) => {
-                    this.set_notice(Some(Notice::Problem(message.clone())), cx)
+                PlaceEvent::Mount { device, label } => {
+                    this.mount_and_open(device.clone(), label.clone(), cx)
                 }
             }
         })
@@ -675,6 +675,34 @@ impl Workspace {
         window.focus(&query_focus, cx);
         self.places = Some(finder);
         cx.notify();
+    }
+
+    /// Mount a volume, then point the active pane at it.
+    ///
+    /// Runs here rather than in the finder because the finder dismisses the
+    /// moment a place is chosen. `udisksctl` waits on udisks and polkit and can
+    /// take seconds or raise an authentication prompt, so the call itself goes
+    /// to the background and the strip says what is happening meanwhile.
+    fn mount_and_open(&mut self, device: PathBuf, label: String, cx: &mut Context<Self>) {
+        self.set_notice(Some(Notice::Info(format!("Mounting {label}…"))), cx);
+
+        cx.spawn(async move |this, cx| {
+            let mounted = cx
+                .background_spawn(async move { crate::places::mount(&device) })
+                .await;
+            let _ = this.update(cx, |this, cx| match mounted {
+                Ok(path) => {
+                    this.set_notice(None, cx);
+                    this.active_pane
+                        .update(cx, |pane, cx| pane.navigate_to(path, cx));
+                }
+                Err(err) => this.set_notice(
+                    Some(Notice::Problem(format!("Could not mount {label}: {err}"))),
+                    cx,
+                ),
+            });
+        })
+        .detach();
     }
 
     fn dismiss_jobs(&mut self, _: &DismissJobs, _window: &mut Window, cx: &mut Context<Self>) {

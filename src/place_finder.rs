@@ -26,8 +26,14 @@ const MAX_VISIBLE_ROWS: f32 = 10.;
 pub enum PlaceEvent {
     /// Point the active pane here.
     Open(PathBuf),
-    /// Mounting failed, or the volume vanished.
-    Failed(String),
+    /// Mount this volume, then go there.
+    ///
+    /// The finder does not mount it itself: it dismisses as soon as a place is
+    /// chosen, and a dismissed entity is dropped, so anything waiting on a
+    /// background task through a handle to it never reports back. The mount
+    /// succeeded and the navigation was thrown away. The workspace outlives the
+    /// modal, so the work belongs there.
+    Mount { device: PathBuf, label: String },
 }
 
 pub struct PlaceFinder {
@@ -125,23 +131,8 @@ impl PlaceFinder {
                 cx.emit(DismissEvent);
             }
             Place::Volume { device, label, .. } => {
-                // Mounting shells out and waits on udisks and polkit, which can
-                // take seconds and may raise an authentication prompt, so it
-                // never runs on the UI thread. The finder closes immediately
-                // rather than sitting there looking hung.
+                cx.emit(PlaceEvent::Mount { device, label });
                 cx.emit(DismissEvent);
-                cx.spawn(async move |this, cx| {
-                    let mounted = cx
-                        .background_spawn(async move { places::mount(&device) })
-                        .await;
-                    let _ = this.update(cx, |_, cx| match mounted {
-                        Ok(path) => cx.emit(PlaceEvent::Open(path)),
-                        Err(err) => cx.emit(PlaceEvent::Failed(format!(
-                            "Could not mount {label}: {err}"
-                        ))),
-                    });
-                })
-                .detach();
             }
         }
     }
