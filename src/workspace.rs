@@ -14,6 +14,7 @@ use theme::ActiveTheme;
 
 use crate::clipboard::{self, ClipboardSet};
 use crate::command_palette::{self, CommandPalette};
+use crate::place_finder::{self, PlaceEvent, PlaceFinder};
 use crate::conflict_dialog::ConflictDialog;
 use crate::dir_pane::{DirPane, PaneEvent};
 use crate::fs::ViewSettings;
@@ -109,6 +110,7 @@ pub struct Workspace {
     undo_stack: Vec<Vec<TrashedItem>>,
     notice: Option<Notice>,
     palette: Option<Entity<CommandPalette>>,
+    places: Option<Entity<PlaceFinder>>,
     poll_task: Option<Task<()>>,
     /// Conflicts wait here while one dialog is up; one worker blocks per job,
     /// so concurrent jobs can queue several. Tagged with the job so cancelling
@@ -133,6 +135,7 @@ impl Workspace {
             undo_stack: Vec::new(),
             notice: None,
             palette: None,
+            places: None,
             poll_task: None,
             pending_conflicts: VecDeque::new(),
             conflict_dialog: None,
@@ -630,6 +633,50 @@ impl Workspace {
         cx.notify();
     }
 
+    /// `ctrl-p`. Jump to home, a bookmark, or an attached volume.
+    fn toggle_places(
+        &mut self,
+        _: &place_finder::Toggle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.places.take().is_some() {
+            window.focus(&self.active_pane.focus_handle(cx), cx);
+            cx.notify();
+            return;
+        }
+
+        let finder = cx.new(|cx| PlaceFinder::new(window, cx));
+
+        cx.subscribe_in(&finder, window, |this, _, _: &DismissEvent, window, cx| {
+            this.places = None;
+            window.focus(&this.active_pane.focus_handle(cx), cx);
+            cx.notify();
+        })
+        .detach();
+        // Mounting outlives the finder's own dismissal, so this subscription
+        // has to survive it: the entity is kept alive by the closure below
+        // until it reports back.
+        cx.subscribe_in(&finder, window, |this, _, event: &PlaceEvent, window, cx| {
+            match event {
+                PlaceEvent::Open(path) => {
+                    this.active_pane
+                        .update(cx, |pane, cx| pane.navigate_to(path.clone(), cx));
+                    window.focus(&this.active_pane.focus_handle(cx), cx);
+                }
+                PlaceEvent::Failed(message) => {
+                    this.set_notice(Some(Notice::Problem(message.clone())), cx)
+                }
+            }
+        })
+        .detach();
+
+        let query_focus = finder.read(cx).query_focus(cx);
+        window.focus(&query_focus, cx);
+        self.places = Some(finder);
+        cx.notify();
+    }
+
     fn dismiss_jobs(&mut self, _: &DismissJobs, _window: &mut Window, cx: &mut Context<Self>) {
         let dropped: Vec<JobId> = self
             .jobs
@@ -894,6 +941,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, action, _, cx| this.delete(action, cx)))
             .on_action(cx.listener(|this, action, _, cx| this.undo(action, cx)))
             .on_action(cx.listener(Self::toggle_palette))
+            .on_action(cx.listener(Self::toggle_places))
             .child(self.center.render(&self.active_pane, window, cx))
             .when(!self.jobs.is_empty() || self.notice.is_some(), |el| {
                 el.child(self.render_job_strip(cx))
@@ -921,6 +969,25 @@ impl Render for Workspace {
                             cx.notify();
                         }))
                         .child(palette),
+                )
+            })
+            .when_some(self.places.clone(), |el, finder| {
+                el.child(
+                    div()
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(hsla(0., 0., 0., 0.45))
+                        .flex()
+                        .justify_center()
+                        .items_start()
+                        .pt(px(80.))
+                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
+                            this.places = None;
+                            window.focus(&this.active_pane.focus_handle(cx), cx);
+                            cx.notify();
+                        }))
+                        .child(finder),
                 )
             })
             .when_some(self.conflict_dialog.clone(), |el, dialog| {

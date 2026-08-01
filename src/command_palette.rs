@@ -21,15 +21,15 @@
 
 use std::collections::HashMap;
 
-use fuzzy_nucleo::{Case, LengthPenalty, StringMatch, StringMatchCandidate, match_strings};
+use fuzzy_nucleo::{StringMatch, StringMatchCandidate};
 use gpui::{
-    Action, App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, HighlightStyle,
-    StyledText, Subscription, UniformListScrollHandle, Window, actions, div, prelude::*, px,
-    uniform_list,
+    Action, App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Subscription,
+    UniformListScrollHandle, Window, actions, div, prelude::*, px, uniform_list,
 };
 use theme::ActiveTheme;
 
 use crate::path_editor::{PathEditor, PathEditorEvent};
+use crate::picker::{highlighted_label, match_entries};
 
 actions!(palette, [Toggle]);
 
@@ -250,26 +250,9 @@ impl CommandPalette {
         let raw = self.query.read(cx).text().to_string();
         let query = normalize_action_query(&raw);
 
-        self.matches = if query.is_empty() {
-            // No query: show everything in recency order.
-            self.candidates
-                .iter()
-                .map(|candidate| StringMatch {
-                    candidate_id: candidate.id,
-                    score: 0.,
-                    positions: Vec::new(),
-                    string: candidate.string.clone(),
-                })
-                .collect()
-        } else {
-            match_strings(
-                &self.candidates,
-                &query,
-                Case::smart_if_uppercase_in(&query),
-                LengthPenalty::On,
-                usize::MAX,
-            )
-        };
+        // An empty query keeps recency order, which is why the candidates were
+        // built in that order.
+        self.matches = match_entries(&self.candidates, &query);
         self.selected = 0;
         self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
         cx.notify();
@@ -489,24 +472,6 @@ impl CommandPalette {
         };
         let selected = ix == self.selected;
 
-        // Matched characters in the accent colour. These are BYTE offsets; a
-        // char-index reading here is a rendering bug on any non-ASCII name.
-        let mut label_style = window.text_style();
-        label_style.color = colors.text;
-
-        let highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = matched
-            .ranges()
-            .map(|range| {
-                (
-                    range,
-                    HighlightStyle {
-                        color: Some(colors.text_accent),
-                        ..Default::default()
-                    },
-                )
-            })
-            .collect();
-
         let keycaps: Vec<_> = command
             .keystrokes
             .iter()
@@ -549,12 +514,10 @@ impl CommandPalette {
                 this.confirm(&Confirm, window, cx);
             }))
             .child(
-                div().flex_1().truncate().child(
-                    StyledText::new(command.name.clone()).with_default_highlights(
-                        &label_style,
-                        highlights,
-                    ),
-                ),
+                div()
+                    .flex_1()
+                    .truncate()
+                    .child(highlighted_label(command.name.clone(), matched, window, cx)),
             )
             .children(keycaps)
             .into_any_element()

@@ -123,7 +123,7 @@ fn file_uri(path: &std::path::Path) -> String {
     uri
 }
 
-fn uri_to_path(uri: &str) -> Option<PathBuf> {
+pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     // Strip an authority component (usually empty or localhost).
     let path_start = rest.find('/')?;

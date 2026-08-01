@@ -41,6 +41,10 @@ for important data.
 - **Command palette.** Press `ctrl-shift-p`, type part of a command name, and
   press enter. The list shows only the commands that apply right now, with
   their keys. Commands you use often move to the top.
+- **Places.** Press `ctrl-p` to go to your home directory, a bookmark, or an
+  attached drive. pane reads the same bookmarks file the GTK file dialogs use,
+  so what you bookmark in Files appears here with no setup. A drive that is
+  plugged in but not mounted is listed too; choosing it mounts the drive first.
 - **Live listings.** pane watches the directory it shows. If another program
   adds, removes, or changes a file, the pane re-lists and keeps your selection.
 - **Git status.** In a git repository, the colour of a file name shows its
@@ -128,6 +132,7 @@ not next to each other.
 | `ctrl-h` | Show or hide hidden files |
 | `ctrl-shift-d` | Dismiss finished transfers |
 | `ctrl-shift-p` | Open the command palette |
+| `ctrl-p` | Go to a place: home, a bookmark, or a drive |
 
 **Mouse**
 

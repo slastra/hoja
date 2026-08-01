@@ -11,6 +11,9 @@ mod icon;
 mod opener;
 mod pane_group;
 mod path_editor;
+mod picker;
+mod place_finder;
+mod places;
 mod theming;
 mod workspace;
 
@@ -28,6 +31,7 @@ use dir_pane::{
     SelectAll, ToggleHiddenFiles, ToggleSelection,
 };
 use command_palette as palette;
+use place_finder as places_finder;
 use file_menu::{Cancel as MenuCancel, Confirm as MenuConfirm, SelectNext, SelectPrevious};
 use path_editor as ab;
 use workspace::{
@@ -152,6 +156,7 @@ fn main() {
             // The palette toggles from anywhere, including from inside itself,
             // so it is not scoped to the pane.
             KeyBinding::new("ctrl-shift-p", palette::Toggle, None),
+            KeyBinding::new("ctrl-p", places_finder::Toggle, None),
             // Its own context, so menu and dialog keys cannot leak in. The
             // query field carries the AddressBar context inside this one, so
             // these must not collide with the editor's own bindings.
