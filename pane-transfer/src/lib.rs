@@ -24,4 +24,4 @@ pub use events::{
     TransferError,
 };
 pub use job::{JobHandle, JobId, JobPolicy, JobSpec, Phase, Progress, spawn_job};
-pub use sys::is_partial_name;
+pub use sys::{is_partial_name, rename_no_replace};

@@ -18,7 +18,7 @@ use crate::path_editor::{PathEditor, PathEditorEvent};
 use crate::icon::Icon;
 use crate::workspace;
 
-actions!(pane, [GoUp, OpenSelected, SelectAll, ClearSelection, NavBack, NavForward, GoHome, EditPath]);
+actions!(pane, [GoUp, OpenSelected, SelectAll, ClearSelection, NavBack, NavForward, GoHome, EditPath, RenameSelected]);
 
 const ROW_HEIGHT: f32 = 22.;
 const HEADER_HEIGHT: f32 = 24.;
@@ -111,6 +111,11 @@ pub struct DirPane {
     sort_task: Option<Task<()>>,
     context_menu: Option<(Point<Pixels>, Entity<FileMenu>)>,
     path_editor: Option<Entity<PathEditor>>,
+    /// Inline rename: the row index and its editor.
+    renaming: Option<(usize, Entity<PathEditor>)>,
+    /// After a reload, select the entry with this name (used to keep the
+    /// renamed entry selected once the listing refreshes).
+    pending_select: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -141,6 +146,8 @@ impl DirPane {
             sort_task: None,
             context_menu: None,
             path_editor: None,
+            renaming: None,
+            pending_select: None,
             _subscriptions: subscriptions,
         };
         this.reload(cx);
@@ -206,6 +213,11 @@ impl DirPane {
                 }
             }
             items.push(MenuItem::Separator);
+            items.push(MenuItem::action(
+                "Rename",
+                dispatch(Box::new(RenameSelected)),
+            ));
+            items.push(MenuItem::Separator);
             items.push(MenuItem::action("Cut", dispatch(Box::new(workspace::Cut))));
             items.push(MenuItem::action("Copy", dispatch(Box::new(workspace::Copy))));
         }
@@ -240,6 +252,9 @@ impl DirPane {
 
     fn select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
         self.selected = (0..self.entries.len()).collect();
+        if self.anchor_ix.is_none() && !self.entries.is_empty() {
+            self.anchor_ix = Some(0);
+        }
         cx.notify();
     }
 
@@ -281,7 +296,17 @@ impl DirPane {
                 }
                 this.selected.clear();
                 this.anchor_ix = None;
-                this.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
+                this.renaming = None;
+                if let Some(name) = this.pending_select.take()
+                    && let Some(ix) = this.entries.iter().position(|e| e.name == name)
+                {
+                    this.selected.insert(ix);
+                    this.anchor_ix = Some(ix);
+                    this.scroll
+                        .scroll_to_item(ix, gpui::ScrollStrategy::Center);
+                } else {
+                    this.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
+                }
                 // Without this the mutation lands but nothing repaints.
                 cx.notify();
             });
@@ -332,6 +357,7 @@ impl DirPane {
                 // Selected rows are almost certainly somewhere else now.
                 this.selected.clear();
                 this.anchor_ix = None;
+                this.renaming = None;
                 this.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
                 cx.notify();
             });
@@ -364,6 +390,78 @@ impl DirPane {
         if let Some(dir) = self.history.forward().map(Path::to_path_buf) {
             self.load_dir_only(dir, cx);
         }
+    }
+
+    fn rename_selected(
+        &mut self,
+        _: &RenameSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ix) = self.anchor_ix.filter(|&ix| ix < self.entries.len()) else {
+            return;
+        };
+        self.start_rename(ix, window, cx);
+    }
+
+    fn start_rename(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.entries.get(ix) else {
+            return;
+        };
+        let name = entry.name.clone();
+        let selection = fs::stem_range(&name);
+        let editor =
+            cx.new(|cx| PathEditor::new_with_selection(name, selection, window, cx));
+
+        cx.subscribe_in(&editor, window, |this, editor, event, window, cx| match event {
+            PathEditorEvent::Committed(text) => {
+                let Some((ix, _)) = this.renaming.clone() else {
+                    return;
+                };
+                match this.commit_rename(ix, text) {
+                    Ok(new_name) => {
+                        this.renaming = None;
+                        this.pending_select = Some(new_name);
+                        window.focus(&this.focus_handle, cx);
+                        this.reload(cx);
+                    }
+                    Err(_) => {
+                        editor.update(cx, |editor, cx| {
+                            editor.error = true;
+                            cx.notify();
+                        });
+                    }
+                }
+            }
+            PathEditorEvent::Cancelled => {
+                this.renaming = None;
+                window.focus(&this.focus_handle, cx);
+                cx.notify();
+            }
+        })
+        .detach();
+
+        window.focus(&editor.focus_handle(cx), cx);
+        self.renaming = Some((ix, editor));
+        cx.notify();
+    }
+
+    /// Returns the new name on success. `RENAME_NOREPLACE` refuses to clobber
+    /// an existing entry; filesystems without renameat2 support fall back to an
+    /// existence check plus a plain rename.
+    fn commit_rename(&self, ix: usize, new_name: &str) -> Result<String, ()> {
+        let entry = self.entries.get(ix).ok_or(())?;
+        let new_name = new_name.trim();
+        if fs::name_problem(new_name).is_some() {
+            return Err(());
+        }
+        if new_name == entry.name {
+            return Ok(entry.name.clone()); // no-op rename is a success
+        }
+        let target = self.dir.join(new_name);
+        pane_transfer::rename_no_replace(&entry.path, &target)
+            .map(|()| new_name.to_string())
+            .map_err(|_| ())
     }
 
     fn edit_path(&mut self, _: &EditPath, window: &mut Window, cx: &mut Context<Self>) {
@@ -631,6 +729,11 @@ impl DirPane {
     /// something with no borrows outstanding.
     fn render_entry(&self, ix: usize, cx: &Context<Self>) -> impl IntoElement + use<> {
         let entry = &self.entries[ix];
+        let rename_editor = self
+            .renaming
+            .as_ref()
+            .filter(|(renaming_ix, _)| *renaming_ix == ix)
+            .map(|(_, editor)| editor.clone());
         let selected = self.selected.contains(&ix);
         let is_dir = entry.is_dir;
         let path = entry.path.clone();
@@ -699,7 +802,13 @@ impl DirPane {
                     .gap_1p5()
                     .text_color(content)
                     .children(icon_path.map(|path| Icon::from_path(path, content)))
-                    .child(div().truncate().child(entry.name.clone())),
+                    .child(match rename_editor {
+                        Some(editor) => editor.into_any_element(),
+                        None => div()
+                            .truncate()
+                            .child(entry.name.clone())
+                            .into_any_element(),
+                    }),
             )
             .child(spacer())
             .child(cell(self.widths.size, size_label))
@@ -798,6 +907,7 @@ impl Render for DirPane {
             .on_action(cx.listener(Self::nav_forward))
             .on_action(cx.listener(Self::go_home))
             .on_action(cx.listener(Self::edit_path))
+            .on_action(cx.listener(Self::rename_selected))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::clear_selection))
             .on_mouse_down(

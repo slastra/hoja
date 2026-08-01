@@ -71,6 +71,19 @@ pub struct PathEditor {
 
 impl PathEditor {
     pub fn new(initial: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let len = initial.len();
+        // Pre-select everything: the common case is replacing the text.
+        Self::new_with_selection(initial, 0..len, window, cx)
+    }
+
+    /// `initial_selection` is a UTF-8 byte range. Rename uses this to select
+    /// the file stem and leave the extension in place.
+    pub fn new_with_selection(
+        initial: String,
+        initial_selection: std::ops::Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         // Focus loss cancels the edit; the pane restores its own focus.
         cx.on_blur(&focus_handle, window, |_, _, cx| {
@@ -79,11 +92,12 @@ impl PathEditor {
         .detach();
 
         let len = initial.len();
+        let selected_range =
+            initial_selection.start.min(len)..initial_selection.end.min(len);
         Self {
             focus_handle,
             content: initial.into(),
-            // Pre-select everything: the common case is replacing the path.
-            selected_range: 0..len,
+            selected_range,
             selection_reversed: false,
             marked_range: None,
             last_layout: None,

@@ -210,6 +210,36 @@ fn take_digits<'a>(
     &s[start..end]
 }
 
+/// Why a proposed file name cannot be used, or `None` when it is acceptable.
+pub fn name_problem(name: &str) -> Option<&'static str> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Some("the name is empty");
+    }
+    if name == "." || name == ".." {
+        return Some("the name is reserved");
+    }
+    if name.contains('/') {
+        return Some("the name contains a slash");
+    }
+    if name.contains('\0') {
+        return Some("the name contains a NUL byte");
+    }
+    None
+}
+
+/// The byte range of the stem, for pre-selection during rename.
+///
+/// `archive.tar.gz` → `archive`; `.bashrc` → the whole name (leading dots are
+/// part of the stem); `README` → the whole name.
+pub fn stem_range(name: &str) -> std::ops::Range<usize> {
+    let leading_dots = name.len() - name.trim_start_matches('.').len();
+    match name[leading_dots..].find('.') {
+        Some(ix) => 0..leading_dots + ix,
+        None => 0..name.len(),
+    }
+}
+
 /// Human-readable size for the listing's right-hand column.
 pub fn format_size(bytes: u64) -> String {
     const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
@@ -346,6 +376,26 @@ mod tests {
         // Re-sorting must not shuffle an already-sorted list.
         sort_entries(&mut v, sort);
         assert_eq!(names(&v), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn name_validation() {
+        assert!(name_problem("notes.txt").is_none());
+        assert!(name_problem(".hidden").is_none());
+        assert!(name_problem("with space").is_none());
+        assert!(name_problem("").is_some());
+        assert!(name_problem("   ").is_some());
+        assert!(name_problem(".").is_some());
+        assert!(name_problem("..").is_some());
+        assert!(name_problem("a/b").is_some());
+    }
+
+    #[test]
+    fn stem_ranges() {
+        assert_eq!(stem_range("archive.tar.gz"), 0..7);
+        assert_eq!(stem_range("notes.txt"), 0..5);
+        assert_eq!(stem_range("README"), 0..6);
+        assert_eq!(stem_range(".bashrc"), 0..7);
     }
 
     #[test]

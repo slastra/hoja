@@ -96,6 +96,30 @@ fn mounted_under_media(path: &Path) -> bool {
     p.starts_with("/run/media/") || p.starts_with("/media/") || p.starts_with("/mnt/")
 }
 
+/// Rename that refuses to clobber an existing destination.
+///
+/// Uses `renameat2(RENAME_NOREPLACE)`. Filesystems that do not support the
+/// flag return `EINVAL`; those fall back to an existence check plus a plain
+/// rename (a small race, but the best available there).
+pub fn rename_no_replace(old: &Path, new: &Path) -> std::io::Result<()> {
+    match rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        old,
+        rustix::fs::CWD,
+        new,
+        rustix::fs::RenameFlags::NOREPLACE,
+    ) {
+        Ok(()) => Ok(()),
+        Err(rustix::io::Errno::INVAL) => {
+            if new.symlink_metadata().is_ok() {
+                return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+            }
+            std::fs::rename(old, new)
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
 static PARTIAL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// In-progress destination name: hidden, uniquified, same directory as the final

@@ -18,7 +18,7 @@ use gpui_platform::application;
 use theme::LoadThemes;
 
 use assets::Assets;
-use dir_pane::{ClearSelection, EditPath, GoHome, GoUp, NavBack, NavForward, OpenSelected, SelectAll};
+use dir_pane::{ClearSelection, EditPath, GoHome, GoUp, NavBack, NavForward, OpenSelected, RenameSelected, SelectAll};
 use file_menu::{Cancel as MenuCancel, Confirm as MenuConfirm, SelectNext, SelectPrevious};
 use path_editor as ab;
 use workspace::{
@@ -105,6 +105,7 @@ fn main() {
             KeyBinding::new("alt-right", NavForward, Some("DirPane && !AddressBar")),
             KeyBinding::new("alt-home", GoHome, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-l", EditPath, Some("DirPane && !AddressBar")),
+            KeyBinding::new("f2", RenameSelected, Some("DirPane && !AddressBar")),
             KeyBinding::new("enter", OpenSelected, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-k ctrl-left", SplitLeft, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-k ctrl-right", SplitRight, Some("DirPane && !AddressBar")),

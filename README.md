@@ -63,6 +63,7 @@ The `PANE_THEME` environment variable also sets the theme.
 | `alt-↑` / `backspace` | Go to the parent directory |
 | `alt-home` | Go to the home directory |
 | `ctrl-l` | Edit the path |
+| `f2` | Rename the selected entry |
 | `enter` | Open the selected directory |
 | `ctrl-c` / `ctrl-x` / `ctrl-v` | Copy / cut / paste |
 | `ctrl-a` | Select all |
@@ -73,8 +74,8 @@ Mouse controls:
 - Click a row to select it. Control-click to add or remove a row.
   Shift-click to select a range.
 - Double-click a directory to open it.
-- Right-click for the context menu: Open, Open With, Cut, Copy, Paste, and
-  New Folder.
+- Right-click for the context menu: Open, Open With, Rename, Cut, Copy,
+  Paste, and New Folder.
 - Click a column header to sort. Click again to reverse the order.
 - Drag the line between column headers to resize a column.
 - The extra mouse buttons go back and forward in the history.
