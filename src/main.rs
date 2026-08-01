@@ -149,6 +149,9 @@ fn main() {
             KeyBinding::new("ctrl-v", ab::Paste, Some("AddressBar")),
             KeyBinding::new("enter", ab::Confirm, Some("AddressBar")),
             KeyBinding::new("escape", ab::CancelEdit, Some("AddressBar")),
+            // Modal dialogs: their own context, so menu navigation cannot leak in.
+            KeyBinding::new("escape", conflict_dialog::Cancel, Some("dialog")),
+            KeyBinding::new("enter", conflict_dialog::Confirm, Some("dialog")),
             // Context-menu navigation, scoped to the "menu" key context.
             KeyBinding::new("escape", MenuCancel, Some("menu")),
             KeyBinding::new("enter", MenuConfirm, Some("menu")),

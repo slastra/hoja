@@ -158,6 +158,12 @@ impl EventEmitter<DismissEvent> for FileMenu {}
 impl Render for FileMenu {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors();
+        // Slot reservation is a property of the menu, not the item: without it
+        // a plain item in a menu of toggles sits left of everything else.
+        let reserve_check_slot = self
+            .items
+            .iter()
+            .any(|item| matches!(item, MenuItem::Action { checked: Some(_), .. }));
 
         div()
             // Clicks on the menu must not fall through to rows underneath.
@@ -215,15 +221,16 @@ impl Render for FileMenu {
                                     cx.emit(DismissEvent);
                                 }))
                         })
-                        .when_some(checked, |el, is_checked| {
-                            el.child(
-                                div().w(px(14.)).flex_none().when(is_checked, |slot| {
+                        .when(reserve_check_slot, |el| {
+                            el.child(div().w(px(14.)).flex_none().when(
+                                checked == Some(true),
+                                |slot| {
                                     slot.child(crate::icon::Icon::from_path(
                                         "icons/file_icons/check.svg",
                                         colors.text,
                                     ))
-                                }),
-                            )
+                                },
+                            ))
                         })
                         .child(label.clone())
                         .into_any_element()

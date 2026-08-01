@@ -15,6 +15,7 @@ use theme::ActiveTheme;
 use crate::clipboard::{self, ClipboardSet};
 use crate::conflict_dialog::ConflictDialog;
 use crate::dir_pane::{DirPane, PaneEvent};
+use crate::fs::ViewSettings;
 use crate::fs;
 use crate::pane_group::{PaneGroup, SplitDirection};
 
@@ -72,13 +73,13 @@ pub struct Workspace {
     poll_task: Option<Task<()>>,
     /// Conflicts wait here while one dialog is up; one worker blocks per job,
     /// so concurrent jobs can queue several.
-    pending_conflicts: VecDeque<(PathBuf, PathBuf, std::sync::mpsc::Sender<ConflictDecision>)>,
+    pending_conflicts: VecDeque<(PathBuf, std::sync::mpsc::Sender<ConflictDecision>)>,
     conflict_dialog: Option<Entity<ConflictDialog>>,
 }
 
 impl Workspace {
     pub fn new(start_dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let pane = cx.new(|cx| DirPane::new(start_dir, window, cx));
+        let pane = cx.new(|cx| DirPane::new(start_dir, ViewSettings::default(), window, cx));
         let subscription = Self::subscribe_to_pane(&pane, window, cx);
 
         Self {
@@ -117,10 +118,11 @@ impl Workspace {
     fn add_pane(
         &mut self,
         dir: PathBuf,
+        view: ViewSettings,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<DirPane> {
-        let pane = cx.new(|cx| DirPane::new(dir, window, cx));
+        let pane = cx.new(|cx| DirPane::new(dir, view, window, cx));
         let subscription = Self::subscribe_to_pane(&pane, window, cx);
         self.pane_subscriptions
             .insert(pane.entity_id(), subscription);
@@ -133,12 +135,10 @@ impl Workspace {
         // The new pane inherits the source pane's directory, so a split is a cheap way
         // to get a second view of where you already are.
         let dir = self.active_pane.read(cx).dir().to_path_buf();
-        let (show_hidden, folders_first) = self.active_pane.read(cx).view_settings();
+        // Copied at construction, so the new pane reads the directory once.
+        let view = self.active_pane.read(cx).view_settings();
         let source = self.active_pane.clone();
-        let new_pane = self.add_pane(dir, window, cx);
-        new_pane.update(cx, |pane, cx| {
-            pane.set_view_settings(show_hidden, folders_first, cx);
-        });
+        let new_pane = self.add_pane(dir, view, window, cx);
         self.center.split(&source, &new_pane, direction);
         #[cfg(debug_assertions)]
         eprintln!("[pane] split {direction:?} -> {}", self.center.shape());
@@ -317,8 +317,8 @@ impl Workspace {
         for job in &mut self.jobs {
             while let Some(event) = job.handle.try_recv_event() {
                 match event {
-                    JobEvent::Conflict { src, dest, reply } => {
-                        self.pending_conflicts.push_back((src, dest, reply));
+                    JobEvent::Conflict { dest, reply, .. } => {
+                        self.pending_conflicts.push_back((dest, reply));
                     }
                     JobEvent::FileError { path, error } => {
                         job.errors += 1;
@@ -363,11 +363,11 @@ impl Workspace {
         if self.conflict_dialog.is_some() {
             return;
         }
-        let Some((src, dest, reply)) = self.pending_conflicts.pop_front() else {
+        let Some((dest, reply)) = self.pending_conflicts.pop_front() else {
             return;
         };
 
-        let dialog = cx.new(|cx| ConflictDialog::new(&src, &dest, reply, window, cx));
+        let dialog = cx.new(|cx| ConflictDialog::new(&dest, reply, window, cx));
         cx.subscribe_in(
             &dialog,
             window,

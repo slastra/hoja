@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use file_icons::FileIcons;
 use gpui::{
@@ -12,9 +13,8 @@ use gpui::{
 use theme::ActiveTheme;
 
 use crate::file_menu::{FileMenu, MenuItem};
-use crate::fs::{self, DirEntry, Sort, SortDir, SortKey};
+use crate::fs::{self, DirEntry, Sort, SortDir, SortKey, ViewSettings};
 use crate::history::History;
-use std::time::{Duration, Instant};
 use crate::path_editor::{PathEditor, PathEditorEvent};
 use crate::icon::Icon;
 use crate::workspace;
@@ -123,9 +123,7 @@ pub struct DirPane {
     scroll: UniformListScrollHandle,
     /// Per-pane, because panes in a split can be very different widths.
     widths: ColumnWidths,
-    sort: Sort,
-    show_hidden: bool,
-    folders_first: bool,
+    view: ViewSettings,
     /// Set when the directory could not be read at all (permissions, gone, not a dir).
     error: Option<String>,
     /// Held so that navigating away cancels an in-flight read by dropping its task.
@@ -139,15 +137,19 @@ pub struct DirPane {
     /// After a reload, select the entry with this name (used to keep the
     /// renamed entry selected once the listing refreshes).
     pending_select: Option<String>,
-    /// Type-ahead find: the accumulated prefix and the time of the last key.
-    /// The buffer resets lazily when a key arrives after the timeout.
-    type_ahead: String,
-    type_ahead_at: Option<Instant>,
+    /// Type-ahead find: the last keystroke's time and the accumulated prefix.
+    /// One value, so "no buffer" cannot disagree with "no timestamp".
+    type_ahead: Option<(Instant, String)>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl DirPane {
-    pub fn new(dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        dir: PathBuf,
+        view: ViewSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
 
         let subscriptions = vec![cx.on_focus_in(&focus_handle, window, |_, _, cx| {
@@ -167,9 +169,7 @@ impl DirPane {
             anchor_ix: None,
             scroll: UniformListScrollHandle::new(),
             widths: ColumnWidths::default(),
-            sort: Sort::default(),
-            show_hidden: false,
-            folders_first: true,
+            view,
             error: None,
             load_task: None,
             sort_task: None,
@@ -177,8 +177,7 @@ impl DirPane {
             path_editor: None,
             renaming: None,
             pending_select: None,
-            type_ahead: String::new(),
-            type_ahead_at: None,
+            type_ahead: None,
             _subscriptions: subscriptions,
         };
         this.reload(cx);
@@ -189,26 +188,13 @@ impl DirPane {
         &self.dir
     }
 
-    /// Splits copy the source pane's view settings.
-    pub fn view_settings(&self) -> (bool, bool) {
-        (self.show_hidden, self.folders_first)
-    }
-
-    pub fn set_view_settings(
-        &mut self,
-        show_hidden: bool,
-        folders_first: bool,
-        cx: &mut Context<Self>,
-    ) {
-        if (self.show_hidden, self.folders_first) != (show_hidden, folders_first) {
-            self.show_hidden = show_hidden;
-            self.folders_first = folders_first;
-            self.reload(cx);
-        }
+    /// Splits copy the source pane's view settings, sort included.
+    pub fn view_settings(&self) -> ViewSettings {
+        self.view
     }
 
     fn toggle_hidden(&mut self, _: &ToggleHiddenFiles, _w: &mut Window, cx: &mut Context<Self>) {
-        self.show_hidden = !self.show_hidden;
+        self.view.show_hidden = !self.view.show_hidden;
         self.reload(cx);
     }
 
@@ -218,7 +204,7 @@ impl DirPane {
         _w: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.folders_first = !self.folders_first;
+        self.view.folders_first = !self.view.folders_first;
         self.apply_sort(cx);
     }
 
@@ -309,30 +295,7 @@ impl DirPane {
             dispatch(Box::new(workspace::NewFolder)),
         ));
 
-        let menu = cx.new(|cx| FileMenu::new(items, window, cx));
-
-        cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {
-            this.context_menu = None;
-            // A menu item may have started an inline edit (Rename, path edit);
-            // refocusing the pane here would stomp the editor's focus.
-            if this.renaming.is_none() && this.path_editor.is_none() {
-                window.focus(&this.focus_handle, cx);
-            }
-            cx.notify();
-        })
-        .detach();
-
-        // Deferred draws join the dispatch tree a frame late; focusing the menu
-        // needs the double hop or the blur-dismiss fires immediately.
-        let menu_focus = menu.focus_handle(cx);
-        window.on_next_frame(move |window, _| {
-            window.on_next_frame(move |window, cx| {
-                window.focus(&menu_focus, cx);
-            });
-        });
-
-        self.context_menu = Some((position, menu));
-        cx.notify();
+        self.show_menu(items, position, window, cx);
     }
 
     /// The pane view menu behind the hamburger button.
@@ -354,33 +317,33 @@ impl DirPane {
         let items = vec![
             MenuItem::toggle(
                 "Show Hidden Files",
-                self.show_hidden,
+                self.view.show_hidden,
                 dispatch(Box::new(ToggleHiddenFiles)),
             ),
             MenuItem::toggle(
                 "Folders First",
-                self.folders_first,
+                self.view.folders_first,
                 dispatch(Box::new(ToggleFoldersFirst)),
             ),
             MenuItem::Separator,
             MenuItem::toggle(
                 "Sort by Name",
-                self.sort.key == SortKey::Name,
+                self.view.sort.key == SortKey::Name,
                 dispatch(Box::new(SortByName)),
             ),
             MenuItem::toggle(
                 "Sort by Size",
-                self.sort.key == SortKey::Size,
+                self.view.sort.key == SortKey::Size,
                 dispatch(Box::new(SortBySize)),
             ),
             MenuItem::toggle(
                 "Sort by Kind",
-                self.sort.key == SortKey::Kind,
+                self.view.sort.key == SortKey::Kind,
                 dispatch(Box::new(SortByKind)),
             ),
             MenuItem::toggle(
                 "Sort by Modified",
-                self.sort.key == SortKey::Modified,
+                self.view.sort.key == SortKey::Modified,
                 dispatch(Box::new(SortByModified)),
             ),
             MenuItem::Separator,
@@ -388,6 +351,12 @@ impl DirPane {
         ];
 
         self.show_menu(items, position, window, cx);
+    }
+
+    /// True while an inline editor owns the keyboard. New editors must be added
+    /// here rather than to each dismiss handler.
+    fn has_inline_editor(&self) -> bool {
+        self.renaming.is_some() || self.path_editor.is_some()
     }
 
     /// Shared summoning for the context and settings menus: build, subscribe,
@@ -405,7 +374,7 @@ impl DirPane {
             this.context_menu = None;
             // A menu item may have started an inline edit (Rename, path edit);
             // refocusing the pane here would stomp the editor's focus.
-            if this.renaming.is_none() && this.path_editor.is_none() {
+            if !this.has_inline_editor() {
                 window.focus(&this.focus_handle, cx);
             }
             cx.notify();
@@ -427,30 +396,28 @@ impl DirPane {
 
     /// Type-ahead: handle a printable key. Returns true when consumed.
     fn type_ahead_key(&mut self, key_char: &str, cx: &mut Context<Self>) -> bool {
-        // Reserve bare space for future use (preview); mid-buffer spaces are
-        // legitimate name characters ("New Folder").
-        if key_char == " " && self.type_ahead.is_empty() {
-            return false;
-        }
         const TIMEOUT: Duration = Duration::from_millis(1000);
         let now = Instant::now();
-        if self
-            .type_ahead_at
-            .is_none_or(|last| now.duration_since(last) > TIMEOUT)
-        {
-            self.type_ahead.clear();
+        // An expired buffer is already gone as far as the caller is concerned.
+        let mut buffer = match self.type_ahead.take() {
+            Some((last, buf)) if now.duration_since(last) <= TIMEOUT => buf,
+            _ => String::new(),
+        };
+        // Reserve bare space for future use (preview); mid-buffer spaces are
+        // legitimate name characters ("New Folder").
+        if key_char == " " && buffer.is_empty() {
+            return false;
         }
-        self.type_ahead_at = Some(now);
-        self.type_ahead.push_str(key_char);
+        buffer.push_str(key_char);
 
-        let names: Vec<&str> = self.entries.iter().map(|e| e.name.as_str()).collect();
-        if let Some(ix) = type_ahead_target(&names, &self.type_ahead, self.anchor_ix) {
+        if let Some(ix) = fs::type_ahead_target(&self.entries, &buffer, self.anchor_ix) {
             self.selected = BTreeSet::from([ix]);
             self.anchor_ix = Some(ix);
             self.scroll
                 .scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
             cx.notify();
         }
+        self.type_ahead = Some((now, buffer));
         true
     }
 
@@ -465,8 +432,7 @@ impl DirPane {
     fn clear_selection(&mut self, _: &ClearSelection, _window: &mut Window, cx: &mut Context<Self>) {
         self.selected.clear();
         self.anchor_ix = None;
-        self.type_ahead.clear();
-        self.type_ahead_at = None;
+        self.type_ahead = None;
         cx.notify();
     }
 
@@ -476,9 +442,9 @@ impl DirPane {
     /// is still running — so hammering navigation cannot land stale entries.
     fn reload(&mut self, cx: &mut Context<Self>) {
         let dir = self.dir.clone();
-        let sort = self.sort;
-        let show_hidden = self.show_hidden;
-        let folders_first = self.folders_first;
+        let sort = self.view.sort;
+        let show_hidden = self.view.show_hidden;
+        let folders_first = self.view.folders_first;
 
         self.load_task = Some(cx.spawn(async move |this, cx| {
             // `read_dir` is blocking and sorting a large listing costs ~100ms, so both
@@ -524,10 +490,10 @@ impl DirPane {
     /// Header click: same column flips direction, a new column adopts its natural
     /// starting direction.
     fn set_sort(&mut self, key: SortKey, cx: &mut Context<Self>) {
-        self.sort = if self.sort.key == key {
+        self.view.sort = if self.view.sort.key == key {
             Sort {
                 key,
-                dir: self.sort.dir.toggled(),
+                dir: self.view.sort.dir.toggled(),
             }
         } else {
             Sort {
@@ -549,8 +515,8 @@ impl DirPane {
     /// frame budget, so it runs on the background executor. The current list stays on
     /// screen until the sorted one arrives rather than blanking.
     fn apply_sort(&mut self, cx: &mut Context<Self>) {
-        let sort = self.sort;
-        let folders_first = self.folders_first;
+        let sort = self.view.sort;
+        let folders_first = self.view.folders_first;
         let mut entries = self.entries.clone();
 
         self.sort_task = Some(cx.spawn(async move |this, cx| {
@@ -634,7 +600,10 @@ impl DirPane {
                         window.focus(&this.focus_handle, cx);
                         this.reload(cx);
                     }
-                    Err(_) => {
+                    Err(reason) => {
+                        // The field turns red; the reason is available for a
+                        // tooltip or status line once there is somewhere to put it.
+                        let _ = reason;
                         editor.update(cx, |editor, cx| {
                             editor.error = true;
                             cx.notify();
@@ -660,22 +629,25 @@ impl DirPane {
         cx.notify();
     }
 
-    /// Returns the new name on success. `RENAME_NOREPLACE` refuses to clobber
-    /// an existing entry; filesystems without renameat2 support fall back to an
-    /// existence check plus a plain rename.
-    fn commit_rename(&self, ix: usize, new_name: &str) -> Result<String, ()> {
-        let entry = self.entries.get(ix).ok_or(())?;
+    /// Returns the new name, or why the rename was refused. `RENAME_NOREPLACE`
+    /// refuses to clobber an existing entry; filesystems without renameat2
+    /// support fall back to an existence check plus a plain rename.
+    fn commit_rename(&self, ix: usize, new_name: &str) -> Result<String, String> {
+        let entry = self
+            .entries
+            .get(ix)
+            .ok_or_else(|| "the entry is gone".to_string())?;
         let new_name = new_name.trim();
-        if fs::name_problem(new_name).is_some() {
-            return Err(());
+        if let Some(problem) = fs::name_problem(new_name) {
+            return Err(problem.to_string());
         }
         if new_name == entry.name {
-            return Ok(entry.name.clone()); // no-op rename is a success
+            return Ok(entry.name.clone());
         }
         let target = self.dir.join(new_name);
         pane_transfer::rename_no_replace(&entry.path, &target)
             .map(|()| new_name.to_string())
-            .map_err(|_| ())
+            .map_err(|err| err.to_string())
     }
 
     fn edit_path(&mut self, _: &EditPath, window: &mut Window, cx: &mut Context<Self>) {
@@ -903,7 +875,7 @@ impl DirPane {
         let colors = cx.theme().colors();
         let content = colors.text;
         let hover_bg = colors.element_hover;
-        let sort = self.sort;
+        let sort = self.view.sort;
 
         // Clickable header cell. The resize handles are siblings, not ancestors, so
         // dragging a divider never lands a click on the cell beside it.
@@ -1122,34 +1094,6 @@ impl DirPane {
     }
 }
 
-/// First entry matching the type-ahead buffer.
-///
-/// A buffer that is one character repeated ("ddd") cycles: the next entry
-/// after `current` whose name starts with that character, wrapping. Anything
-/// else is a case-insensitive prefix match from the top.
-fn type_ahead_target(names: &[&str], buffer: &str, current: Option<usize>) -> Option<usize> {
-    if names.is_empty() || buffer.is_empty() {
-        return None;
-    }
-    let lower = buffer.to_lowercase();
-
-    let mut chars = lower.chars();
-    let first = chars.next()?;
-    let is_cycle = buffer.chars().count() > 1 && chars.all(|c| c == first);
-
-    if is_cycle {
-        let start = current.map(|ix| ix + 1).unwrap_or(0);
-        let n = names.len();
-        return (0..n)
-            .map(|offset| (start + offset) % n)
-            .find(|&ix| names[ix].to_lowercase().starts_with(first));
-    }
-
-    names
-        .iter()
-        .position(|name| name.to_lowercase().starts_with(&lower))
-}
-
 impl Focusable for DirPane {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -1178,6 +1122,11 @@ impl Render for DirPane {
             .on_action(cx.listener(Self::sort_by_kind))
             .on_action(cx.listener(Self::sort_by_modified))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _window, cx| {
+                // Keys bubble up from descendants, so an open editor or menu
+                // would otherwise type into the listing behind it.
+                if this.has_inline_editor() || this.context_menu.is_some() {
+                    return;
+                }
                 // Type-ahead find: unmodified printable keys only. Bound keys
                 // (chords, function keys) carry modifiers or no key_char and
                 // fall through untouched.
@@ -1185,8 +1134,8 @@ impl Render for DirPane {
                 if mods.control || mods.alt || mods.platform || mods.function {
                     return;
                 }
-                if let Some(key_char) = event.keystroke.key_char.clone()
-                    && this.type_ahead_key(&key_char, cx)
+                if let Some(key_char) = event.keystroke.key_char.as_deref()
+                    && this.type_ahead_key(key_char, cx)
                 {
                     cx.stop_propagation();
                 }
@@ -1237,35 +1186,5 @@ impl Render for DirPane {
                     .with_priority(1),
                 )
             })
-    }
-}
-
-#[cfg(test)]
-mod type_ahead_tests {
-    use super::type_ahead_target;
-
-    const NAMES: &[&str] = &["Documents", "Downloads", "Music", "dotfiles", "notes.txt"];
-
-    #[test]
-    fn prefix_match_is_case_insensitive_and_first_wins() {
-        assert_eq!(type_ahead_target(NAMES, "do", None), Some(0));
-        assert_eq!(type_ahead_target(NAMES, "dow", None), Some(1));
-        assert_eq!(type_ahead_target(NAMES, "n", None), Some(4));
-        assert_eq!(type_ahead_target(NAMES, "zzz", None), None);
-    }
-
-    #[test]
-    fn repeated_letter_cycles_through_matches() {
-        // d, then d again: Documents -> Downloads -> dotfiles -> wrap.
-        assert_eq!(type_ahead_target(NAMES, "d", None), Some(0));
-        assert_eq!(type_ahead_target(NAMES, "dd", Some(0)), Some(1));
-        assert_eq!(type_ahead_target(NAMES, "ddd", Some(1)), Some(3));
-        assert_eq!(type_ahead_target(NAMES, "dddd", Some(3)), Some(0));
-    }
-
-    #[test]
-    fn empty_inputs_match_nothing() {
-        assert_eq!(type_ahead_target(&[], "a", None), None);
-        assert_eq!(type_ahead_target(NAMES, "", None), None);
     }
 }

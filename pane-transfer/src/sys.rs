@@ -142,22 +142,29 @@ pub fn is_partial_name(name: &str) -> bool {
     name.starts_with(".pane-partial-")
 }
 
-/// `foo.tar.gz` → `foo (copy).tar.gz`, then `foo (copy 2).tar.gz`, …
+/// Byte index where a file name's extension begins, or `name.len()` when it
+/// has none.
 ///
-/// The split is at the first dot of the file name (ignoring leading dots so
-/// `.bashrc` becomes `.bashrc (copy)`), matching what users expect for
-/// multi-part extensions.
+/// The split is at the *first* dot, so `foo.tar.gz` stems to `foo`. Leading
+/// dots belong to the stem, so `.bashrc` stems to the whole name. Both the
+/// rename pre-selection and the ` (copy)` insertion point derive from this —
+/// they must agree, so there is one definition.
+pub fn stem_end(name: &str) -> usize {
+    let leading_dots = name.len() - name.trim_start_matches('.').len();
+    match name[leading_dots..].find('.') {
+        Some(ix) => leading_dots + ix,
+        None => name.len(),
+    }
+}
+
+/// `foo.tar.gz` → `foo (copy).tar.gz`, then `foo (copy 2).tar.gz`, …
 pub fn keep_both_name(dest: &Path, attempt: u32) -> PathBuf {
     let name = dest
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "unnamed".to_string());
 
-    let leading_dots = name.len() - name.trim_start_matches('.').len();
-    let (stem, ext) = match name[leading_dots..].find('.') {
-        Some(ix) => name.split_at(leading_dots + ix),
-        None => (name.as_str(), ""),
-    };
+    let (stem, ext) = name.split_at(stem_end(&name));
 
     let suffix = if attempt <= 1 {
         " (copy)".to_string()

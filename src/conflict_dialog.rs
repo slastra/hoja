@@ -15,8 +15,18 @@ use gpui::{
 use pane_transfer::{ConflictChoice, ConflictDecision};
 use theme::ActiveTheme;
 
-use crate::file_menu::{Cancel, Confirm};
 use crate::icon::Icon;
+
+// The dialog has its own context so menu-navigation bindings cannot leak into
+// it, and so changing menu keys cannot silently change dialog behavior.
+gpui::actions!(dialog, [Cancel, Confirm]);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ButtonStyle {
+    Primary,
+    Normal,
+    Ghost,
+}
 
 pub struct ConflictDialog {
     file_name: String,
@@ -29,13 +39,11 @@ pub struct ConflictDialog {
 
 impl ConflictDialog {
     pub fn new(
-        src: &Path,
         dest: &Path,
         reply: mpsc::Sender<ConflictDecision>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let _ = src;
         let focus_handle = cx.focus_handle();
         // Focus loss must not leave the worker hanging: treat it as Skip for
         // this one file, keeping both the job and the data intact.
@@ -71,12 +79,11 @@ impl ConflictDialog {
         cx.emit(DismissEvent);
     }
 
-    fn decide(&mut self, choice: ConflictChoice, cx: &mut Context<Self>) {
-        let decision = ConflictDecision::Apply {
+    fn apply(&self, choice: ConflictChoice) -> ConflictDecision {
+        ConflictDecision::Apply {
             choice,
             apply_to_all: self.apply_to_all,
-        };
-        self.send(decision, cx);
+        }
     }
 
     fn cancel(&mut self, _: &Cancel, _window: &mut Window, cx: &mut Context<Self>) {
@@ -85,7 +92,8 @@ impl ConflictDialog {
 
     /// Enter = Replace, the convention for the highlighted default action.
     fn confirm(&mut self, _: &Confirm, _window: &mut Window, cx: &mut Context<Self>) {
-        self.decide(ConflictChoice::Overwrite, cx);
+        let decision = self.apply(ConflictChoice::Overwrite);
+        self.send(decision, cx);
     }
 }
 
@@ -105,33 +113,38 @@ impl Render for ConflictDialog {
         let hover_bg = colors.element_hover;
         let apply_to_all = self.apply_to_all;
 
+        // `ghost` is the borderless Cancel; `primary` is the default action.
         let button = |id: &'static str,
                       label: &'static str,
-                      primary: bool,
-                      choice: ConflictChoice,
+                      style: ButtonStyle,
+                      decision: ConflictDecision,
                       cx: &Context<Self>| {
             div()
                 .id(id)
                 .px_3()
                 .py_1()
                 .rounded_md()
-                .border_1()
-                .border_color(if primary {
-                    colors.border_selected
-                } else {
-                    colors.border
+                .when(style != ButtonStyle::Ghost, |el| {
+                    el.border_1().border_color(if style == ButtonStyle::Primary {
+                        colors.border_selected
+                    } else {
+                        colors.border
+                    })
                 })
-                .when(primary, |el| el.bg(colors.element_selected))
+                .when(style == ButtonStyle::Primary, |el| {
+                    el.bg(colors.element_selected)
+                })
+                .when(style == ButtonStyle::Ghost, |el| el.text_color(muted))
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover_bg))
                 .child(label)
-                .on_click(cx.listener(move |this, _, _, cx| this.decide(choice, cx)))
+                .on_click(cx.listener(move |this, _, _, cx| this.send(decision, cx)))
         };
 
         div()
             .occlude()
             .track_focus(&self.focus_handle)
-            .key_context("menu")
+            .key_context("dialog")
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::confirm))
             .flex()
@@ -200,33 +213,32 @@ impl Render for ConflictDialog {
                     .gap_2()
                     // Bottom action rows group at the right, Cancel leftmost
                     // within the group.
-                    .child(
-                        div()
-                            .id("cancel")
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .text_color(muted)
-                            .hover(move |s| s.bg(hover_bg))
-                            .child("Cancel")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.send(ConflictDecision::CancelJob, cx)
-                            })),
-                    )
-                    .child(button("skip", "Skip", false, ConflictChoice::Skip, cx))
+                    .child(button(
+                        "cancel",
+                        "Cancel",
+                        ButtonStyle::Ghost,
+                        ConflictDecision::CancelJob,
+                        cx,
+                    ))
+                    .child(button(
+                        "skip",
+                        "Skip",
+                        ButtonStyle::Normal,
+                        self.apply(ConflictChoice::Skip),
+                        cx,
+                    ))
                     .child(button(
                         "keep-both",
                         "Keep Both",
-                        false,
-                        ConflictChoice::KeepBoth,
+                        ButtonStyle::Normal,
+                        self.apply(ConflictChoice::KeepBoth),
                         cx,
                     ))
                     .child(button(
                         "replace",
                         "Replace",
-                        true,
-                        ConflictChoice::Overwrite,
+                        ButtonStyle::Primary,
+                        self.apply(ConflictChoice::Overwrite),
                         cx,
                     )),
             )

@@ -98,6 +98,25 @@ impl Default for Sort {
     }
 }
 
+/// Everything about how a pane presents a listing. One value so splits copy it
+/// wholesale and a future config file has a single thing to serialize.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ViewSettings {
+    pub sort: Sort,
+    pub show_hidden: bool,
+    pub folders_first: bool,
+}
+
+impl Default for ViewSettings {
+    fn default() -> Self {
+        Self {
+            sort: Sort::default(),
+            show_hidden: false,
+            folders_first: true,
+        }
+    }
+}
+
 /// Read a directory, unsorted. Blocking — always call this from a background thread.
 ///
 /// Unreadable individual entries are skipped rather than failing the whole listing; a
@@ -105,11 +124,19 @@ impl Default for Sort {
 pub fn read_dir(path: &Path, include_hidden: bool) -> anyhow::Result<Vec<DirEntry>> {
     Ok(std::fs::read_dir(path)?
         .filter_map(Result::ok)
-        // In-progress transfer temps are an implementation detail; a crash can
-        // orphan them until the journal (M4) grows a reaper, and either way
-        // they should not appear in listings.
-        .filter(|e| !pane_transfer::is_partial_name(&e.file_name().to_string_lossy()))
-        .filter(|e| include_hidden || !e.file_name().to_string_lossy().starts_with('.'))
+        .filter(|e| {
+            use std::os::unix::ffi::OsStrExt;
+            let name = e.file_name();
+            let dotted = name.as_bytes().first() == Some(&b'.');
+            if !include_hidden {
+                // Partial names are dot-prefixed, so this subsumes them.
+                return !dotted;
+            }
+            // In-progress transfer temps are an implementation detail; a crash
+            // can orphan them until the journal (M4) grows a reaper, and either
+            // way they should not appear in listings.
+            !dotted || !pane_transfer::is_partial_name(&name.to_string_lossy())
+        })
         .map(|e| DirEntry::from_std(&e))
         .collect())
 }
@@ -216,6 +243,63 @@ fn take_digits<'a>(
     &s[start..end]
 }
 
+/// First entry matching a type-ahead buffer.
+///
+/// A buffer of one repeated character ("ddd") cycles: the next entry after
+/// `current` whose name starts with it, wrapping. Anything else is a
+/// case-insensitive prefix match from the top.
+///
+/// Deliberately allocation-free: this runs per keystroke over the whole
+/// listing, and the miss case (an overtyped prefix) scans every entry.
+pub fn type_ahead_target(
+    entries: &[DirEntry],
+    buffer: &str,
+    current: Option<usize>,
+) -> Option<usize> {
+    if entries.is_empty() || buffer.is_empty() {
+        return None;
+    }
+    let first = buffer.chars().next()?;
+    let is_cycle = buffer.chars().count() > 1 && buffer.chars().all(|c| c == first);
+
+    if is_cycle {
+        let start = current.map(|ix| ix + 1).unwrap_or(0);
+        let n = entries.len();
+        return (0..n).map(|offset| (start + offset) % n).find(|&ix| {
+            entries[ix]
+                .name
+                .chars()
+                .next()
+                .is_some_and(|c| chars_eq_ignore_case(c, first))
+        });
+    }
+
+    entries
+        .iter()
+        .position(|entry| starts_with_ignore_case(&entry.name, buffer))
+}
+
+fn chars_eq_ignore_case(a: char, b: char) -> bool {
+    a == b || a.to_lowercase().eq(b.to_lowercase())
+}
+
+/// Case-insensitive prefix test without allocating. The ASCII fast path is
+/// hoisted out of the per-entry scan, which is where the win actually comes
+/// from.
+fn starts_with_ignore_case(name: &str, prefix: &str) -> bool {
+    let (nb, pb) = (name.as_bytes(), prefix.as_bytes());
+    if nb.len() < pb.len() {
+        return false;
+    }
+    if prefix.is_ascii() && name.is_ascii() {
+        return nb[..pb.len()].eq_ignore_ascii_case(pb);
+    }
+    let mut name_chars = name.chars();
+    prefix
+        .chars()
+        .all(|p| name_chars.next().is_some_and(|n| chars_eq_ignore_case(n, p)))
+}
+
 /// Why a proposed file name cannot be used, or `None` when it is acceptable.
 pub fn name_problem(name: &str) -> Option<&'static str> {
     let name = name.trim();
@@ -234,16 +318,11 @@ pub fn name_problem(name: &str) -> Option<&'static str> {
     None
 }
 
-/// The byte range of the stem, for pre-selection during rename.
-///
-/// `archive.tar.gz` → `archive`; `.bashrc` → the whole name (leading dots are
-/// part of the stem); `README` → the whole name.
+/// The byte range of the stem, for pre-selection during rename. Shares its
+/// definition with the engine's ` (copy)` insertion point so the two cannot
+/// drift apart.
 pub fn stem_range(name: &str) -> std::ops::Range<usize> {
-    let leading_dots = name.len() - name.trim_start_matches('.').len();
-    match name[leading_dots..].find('.') {
-        Some(ix) => 0..leading_dots + ix,
-        None => 0..name.len(),
-    }
+    0..pane_transfer::stem_end(name)
 }
 
 /// Human-readable size for the listing's right-hand column.
@@ -418,6 +497,43 @@ mod tests {
         assert_eq!(names(&v), ["zdir", "afile"]);
         sort_entries(&mut v, Sort::default(), false);
         assert_eq!(names(&v), ["afile", "zdir"]);
+    }
+
+    fn named(names: &[&str]) -> Vec<DirEntry> {
+        names.iter().map(|n| entry(n, false, 1, 1)).collect()
+    }
+
+    #[test]
+    fn type_ahead_prefix_is_case_insensitive_and_first_wins() {
+        let v = named(&["Documents", "Downloads", "Music", "dotfiles", "notes.txt"]);
+        assert_eq!(type_ahead_target(&v, "do", None), Some(0));
+        assert_eq!(type_ahead_target(&v, "dow", None), Some(1));
+        assert_eq!(type_ahead_target(&v, "n", None), Some(4));
+        assert_eq!(type_ahead_target(&v, "zzz", None), None);
+    }
+
+    #[test]
+    fn type_ahead_repeated_letter_cycles() {
+        let v = named(&["Documents", "Downloads", "Music", "dotfiles", "notes.txt"]);
+        assert_eq!(type_ahead_target(&v, "d", None), Some(0));
+        assert_eq!(type_ahead_target(&v, "dd", Some(0)), Some(1));
+        assert_eq!(type_ahead_target(&v, "ddd", Some(1)), Some(3));
+        assert_eq!(type_ahead_target(&v, "dddd", Some(3)), Some(0));
+    }
+
+    #[test]
+    fn type_ahead_handles_non_ascii() {
+        let v = named(&["Ärger", "naïve.txt", "zebra"]);
+        assert_eq!(type_ahead_target(&v, "ä", None), Some(0));
+        assert_eq!(type_ahead_target(&v, "naï", None), Some(1));
+        // A prefix longer than the name must not panic or match.
+        assert_eq!(type_ahead_target(&v, "zebraaaa", None), None);
+    }
+
+    #[test]
+    fn type_ahead_empty_inputs_match_nothing() {
+        assert_eq!(type_ahead_target(&[], "a", None), None);
+        assert_eq!(type_ahead_target(&named(&["a"]), "", None), None);
     }
 
     #[test]
