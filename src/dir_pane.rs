@@ -88,19 +88,36 @@ impl Default for ColumnWidths {
 }
 
 impl ColumnWidths {
-    fn adjust(&mut self, column: Column, delta: Pixels) {
+    fn get(&self, column: Column) -> Pixels {
+        match column {
+            Column::Size => self.size,
+            Column::Kind => self.kind,
+            Column::Modified => self.modified,
+        }
+    }
+
+    fn set(&mut self, column: Column, width: Pixels) {
         let slot = match column {
             Column::Size => &mut self.size,
             Column::Kind => &mut self.kind,
             Column::Modified => &mut self.modified,
         };
-        *slot = (*slot + delta).clamp(px(COL_MIN_WIDTH), px(COL_MAX_WIDTH));
+        *slot = width.clamp(px(COL_MIN_WIDTH), px(COL_MAX_WIDTH));
     }
 }
 
-/// Drag payload identifying which column a divider resizes.
+/// Marker type that `on_drag_move` dispatches on. Which column is being
+/// resized lives in `DirPane::resize`, not here.
 #[derive(Clone, Copy)]
-struct ColumnResize(Column);
+struct ColumnResize;
+
+/// Where a column resize started, captured once when the drag begins.
+#[derive(Clone, Copy)]
+struct ColumnDrag {
+    column: Column,
+    start_x: Pixels,
+    start_width: Pixels,
+}
 
 /// Drags need a preview view; column resizing shows nothing.
 struct EmptyDrag;
@@ -124,6 +141,8 @@ pub struct DirPane {
     scroll: UniformListScrollHandle,
     /// Per-pane, because panes in a split can be very different widths.
     widths: ColumnWidths,
+    /// Anchor for the resize in progress, if any.
+    resize: Option<ColumnDrag>,
     view: ViewSettings,
     /// The directory `entries` was built from. Differs from `dir` while a load
     /// is in flight, which is how a navigation is told apart from a refresh.
@@ -175,6 +194,7 @@ impl DirPane {
             anchor_ix: None,
             scroll: UniformListScrollHandle::new(),
             widths: ColumnWidths::default(),
+            resize: None,
             view,
             loaded_dir: PathBuf::new(),
             error: None,
@@ -865,10 +885,20 @@ impl DirPane {
 
     /// A divider sitting at the left edge of `column`.
     ///
-    /// Resizing is incremental: each move nudges the width by how far the cursor has
-    /// drifted from the divider's own current centre. Because the divider is re-laid-out
-    /// every frame at the new width, this converges on the cursor instead of needing the
-    /// drag's start position, which `on_drag` cannot capture.
+    /// The width is computed *absolutely*, from the cursor's offset since the drag
+    /// began. The obvious alternative — nudge the width by how far the cursor has
+    /// drifted from the divider's current centre — reads as a converging feedback
+    /// loop but is not one: `on_drag_move` fires per mouse event while `bounds`
+    /// comes from the last laid-out frame, so a fast drag delivers several events
+    /// against the same stale centre and applies the same correction several times
+    /// over. That overshoots, then corrects back, which is the shimmer you see.
+    ///
+    /// The anchor is taken on mouse down, which is in window coordinates and
+    /// happens before the drag threshold. `on_drag`'s constructor is the wrong
+    /// place for it twice over: it fires only once the cursor has already
+    /// travelled past `DRAG_THRESHOLD`, and the position it hands you is
+    /// `cursor_offset` — the cursor's offset *within the 6px handle*, not a
+    /// window coordinate.
     ///
     /// Dragging left widens the column, since the column's left edge is what moves.
     fn render_column_handle(&self, column: Column, cx: &Context<Self>) -> impl IntoElement + use<> {
@@ -879,17 +909,27 @@ impl DirPane {
             .flex_none()
             .cursor_col_resize()
             .hover(|style| style.bg(cx.theme().colors().border_selected))
-            .on_drag(ColumnResize(column), |_, _, _, cx| cx.new(|_| EmptyDrag))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                    this.resize = Some(ColumnDrag {
+                        column,
+                        start_x: event.position.x,
+                        start_width: this.widths.get(column),
+                    });
+                }),
+            )
+            .on_drag(ColumnResize, |_, _, _, cx| cx.new(|_| EmptyDrag))
             .on_drag_move(cx.listener(
                 move |this, event: &DragMoveEvent<ColumnResize>, _window, cx| {
                     // `on_drag_move` dispatches on the payload *type*, so every handle
                     // sees every column drag. Without this guard, dragging one divider
                     // resizes all three.
-                    if event.drag(cx).0 != column {
+                    let Some(drag) = this.resize.filter(|drag| drag.column == column) else {
                         return;
-                    }
-                    let drift = event.event.position.x - event.bounds.center().x;
-                    this.widths.adjust(column, -drift);
+                    };
+                    let moved = event.event.position.x - drag.start_x;
+                    this.widths.set(column, drag.start_width - moved);
                     cx.notify();
                 },
             ))
