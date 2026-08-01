@@ -43,16 +43,12 @@ pub fn open(path: &Path) -> std::io::Result<()> {
 
 /// Applications registered for this file's MIME type, best candidates first.
 pub fn apps_for(path: &Path) -> Vec<AppLaunch> {
-    let mime_db = mime_db();
-    let guess = mime_db.guess_mime_type().path(path).guess();
+    let guess = mime_db().guess_mime_type().path(path).guess();
     let mime = guess.mime_type().clone();
 
-    // The exact type plus its parents: text/x-rust also offers text/plain
-    // handlers. One level of ancestry is plenty for a menu.
-    let mut mimes = vec![mime.to_string()];
-    for parent in mime_db.get_parents(&mime).unwrap_or_default() {
-        mimes.push(parent.to_string());
-    }
+    // The exact type plus its ancestry: text/rust also offers text/plain
+    // handlers.
+    let mimes = with_ancestors(mime.to_string());
 
     let uri = file_uri(path);
     let locales = freedesktop_desktop_entry::get_languages_from_env();
@@ -138,61 +134,149 @@ fn entries() -> &'static HashMap<String, DesktopEntry> {
     })
 }
 
-/// Candidate desktop-file ids for a set of MIME types: defaults first, then
-/// added/cached associations, minus removals.
-fn candidate_ids(mimes: &[String]) -> Vec<String> {
-    let mut defaults: Vec<String> = Vec::new();
-    let mut added: Vec<String> = Vec::new();
-    let mut removed: HashSet<String> = HashSet::new();
+/// Parsed association files, read once. `entries()` already accepts staleness
+/// for the process lifetime, and re-reading a dozen INI files on every menu
+/// open bought nothing.
+struct Associations {
+    defaults: HashMap<String, Vec<String>>,
+    added: HashMap<String, Vec<String>>,
+    removed: HashMap<String, Vec<String>>,
+}
+
+fn associations() -> &'static Associations {
+    static ASSOCIATIONS: OnceLock<Associations> = OnceLock::new();
+    ASSOCIATIONS.get_or_init(load_associations)
+}
+
+fn load_associations() -> Associations {
+    let mut defaults: HashMap<String, Vec<String>> = HashMap::new();
+    let mut added: HashMap<String, Vec<String>> = HashMap::new();
+    let mut removed: HashMap<String, Vec<String>> = HashMap::new();
+
+    let collect = |section: &HashMap<String, String>, into: &mut HashMap<String, Vec<String>>| {
+        for (mime, ids) in section {
+            let slot = into.entry(mime.clone()).or_default();
+            for id in ids.split(';').filter(|s| !s.is_empty()) {
+                slot.push(id.to_string());
+            }
+        }
+    };
 
     for list in mimeapps_files() {
         let Ok(content) = std::fs::read_to_string(&list) else {
             continue;
         };
         let sections = parse_ini(&content);
-        for mime in mimes {
-            if let Some(ids) = sections.get("Default Applications").and_then(|s| s.get(mime)) {
-                for id in ids.split(';').filter(|s| !s.is_empty()) {
-                    if !removed.contains(id) {
-                        defaults.push(id.to_string());
-                    }
-                }
-            }
-            if let Some(ids) = sections.get("Added Associations").and_then(|s| s.get(mime)) {
-                for id in ids.split(';').filter(|s| !s.is_empty()) {
-                    if !removed.contains(id) {
-                        added.push(id.to_string());
-                    }
-                }
-            }
-            if let Some(ids) = sections.get("Removed Associations").and_then(|s| s.get(mime)) {
-                for id in ids.split(';').filter(|s| !s.is_empty()) {
-                    removed.insert(id.to_string());
-                }
-            }
+        if let Some(s) = sections.get("Default Applications") {
+            collect(s, &mut defaults);
+        }
+        if let Some(s) = sections.get("Added Associations") {
+            collect(s, &mut added);
+        }
+        if let Some(s) = sections.get("Removed Associations") {
+            collect(s, &mut removed);
         }
     }
-
-    // Union with the compiled caches so unconfigured-but-capable apps appear.
     for dir in xdg_data_dirs() {
-        let cache = dir.join("applications/mimeinfo.cache");
-        let Ok(content) = std::fs::read_to_string(&cache) else {
+        let Ok(content) = std::fs::read_to_string(dir.join("applications/mimeinfo.cache")) else {
             continue;
         };
-        let sections = parse_ini(&content);
-        for mime in mimes {
-            if let Some(ids) = sections.get("MIME Cache").and_then(|s| s.get(mime)) {
-                for id in ids.split(';').filter(|s| !s.is_empty()) {
-                    if !removed.contains(id) {
-                        added.push(id.to_string());
+        if let Some(s) = parse_ini(&content).get("MIME Cache") {
+            collect(s, &mut added);
+        }
+    }
+
+    Associations {
+        defaults,
+        added,
+        removed,
+    }
+}
+
+/// `subclasses`: MIME type → its direct parents. We parse this ourselves
+/// because `SharedMimeInfo::get_parents` is unusable — it unaliases first and
+/// its `unalias_mime_type` returns `None` for anything that is not literally an
+/// alias, so every canonical type comes back with no parents at all. Without
+/// this, "Open With" is empty for every source file on a system whose editors
+/// register only `text/plain`.
+fn subclasses() -> &'static HashMap<String, Vec<String>> {
+    static SUBCLASSES: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
+    SUBCLASSES.get_or_init(|| {
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for dir in xdg_data_dirs() {
+            let Ok(content) = std::fs::read_to_string(dir.join("mime/subclasses")) else {
+                continue;
+            };
+            for line in content.lines() {
+                let mut parts = line.split_whitespace();
+                if let (Some(child), Some(parent)) = (parts.next(), parts.next()) {
+                    let slot = map.entry(child.to_string()).or_default();
+                    if !slot.iter().any(|p| p == parent) {
+                        slot.push(parent.to_string());
                     }
                 }
             }
         }
-    }
+        map
+    })
+}
 
-    defaults.extend(added);
-    defaults
+/// `mime` followed by its ancestors, nearest first. Breadth-first so the
+/// closest handlers sort above the generic `text/plain` ones, and cycle-safe
+/// because the database is not guaranteed acyclic.
+fn with_ancestors(mime: String) -> Vec<String> {
+    ancestors_from(mime, subclasses())
+}
+
+fn ancestors_from(mime: String, table: &HashMap<String, Vec<String>>) -> Vec<String> {
+    let mut seen: HashSet<String> = HashSet::from([mime.clone()]);
+    let mut chain = vec![mime];
+    let mut next = 0;
+    while let Some(current) = chain.get(next).cloned() {
+        next += 1;
+        for parent in table.get(&current).into_iter().flatten() {
+            if seen.insert(parent.clone()) {
+                chain.push(parent.clone());
+            }
+        }
+    }
+    chain
+}
+
+/// Warm every cache off the UI thread. Without this the first right-click on a
+/// file parses ~9 MB of the shared MIME database plus several hundred .desktop
+/// files inline, which is a dropped frame.
+pub fn warm_caches() {
+    let _ = mime_db();
+    let _ = entries();
+    let _ = associations();
+    let _ = subclasses();
+}
+
+/// Candidate desktop-file ids for a set of MIME types: defaults first, then
+/// added/cached associations, minus removals.
+fn candidate_ids(mimes: &[String]) -> Vec<String> {
+    let assoc = associations();
+    let removed: HashSet<&str> = mimes
+        .iter()
+        .filter_map(|mime| assoc.removed.get(mime))
+        .flatten()
+        .map(String::as_str)
+        .collect();
+
+    let pick = |table: &'static HashMap<String, Vec<String>>| -> Vec<String> {
+        mimes
+            .iter()
+            .filter_map(|mime| table.get(mime))
+            .flatten()
+            .filter(|id| !removed.contains(id.as_str()))
+            .cloned()
+            .collect()
+    };
+
+    let mut ids = pick(&assoc.defaults);
+    ids.extend(pick(&assoc.added));
+    ids
 }
 
 /// mimeapps.list search order, highest priority first (simplified XDG spec:
@@ -298,6 +382,43 @@ mod tests {
             "a.desktop;b.desktop;"
         );
         assert_eq!(s["Removed Associations"]["text/plain"], "c.desktop;");
+    }
+
+    fn table(pairs: &[(&str, &str)]) -> HashMap<String, Vec<String>> {
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for (child, parent) in pairs {
+            map.entry(child.to_string())
+                .or_default()
+                .push(parent.to_string());
+        }
+        map
+    }
+
+    #[test]
+    fn ancestry_is_breadth_first_and_starts_with_the_type_itself() {
+        let table = table(&[
+            ("application/json", "application/javascript"),
+            ("application/javascript", "text/plain"),
+            ("application/json", "text/plain"),
+        ]);
+        assert_eq!(
+            ancestors_from("application/json".into(), &table),
+            ["application/json", "application/javascript", "text/plain"]
+        );
+    }
+
+    #[test]
+    fn ancestry_survives_a_cycle() {
+        let table = table(&[("a/b", "c/d"), ("c/d", "a/b")]);
+        assert_eq!(ancestors_from("a/b".into(), &table), ["a/b", "c/d"]);
+    }
+
+    #[test]
+    fn an_unknown_type_is_its_own_only_ancestor() {
+        assert_eq!(
+            ancestors_from("x/y".into(), &HashMap::new()),
+            ["x/y"]
+        );
     }
 
     #[test]

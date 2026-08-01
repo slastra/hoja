@@ -437,13 +437,13 @@ impl Worker {
 
     fn process_dir(&mut self, src: &Path, dest: &Path, src_meta: &std::fs::Metadata) -> Step {
         // Move fast path: a same-mount directory rename moves the whole subtree
-        // in one atomic call.
+        // in one atomic call. NOREPLACE both expresses "only if absent" and
+        // closes the window between testing and renaming.
         if self.spec.op == Operation::Move
-            && !dest.exists()
             && let (Ok(src_key), Some(dst_key)) = (sys::mount_key(src), self.dest_mount)
             && self.caps.rename_worth_trying(src_key, dst_key)
         {
-            match std::fs::rename(src, dest) {
+            match sys::rename_no_replace(src, dest) {
                 Ok(()) => {
                     self.stats.renames += 1;
                     self.progress.files_total.fetch_add(1, Ordering::Relaxed);
@@ -454,6 +454,8 @@ impl Worker {
                 Err(err) if err.raw_os_error() == Some(rustix::io::Errno::XDEV.raw_os_error()) => {
                     self.caps.mark_rename_failed(src_key, dst_key);
                 }
+                // Something is already at dest: fall through and merge into it.
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(err) => {
                     self.queue_error(src, Stage::Rename, err);
                     return self.continue_or_fatal();
@@ -533,8 +535,10 @@ impl Worker {
             && let (Ok(src_key), Some(dst_key)) = (sys::mount_key(src), self.dest_mount)
             && self.caps.rename_worth_trying(src_key, dst_key)
         {
-            // rename() clobbers silently, so conflicts resolve BEFORE the attempt.
-            let planned = match self.resolve_dest(src, dest) {
+            // rename() clobbers silently, so conflicts resolve BEFORE the
+            // attempt — and the attempt itself refuses to replace, so a file
+            // appearing in between is re-resolved rather than destroyed.
+            let mut planned = match self.resolve_dest(src, dest) {
                 DestPlan::Proceed(d) => d,
                 DestPlan::Skip => {
                     self.files_skipped += 1;
@@ -543,7 +547,28 @@ impl Worker {
                 }
                 DestPlan::Cancel => return Step::Cancelled,
             };
-            match std::fs::rename(src, &planned) {
+            // An Overwrite decision means the user asked for the replacement,
+            // so unlink first; NOREPLACE would otherwise refuse it.
+            if planned == *dest && std::fs::symlink_metadata(&planned).is_ok() {
+                let _ = std::fs::remove_file(&planned);
+            }
+            let mut renamed = sys::rename_no_replace(src, &planned);
+            if matches!(&renamed, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
+                // Raced: ask again against the destination that now exists.
+                match self.resolve_dest(src, &planned) {
+                    DestPlan::Proceed(d) => {
+                        planned = d;
+                        renamed = sys::rename_no_replace(src, &planned);
+                    }
+                    DestPlan::Skip => {
+                        self.files_skipped += 1;
+                        self.progress.files_done.fetch_add(1, Ordering::Relaxed);
+                        return Step::Ok;
+                    }
+                    DestPlan::Cancel => return Step::Cancelled,
+                }
+            }
+            match renamed {
                 Ok(()) => {
                     self.stats.renames += 1;
                     self.files_copied += 1;

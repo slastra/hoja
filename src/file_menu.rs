@@ -103,6 +103,21 @@ impl FileMenu {
         }
     }
 
+    /// Splice items in after the menu is already on screen. Used by the
+    /// "Open With" section, which is resolved off the UI thread.
+    pub fn insert_items(&mut self, ix: usize, items: Vec<MenuItem>, cx: &mut Context<Self>) {
+        if items.is_empty() || ix > self.items.len() {
+            return;
+        }
+        // Keyboard selection is an index into the same vector: shift it so the
+        // highlight stays on the row the user picked.
+        if let Some(selected) = self.selected.filter(|&s| s >= ix) {
+            self.selected = Some(selected + items.len());
+        }
+        self.items.splice(ix..ix, items);
+        cx.notify();
+    }
+
     fn cancel(&mut self, _: &Cancel, _window: &mut Window, cx: &mut Context<Self>) {
         cx.emit(DismissEvent);
     }

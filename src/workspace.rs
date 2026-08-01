@@ -7,8 +7,8 @@ use gpui::{
     Window, actions, div, hsla, prelude::*, px, relative,
 };
 use pane_transfer::{
-    ConflictDecision, Event as JobEvent, JobHandle, JobPolicy, JobSpec, Operation,
-    Outcome, Phase,
+    ConflictDecision, Event as JobEvent, JobHandle, JobId, JobPolicy, JobSpec, Operation, Outcome,
+    Phase,
 };
 use theme::ActiveTheme;
 
@@ -41,6 +41,12 @@ actions!(
 
 const JOB_POLL_INTERVAL: Duration = Duration::from_millis(120);
 
+struct PendingConflict {
+    job: JobId,
+    dest: PathBuf,
+    reply: std::sync::mpsc::Sender<ConflictDecision>,
+}
+
 /// A running or finished transfer job as the UI tracks it.
 struct JobView {
     handle: JobHandle,
@@ -72,8 +78,9 @@ pub struct Workspace {
     jobs: Vec<JobView>,
     poll_task: Option<Task<()>>,
     /// Conflicts wait here while one dialog is up; one worker blocks per job,
-    /// so concurrent jobs can queue several.
-    pending_conflicts: VecDeque<(PathBuf, std::sync::mpsc::Sender<ConflictDecision>)>,
+    /// so concurrent jobs can queue several. Tagged with the job so cancelling
+    /// can drop the ones whose worker is gone.
+    pending_conflicts: VecDeque<PendingConflict>,
     conflict_dialog: Option<Entity<ConflictDialog>>,
 }
 
@@ -313,12 +320,18 @@ impl Workspace {
 
     fn poll_jobs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut finished_dirs: Vec<PathBuf> = Vec::new();
+        let mut finished_jobs: Vec<JobId> = Vec::new();
 
         for job in &mut self.jobs {
+            let job_id = job.handle.id();
             while let Some(event) = job.handle.try_recv_event() {
                 match event {
                     JobEvent::Conflict { dest, reply, .. } => {
-                        self.pending_conflicts.push_back((dest, reply));
+                        self.pending_conflicts.push_back(PendingConflict {
+                            job: job_id,
+                            dest,
+                            reply,
+                        });
                     }
                     JobEvent::FileError { path, error } => {
                         job.errors += 1;
@@ -327,6 +340,7 @@ impl Workspace {
                     JobEvent::Warning { .. } => {}
                     JobEvent::Done(summary) => {
                         job.done = Some(summary.outcome);
+                        finished_jobs.push(job_id);
                         job.errors = summary.errors.len();
                         if let Some((path, error)) = summary.errors.first() {
                             job.last_error = Some(format!("{}: {error}", path.display()));
@@ -343,6 +357,9 @@ impl Workspace {
         self.jobs
             .retain(|job| !(job.done.is_some() && job.errors == 0));
 
+        for job in finished_jobs {
+            self.purge_conflicts(job);
+        }
         self.maybe_show_conflict(window, cx);
 
         if !finished_dirs.is_empty() {
@@ -363,11 +380,11 @@ impl Workspace {
         if self.conflict_dialog.is_some() {
             return;
         }
-        let Some((dest, reply)) = self.pending_conflicts.pop_front() else {
+        let Some(pending) = self.pending_conflicts.pop_front() else {
             return;
         };
 
-        let dialog = cx.new(|cx| ConflictDialog::new(&dest, reply, window, cx));
+        let dialog = cx.new(|cx| ConflictDialog::new(&pending.dest, pending.reply, window, cx));
         cx.subscribe_in(
             &dialog,
             window,
@@ -400,8 +417,22 @@ impl Workspace {
     }
 
     fn dismiss_jobs(&mut self, _: &DismissJobs, _window: &mut Window, cx: &mut Context<Self>) {
+        let dropped: Vec<JobId> = self
+            .jobs
+            .iter()
+            .filter(|job| job.done.is_some())
+            .map(|job| job.handle.id())
+            .collect();
         self.jobs.retain(|job| job.done.is_none());
+        self.pending_conflicts
+            .retain(|pending| !dropped.contains(&pending.job));
         cx.notify();
+    }
+
+    /// Drop conflicts queued for a job that is no longer running. Their reply
+    /// channels lead to a worker that has stopped reading.
+    fn purge_conflicts(&mut self, job: JobId) {
+        self.pending_conflicts.retain(|pending| pending.job != job);
     }
 
     fn render_job_strip(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
@@ -499,14 +530,16 @@ impl Workspace {
                             .hover(|s| s.bg(colors.element_hover))
                             .child(if is_done { "dismiss" } else { "✕" })
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(job) = this.jobs.get(ix) {
-                                    if job.done.is_some() {
-                                        this.jobs.remove(ix);
-                                    } else {
-                                        job.handle.cancel();
-                                    }
-                                    cx.notify();
+                                let Some(job) = this.jobs.get(ix) else { return };
+                                let id = job.handle.id();
+                                if job.done.is_some() {
+                                    this.jobs.remove(ix);
+                                } else {
+                                    job.handle.cancel();
                                 }
+                                // Either way the worker stops answering.
+                                this.purge_conflicts(id);
+                                cx.notify();
                             })),
                     )
             })

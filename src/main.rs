@@ -159,6 +159,10 @@ fn main() {
             KeyBinding::new("up", SelectPrevious, Some("menu")),
         ]);
 
+        // The XDG mime database and .desktop entries cost ~12ms to parse. Do it
+        // before the first right-click asks for them.
+        cx.background_spawn(async { opener::warm_caches() }).detach();
+
         let bounds = Bounds::centered(None, size(px(1100.0), px(700.0)), cx);
         cx.open_window(
             WindowOptions {

@@ -266,25 +266,17 @@ impl DirPane {
         };
 
         let mut items = Vec::new();
+        // Where the "Open With" section lands once it resolves.
+        let mut open_with_ix = None;
         if on_rows {
             items.push(MenuItem::action("Open", dispatch(Box::new(OpenSelected))));
 
-            // Flat "Open With" section: the registered apps for the anchored
-            // file's MIME type, launched directly (no action round-trip).
+            // MIME detection reads the head of the file, so it can block for as
+            // long as the filesystem wants to take — unacceptable on a network
+            // mount. The menu opens without this section and grows it in.
             let anchor_entry = self.anchor_ix.and_then(|ix| self.entries.get(ix));
             if let Some(entry) = anchor_entry.filter(|e| !e.is_dir) {
-                let apps = crate::opener::apps_for(&entry.path);
-                if !apps.is_empty() {
-                    items.push(MenuItem::Separator);
-                }
-                for app in apps.into_iter().take(8) {
-                    let label = format!("Open with {}", app.name);
-                    items.push(MenuItem::action(label, move |_, _| {
-                        if let Err(err) = crate::opener::launch(&app) {
-                            eprintln!("[pane] launch failed: {err}");
-                        }
-                    }));
-                }
+                open_with_ix = Some((items.len(), entry.path.clone()));
             }
             items.push(MenuItem::Separator);
             items.push(MenuItem::action(
@@ -303,6 +295,38 @@ impl DirPane {
         ));
 
         self.show_menu(items, position, window, cx);
+
+        if let Some((ix, path)) = open_with_ix {
+            self.resolve_open_with(ix, path, cx);
+        }
+    }
+
+    /// Resolve registered applications off the UI thread, then splice them into
+    /// the open menu. A menu dismissed before this lands drops the result.
+    fn resolve_open_with(&mut self, ix: usize, path: PathBuf, cx: &mut Context<Self>) {
+        let apps = cx.background_spawn(async move { crate::opener::apps_for(&path) });
+        cx.spawn(async move |this, cx| {
+            let apps = apps.await;
+            if apps.is_empty() {
+                return;
+            }
+            this.update(cx, |this, cx| {
+                let Some((_, menu)) = this.context_menu.as_ref() else {
+                    return;
+                };
+                let mut items = vec![MenuItem::Separator];
+                items.extend(apps.into_iter().take(8).map(|app| {
+                    MenuItem::action(format!("Open with {}", app.name), move |_, _| {
+                        if let Err(err) = crate::opener::launch(&app) {
+                            eprintln!("[pane] launch failed: {err}");
+                        }
+                    })
+                }));
+                menu.update(cx, |menu, cx| menu.insert_items(ix, items, cx));
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The pane view menu behind the hamburger button.

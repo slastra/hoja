@@ -390,6 +390,62 @@ fn preset_policy_never_prompts() {
     assert_eq!(summary.outcome, Outcome::Completed);
 }
 
+#[test]
+fn move_overwrite_replaces_and_keep_both_renames() {
+    // The move path renames without replacing, so an Overwrite decision has to
+    // clear the destination explicitly. Both outcomes are checked here because
+    // getting the first wrong silently refuses, and the second silently clobbers.
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+
+    let a = write_file(src_dir.path(), "m.txt", b"new");
+    write_file(dst_dir.path(), "m.txt", b"old");
+    let handle = spawn_job(move_spec(vec![a.clone()], dst_dir.path())).unwrap();
+    let (_, summary) = drain(&handle, || ConflictDecision::Apply {
+        choice: ConflictChoice::Overwrite,
+        apply_to_all: false,
+    });
+    assert_eq!(summary.outcome, Outcome::Completed);
+    assert_eq!(std::fs::read(dst_dir.path().join("m.txt")).unwrap(), b"new");
+    assert!(!a.exists(), "source removed after a move");
+
+    let b = write_file(src_dir.path(), "m.txt", b"second");
+    let handle = spawn_job(move_spec(vec![b], dst_dir.path())).unwrap();
+    let (_, summary) = drain(&handle, || ConflictDecision::Apply {
+        choice: ConflictChoice::KeepBoth,
+        apply_to_all: false,
+    });
+    assert_eq!(summary.outcome, Outcome::Completed);
+    assert_eq!(std::fs::read(dst_dir.path().join("m.txt")).unwrap(), b"new");
+    assert_eq!(
+        std::fs::read(dst_dir.path().join("m (copy).txt")).unwrap(),
+        b"second"
+    );
+}
+
+#[test]
+fn moving_a_directory_onto_an_existing_one_merges() {
+    // The directory fast path uses NOREPLACE, so an occupied destination must
+    // fall through to a merge rather than failing the job.
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    std::fs::create_dir(src_dir.path().join("tree")).unwrap();
+    write_file(&src_dir.path().join("tree"), "fresh.txt", b"f");
+    std::fs::create_dir(dst_dir.path().join("tree")).unwrap();
+    write_file(&dst_dir.path().join("tree"), "existing.txt", b"e");
+
+    let handle = spawn_job(move_spec(
+        vec![src_dir.path().join("tree")],
+        dst_dir.path(),
+    ))
+    .unwrap();
+    let (_, summary) = drain(&handle, never_conflict);
+
+    assert_eq!(summary.outcome, Outcome::Completed);
+    assert!(dst_dir.path().join("tree/existing.txt").exists());
+    assert!(dst_dir.path().join("tree/fresh.txt").exists());
+}
+
 // ---- Errors, cancellation -------------------------------------------------
 
 #[test]
