@@ -38,6 +38,8 @@ for important data.
   the files on one filesystem and copies them across filesystems, which is the
   usual behaviour. Hold `ctrl` to copy or `shift` to move. Files that come from
   another application are always copied.
+- **Live listings.** pane watches the directory it shows. If another program
+  adds, removes, or changes a file, the pane re-lists and keeps your selection.
 - **Git status.** In a git repository, the colour of a file name shows its
   status: added, modified, deleted, renamed, or in conflict. A folder shows
   the status of the files in it. Ignored files are dim. pane asks `git`

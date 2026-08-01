@@ -59,6 +59,10 @@ actions!(
     ]
 );
 
+/// Poll step for the directory watcher. Two of these bound how long a change
+/// made elsewhere stays invisible, and also how often a busy directory re-lists.
+const WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(400);
+
 const ROW_HEIGHT: f32 = 22.;
 const HEADER_HEIGHT: f32 = 24.;
 /// Grab area between two column headers.
@@ -278,6 +282,10 @@ pub struct DirPane {
     /// repository, and empty until the background query lands.
     git: crate::git::GitStatuses,
     git_task: Option<Task<()>>,
+    /// The directory the change watcher is armed on, so re-listing the same
+    /// directory does not tear down and rebuild the inotify watch.
+    watched: Option<PathBuf>,
+    watch_task: Option<Task<()>>,
     view: ViewSettings,
     /// The directory `entries` was built from. Differs from `dir` while a load
     /// is in flight, which is how a navigation is told apart from a refresh.
@@ -333,6 +341,8 @@ impl DirPane {
             resize: None,
             git: crate::git::GitStatuses::new(),
             git_task: None,
+            watched: None,
+            watch_task: None,
             view,
             loaded_dir: PathBuf::new(),
             error: None,
@@ -778,6 +788,7 @@ impl DirPane {
             self.pending_select = self.selected_names();
         }
         self.reload_git(cx);
+        self.watch_dir(cx);
 
         let dir = self.dir.clone();
         let sort = self.view.sort;
@@ -868,6 +879,77 @@ impl DirPane {
             sources,
             dest,
         });
+    }
+
+    /// Re-list when something other than pane changes this directory.
+    ///
+    /// Without this the listing goes quietly stale: a file dragged out to
+    /// another application, removed in a terminal, or written by a build all
+    /// leave the pane showing entries that are no longer there. A file manager
+    /// showing yesterday's truth is worse than a slow one.
+    fn watch_dir(&mut self, cx: &mut Context<Self>) {
+        if self.watched.as_deref() == Some(self.dir.as_path()) {
+            return;
+        }
+        self.watched = Some(self.dir.clone());
+        let dir = self.dir.clone();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = match notify::recommended_watcher(move |res| {
+            let _ = tx.send(res);
+        }) {
+            Ok(watcher) => watcher,
+            Err(err) => {
+                eprintln!("[pane] directory watcher unavailable: {err}");
+                self.watch_task = None;
+                return;
+            }
+        };
+
+        use notify::Watcher as _;
+        if let Err(err) = watcher.watch(&dir, notify::RecursiveMode::NonRecursive) {
+            // An unreadable or vanished directory is not worth a message: the
+            // listing itself already reports that.
+            let _ = err;
+            self.watch_task = None;
+            return;
+        }
+
+        self.watch_task = Some(cx.spawn(async move |this, cx| {
+            // Keep the watcher alive for the lifetime of this task.
+            let _watcher = watcher;
+            loop {
+                // Poll rather than blocking on `recv`, so the receiver stays
+                // owned by this task instead of moving into a new future each
+                // iteration.
+                cx.background_executor().timer(WATCH_INTERVAL).await;
+
+                let mut changed = false;
+                while rx.try_recv().is_ok() {
+                    changed = true;
+                }
+                if !changed {
+                    continue;
+                }
+
+                // A copy or an extract emits one event per file. Coalesce the
+                // burst so a long operation re-lists a few times rather than
+                // thousands, which matters when the directory is large.
+                cx.background_executor().timer(WATCH_INTERVAL).await;
+                while rx.try_recv().is_ok() {}
+
+                let alive = this.update(cx, |this, cx| {
+                    // Re-listing under an open rename editor would rebuild the
+                    // rows the editor is anchored to.
+                    if !this.has_inline_editor() {
+                        this.reload(cx);
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        }));
     }
 
     /// Ask git about this directory off the UI thread.
