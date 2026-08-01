@@ -102,25 +102,31 @@ impl Default for Sort {
 ///
 /// Unreadable individual entries are skipped rather than failing the whole listing; a
 /// directory with one bad inode should still show everything else.
-pub fn read_dir(path: &Path) -> anyhow::Result<Vec<DirEntry>> {
+pub fn read_dir(path: &Path, include_hidden: bool) -> anyhow::Result<Vec<DirEntry>> {
     Ok(std::fs::read_dir(path)?
         .filter_map(Result::ok)
         // In-progress transfer temps are an implementation detail; a crash can
         // orphan them until the journal (M4) grows a reaper, and either way
         // they should not appear in listings.
         .filter(|e| !pane_transfer::is_partial_name(&e.file_name().to_string_lossy()))
+        .filter(|e| include_hidden || !e.file_name().to_string_lossy().starts_with('.'))
         .map(|e| DirEntry::from_std(&e))
         .collect())
 }
 
 /// Order a listing in place.
 ///
-/// Directories always group before files regardless of key or direction — flipping that
-/// is nobody's idea of "sort by size, descending". Only the order *within* each group
-/// reverses.
-pub fn sort_entries(entries: &mut [DirEntry], sort: Sort) {
+/// With `folders_first`, directories group before files regardless of key or
+/// direction — flipping the grouping is nobody's idea of "sort by size,
+/// descending"; only the order *within* each group reverses.
+pub fn sort_entries(entries: &mut [DirEntry], sort: Sort, folders_first: bool) {
     entries.sort_by(|a, b| {
-        b.is_dir.cmp(&a.is_dir).then_with(|| {
+        let group = if folders_first {
+            b.is_dir.cmp(&a.is_dir)
+        } else {
+            std::cmp::Ordering::Equal
+        };
+        group.then_with(|| {
             let ordering = match sort.key {
                 SortKey::Name => natural_cmp(&a.name, &b.name),
                 SortKey::Size => a.size.unwrap_or(0).cmp(&b.size.unwrap_or(0)),
@@ -321,7 +327,7 @@ mod tests {
 
         for dir in [SortDir::Ascending, SortDir::Descending] {
             for key in [SortKey::Name, SortKey::Size, SortKey::Kind, SortKey::Modified] {
-                sort_entries(&mut v, Sort { key, dir });
+                sort_entries(&mut v, Sort { key, dir }, true);
                 assert!(
                     v[0].is_dir && v[1].is_dir && !v[2].is_dir && !v[3].is_dir,
                     "{key:?}/{dir:?} broke directory grouping: {:?}",
@@ -339,10 +345,10 @@ mod tests {
             entry("file1.txt", false, 3, 3),
         ];
 
-        sort_entries(&mut v, Sort { key: SortKey::Name, dir: SortDir::Ascending });
+        sort_entries(&mut v, Sort { key: SortKey::Name, dir: SortDir::Ascending }, true);
         assert_eq!(names(&v), ["file1.txt", "file2.txt", "file10.txt"]);
 
-        sort_entries(&mut v, Sort { key: SortKey::Name, dir: SortDir::Descending });
+        sort_entries(&mut v, Sort { key: SortKey::Name, dir: SortDir::Descending }, true);
         assert_eq!(names(&v), ["file10.txt", "file2.txt", "file1.txt"]);
     }
 
@@ -354,10 +360,10 @@ mod tests {
             entry("c", false, 90, 200),
         ];
 
-        sort_entries(&mut v, Sort { key: SortKey::Size, dir: SortDir::Ascending });
+        sort_entries(&mut v, Sort { key: SortKey::Size, dir: SortDir::Ascending }, true);
         assert_eq!(names(&v), ["c", "a", "b"]);
 
-        sort_entries(&mut v, Sort { key: SortKey::Modified, dir: SortDir::Descending });
+        sort_entries(&mut v, Sort { key: SortKey::Modified, dir: SortDir::Descending }, true);
         assert_eq!(names(&v), ["a", "c", "b"]);
     }
 
@@ -371,11 +377,47 @@ mod tests {
         ];
         let sort = Sort { key: SortKey::Size, dir: SortDir::Ascending };
 
-        sort_entries(&mut v, sort);
+        sort_entries(&mut v, sort, true);
         assert_eq!(names(&v), ["a", "b", "c"]);
         // Re-sorting must not shuffle an already-sorted list.
-        sort_entries(&mut v, sort);
+        sort_entries(&mut v, sort, true);
         assert_eq!(names(&v), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn hidden_files_are_filtered() {
+        let dir = std::env::temp_dir().join(format!("pane-fs-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("visible.txt"), b"v").unwrap();
+        std::fs::write(dir.join(".hidden"), b"h").unwrap();
+        std::fs::create_dir_all(dir.join(".hidden-dir")).unwrap();
+
+        let without = read_dir(&dir, false).unwrap();
+        assert_eq!(
+            without.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            vec!["visible.txt"]
+        );
+
+        let mut with = read_dir(&dir, true).unwrap();
+        with.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(
+            with.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            vec![".hidden", ".hidden-dir", "visible.txt"]
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn folders_first_is_optional() {
+        let mut v = vec![
+            entry("zdir", true, 0, 1),
+            entry("afile", false, 1, 2),
+        ];
+        sort_entries(&mut v, Sort::default(), true);
+        assert_eq!(names(&v), ["zdir", "afile"]);
+        sort_entries(&mut v, Sort::default(), false);
+        assert_eq!(names(&v), ["afile", "zdir"]);
     }
 
     #[test]
@@ -429,7 +471,7 @@ mod bench {
         for key in [SortKey::Name, SortKey::Size, SortKey::Kind, SortKey::Modified] {
             let mut work = entries.clone();
             let start = std::time::Instant::now();
-            sort_entries(&mut work, Sort { key, dir: SortDir::Descending });
+            sort_entries(&mut work, Sort { key, dir: SortDir::Descending }, true);
             println!("{key:?}: {:?}", start.elapsed());
         }
         entries.clear();

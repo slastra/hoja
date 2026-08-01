@@ -18,7 +18,27 @@ use crate::path_editor::{PathEditor, PathEditorEvent};
 use crate::icon::Icon;
 use crate::workspace;
 
-actions!(pane, [GoUp, OpenSelected, SelectAll, ClearSelection, NavBack, NavForward, GoHome, EditPath, RenameSelected]);
+actions!(
+    pane,
+    [
+        GoUp,
+        OpenSelected,
+        SelectAll,
+        ClearSelection,
+        NavBack,
+        NavForward,
+        GoHome,
+        EditPath,
+        RenameSelected,
+        ToggleHiddenFiles,
+        ToggleFoldersFirst,
+        Refresh,
+        SortByName,
+        SortBySize,
+        SortByKind,
+        SortByModified,
+    ]
+);
 
 const ROW_HEIGHT: f32 = 22.;
 const HEADER_HEIGHT: f32 = 24.;
@@ -103,6 +123,8 @@ pub struct DirPane {
     /// Per-pane, because panes in a split can be very different widths.
     widths: ColumnWidths,
     sort: Sort,
+    show_hidden: bool,
+    folders_first: bool,
     /// Set when the directory could not be read at all (permissions, gone, not a dir).
     error: Option<String>,
     /// Held so that navigating away cancels an in-flight read by dropping its task.
@@ -141,6 +163,8 @@ impl DirPane {
             scroll: UniformListScrollHandle::new(),
             widths: ColumnWidths::default(),
             sort: Sort::default(),
+            show_hidden: false,
+            folders_first: true,
             error: None,
             load_task: None,
             sort_task: None,
@@ -156,6 +180,56 @@ impl DirPane {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Splits copy the source pane's view settings.
+    pub fn view_settings(&self) -> (bool, bool) {
+        (self.show_hidden, self.folders_first)
+    }
+
+    pub fn set_view_settings(
+        &mut self,
+        show_hidden: bool,
+        folders_first: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if (self.show_hidden, self.folders_first) != (show_hidden, folders_first) {
+            self.show_hidden = show_hidden;
+            self.folders_first = folders_first;
+            self.reload(cx);
+        }
+    }
+
+    fn toggle_hidden(&mut self, _: &ToggleHiddenFiles, _w: &mut Window, cx: &mut Context<Self>) {
+        self.show_hidden = !self.show_hidden;
+        self.reload(cx);
+    }
+
+    fn toggle_folders_first(
+        &mut self,
+        _: &ToggleFoldersFirst,
+        _w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.folders_first = !self.folders_first;
+        self.apply_sort(cx);
+    }
+
+    fn refresh_action(&mut self, _: &Refresh, _w: &mut Window, cx: &mut Context<Self>) {
+        self.reload(cx);
+    }
+
+    fn sort_by_name(&mut self, _: &SortByName, _w: &mut Window, cx: &mut Context<Self>) {
+        self.set_sort(SortKey::Name, cx);
+    }
+    fn sort_by_size(&mut self, _: &SortBySize, _w: &mut Window, cx: &mut Context<Self>) {
+        self.set_sort(SortKey::Size, cx);
+    }
+    fn sort_by_kind(&mut self, _: &SortByKind, _w: &mut Window, cx: &mut Context<Self>) {
+        self.set_sort(SortKey::Kind, cx);
+    }
+    fn sort_by_modified(&mut self, _: &SortByModified, _w: &mut Window, cx: &mut Context<Self>) {
+        self.set_sort(SortKey::Modified, cx);
     }
 
     /// Paths of the current selection, in listing order.
@@ -254,6 +328,96 @@ impl DirPane {
         cx.notify();
     }
 
+    /// The pane view menu behind the hamburger button.
+    fn open_settings_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pane_focus = self.focus_handle.clone();
+        let dispatch = move |action: Box<dyn gpui::Action>| {
+            let pane_focus = pane_focus.clone();
+            move |window: &mut Window, cx: &mut App| {
+                window.focus(&pane_focus, cx);
+                window.dispatch_action(action.boxed_clone(), cx);
+            }
+        };
+
+        let items = vec![
+            MenuItem::toggle(
+                "Show Hidden Files",
+                self.show_hidden,
+                dispatch(Box::new(ToggleHiddenFiles)),
+            ),
+            MenuItem::toggle(
+                "Folders First",
+                self.folders_first,
+                dispatch(Box::new(ToggleFoldersFirst)),
+            ),
+            MenuItem::Separator,
+            MenuItem::toggle(
+                "Sort by Name",
+                self.sort.key == SortKey::Name,
+                dispatch(Box::new(SortByName)),
+            ),
+            MenuItem::toggle(
+                "Sort by Size",
+                self.sort.key == SortKey::Size,
+                dispatch(Box::new(SortBySize)),
+            ),
+            MenuItem::toggle(
+                "Sort by Kind",
+                self.sort.key == SortKey::Kind,
+                dispatch(Box::new(SortByKind)),
+            ),
+            MenuItem::toggle(
+                "Sort by Modified",
+                self.sort.key == SortKey::Modified,
+                dispatch(Box::new(SortByModified)),
+            ),
+            MenuItem::Separator,
+            MenuItem::action("Refresh", dispatch(Box::new(Refresh))),
+        ];
+
+        self.show_menu(items, position, window, cx);
+    }
+
+    /// Shared summoning for the context and settings menus: build, subscribe,
+    /// deferred focus, store in the single overlay slot.
+    fn show_menu(
+        &mut self,
+        items: Vec<MenuItem>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let menu = cx.new(|cx| FileMenu::new(items, window, cx));
+
+        cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {
+            this.context_menu = None;
+            // A menu item may have started an inline edit (Rename, path edit);
+            // refocusing the pane here would stomp the editor's focus.
+            if this.renaming.is_none() && this.path_editor.is_none() {
+                window.focus(&this.focus_handle, cx);
+            }
+            cx.notify();
+        })
+        .detach();
+
+        // Deferred draws join the dispatch tree a frame late; focusing the menu
+        // needs the double hop or the blur-dismiss fires immediately.
+        let menu_focus = menu.focus_handle(cx);
+        window.on_next_frame(move |window, _| {
+            window.on_next_frame(move |window, cx| {
+                window.focus(&menu_focus, cx);
+            });
+        });
+
+        self.context_menu = Some((position, menu));
+        cx.notify();
+    }
+
     fn select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
         self.selected = (0..self.entries.len()).collect();
         if self.anchor_ix.is_none() && !self.entries.is_empty() {
@@ -275,14 +439,16 @@ impl DirPane {
     fn reload(&mut self, cx: &mut Context<Self>) {
         let dir = self.dir.clone();
         let sort = self.sort;
+        let show_hidden = self.show_hidden;
+        let folders_first = self.folders_first;
 
         self.load_task = Some(cx.spawn(async move |this, cx| {
             // `read_dir` is blocking and sorting a large listing costs ~100ms, so both
             // run off the foreground executor in the same hop.
             let result = cx
                 .background_spawn(async move {
-                    let mut entries = fs::read_dir(&dir)?;
-                    fs::sort_entries(&mut entries, sort);
+                    let mut entries = fs::read_dir(&dir, show_hidden)?;
+                    fs::sort_entries(&mut entries, sort, folders_first);
                     anyhow::Ok(entries)
                 })
                 .await;
@@ -346,12 +512,13 @@ impl DirPane {
     /// screen until the sorted one arrives rather than blanking.
     fn apply_sort(&mut self, cx: &mut Context<Self>) {
         let sort = self.sort;
+        let folders_first = self.folders_first;
         let mut entries = self.entries.clone();
 
         self.sort_task = Some(cx.spawn(async move |this, cx| {
             let entries = cx
                 .background_spawn(async move {
-                    fs::sort_entries(&mut entries, sort);
+                    fs::sort_entries(&mut entries, sort, folders_first);
                     entries
                 })
                 .await;
@@ -660,7 +827,7 @@ impl DirPane {
             .child(match self.path_editor.clone() {
                 Some(editor) => editor.into_any_element(),
                 None => div()
-                    .id("path-display")
+                    .id("path-display-slot")
                     .flex_1()
                     .px_2()
                     .truncate()
@@ -672,6 +839,26 @@ impl DirPane {
                     .child(self.dir.display().to_string())
                     .into_any_element(),
             })
+            .child(
+                div()
+                    .id("pane-menu")
+                    .flex_none()
+                    .size(px(20.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(hover_bg))
+                    .child(Icon::from_path("icons/file_icons/menu.svg", content))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.open_settings_menu(event.position, window, cx);
+                        }),
+                    ),
+            )
     }
 
     fn render_header(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
@@ -917,6 +1104,13 @@ impl Render for DirPane {
             .on_action(cx.listener(Self::go_home))
             .on_action(cx.listener(Self::edit_path))
             .on_action(cx.listener(Self::rename_selected))
+            .on_action(cx.listener(Self::toggle_hidden))
+            .on_action(cx.listener(Self::toggle_folders_first))
+            .on_action(cx.listener(Self::refresh_action))
+            .on_action(cx.listener(Self::sort_by_name))
+            .on_action(cx.listener(Self::sort_by_size))
+            .on_action(cx.listener(Self::sort_by_kind))
+            .on_action(cx.listener(Self::sort_by_modified))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::clear_selection))
             .on_mouse_down(

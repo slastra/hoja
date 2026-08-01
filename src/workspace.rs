@@ -126,8 +126,12 @@ impl Workspace {
         // The new pane inherits the source pane's directory, so a split is a cheap way
         // to get a second view of where you already are.
         let dir = self.active_pane.read(cx).dir().to_path_buf();
+        let (show_hidden, folders_first) = self.active_pane.read(cx).view_settings();
         let source = self.active_pane.clone();
         let new_pane = self.add_pane(dir, window, cx);
+        new_pane.update(cx, |pane, cx| {
+            pane.set_view_settings(show_hidden, folders_first, cx);
+        });
         self.center.split(&source, &new_pane, direction);
         #[cfg(debug_assertions)]
         eprintln!("[pane] split {direction:?} -> {}", self.center.shape());

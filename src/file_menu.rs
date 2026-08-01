@@ -31,6 +31,8 @@ pub enum MenuItem {
         label: SharedString,
         handler: Handler,
         disabled: bool,
+        /// `Some(state)` renders a check slot: toggles and radio groups.
+        checked: Option<bool>,
     },
     Separator,
 }
@@ -44,6 +46,21 @@ impl MenuItem {
             label: label.into(),
             handler: Rc::new(handler),
             disabled: false,
+            checked: None,
+        }
+    }
+
+    /// A checkable item: toggles and radio-group members.
+    pub fn toggle(
+        label: impl Into<SharedString>,
+        checked: bool,
+        handler: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self::Action {
+            label: label.into(),
+            handler: Rc::new(handler),
+            disabled: false,
+            checked: Some(checked),
         }
     }
 
@@ -53,6 +70,7 @@ impl MenuItem {
             label: label.into(),
             handler: Rc::new(|_, _| {}),
             disabled: true,
+            checked: None,
         }
     }
 
@@ -173,14 +191,20 @@ impl Render for FileMenu {
                     label,
                     handler,
                     disabled,
+                    checked,
                 } => {
                     let handler = handler.clone();
                     let disabled = *disabled;
+                    let checked = *checked;
                     let selected = self.selected == Some(ix);
                     div()
                         .id(ix)
                         .px_3()
                         .py_0p5()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1p5()
                         .when(selected, |el| el.bg(colors.element_selected))
                         .when(disabled, |el| el.text_color(colors.text_muted))
                         .when(!disabled, |el| {
@@ -190,6 +214,16 @@ impl Render for FileMenu {
                                     handler(window, cx);
                                     cx.emit(DismissEvent);
                                 }))
+                        })
+                        .when_some(checked, |el, is_checked| {
+                            el.child(
+                                div().w(px(14.)).flex_none().when(is_checked, |slot| {
+                                    slot.child(crate::icon::Icon::from_path(
+                                        "icons/file_icons/check.svg",
+                                        colors.text,
+                                    ))
+                                }),
+                            )
                         })
                         .child(label.clone())
                         .into_any_element()

@@ -17,6 +17,9 @@ for important data.
   second. The list stays smooth when you scroll.
 - **Navigation.** Each pane has its own history. Use the back, forward, up, and
   home buttons. Click the path, then type a new path.
+- **View settings.** Each pane has a menu at the right end of the toolbar.
+  It controls hidden files, folder grouping, and the sort order. pane does
+  not show hidden files by default.
 - **File transfer.** pane selects the fastest correct method for each file:
   - A move on one filesystem uses `rename()`. This is instant.
   - A copy on btrfs or XFS uses reflink. This is instant for all file sizes.
@@ -63,6 +66,7 @@ The `PANE_THEME` environment variable also sets the theme.
 | `alt-↑` / `backspace` | Go to the parent directory |
 | `alt-home` | Go to the home directory |
 | `ctrl-l` | Edit the path |
+| `ctrl-h` | Show or hide hidden files |
 | `f2` | Rename the selected entry |
 | `enter` | Open the selected directory |
 | `ctrl-c` / `ctrl-x` / `ctrl-v` | Copy / cut / paste |
