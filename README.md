@@ -69,6 +69,8 @@ Keys work on the pane that has focus.
 | Key | Function |
 |---|---|
 | `↑` `↓` | Move the selection one row |
+| `pageup` `pagedown` | Move the selection one screen |
+| `home` `end` | Move to the first or the last entry |
 | `enter` | Open the selected entry |
 | type a name | Jump to the first match. Repeat one letter to cycle the matches. |
 | `alt-←` `alt-→` | Go back and forward in the history |
@@ -81,6 +83,8 @@ Keys work on the pane that has focus.
 | Key | Function |
 |---|---|
 | `shift-↑` `shift-↓` | Extend the selection one row |
+| `shift-pageup` `shift-pagedown` | Extend the selection one screen |
+| `shift-home` `shift-end` | Extend the selection to the first or the last entry |
 | `ctrl-a` | Select all |
 | `escape` | Clear the selection |
 

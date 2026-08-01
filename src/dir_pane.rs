@@ -28,8 +28,16 @@ actions!(
         ClearSelection,
         MoveUp,
         MoveDown,
+        MovePageUp,
+        MovePageDown,
+        MoveToTop,
+        MoveToBottom,
         ExtendUp,
         ExtendDown,
+        ExtendPageUp,
+        ExtendPageDown,
+        ExtendToTop,
+        ExtendToBottom,
         NavBack,
         NavForward,
         GoHome,
@@ -108,6 +116,18 @@ impl ColumnWidths {
         };
         *slot = width.clamp(px(COL_MIN_WIDTH), px(COL_MAX_WIDTH));
     }
+}
+
+/// A keyboard movement of the lead row. Each has a plain form that takes the
+/// selection with it and a shift form that extends the selection instead.
+#[derive(Clone, Copy)]
+enum Motion {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Top,
+    Bottom,
 }
 
 /// Marker type that `on_drag_move` dispatches on. Which column is being
@@ -546,9 +566,49 @@ impl DirPane {
         self.cursor_ix = Some(ix);
     }
 
-    /// Arrow key: move the lead and take the selection with it.
-    fn move_cursor(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let Some(ix) = fs::step_row(self.entries.len(), self.cursor_ix, delta) else {
+    /// Rows a page key moves, from the last layout.
+    ///
+    /// One row short of a screenful, so a page keeps a line of context and you
+    /// can tell where you came from — the convention in every list and editor.
+    /// The size is unknown only before the first layout, which cannot happen
+    /// before there is a window to press a key in.
+    fn rows_per_page(&self) -> usize {
+        // `ItemSize.item` is NOT a row: uniform_list stores the list's padded
+        // viewport there, and puts row_height * item_count in `contents`. The
+        // field name invites dividing the viewport by itself, which yields a
+        // one-row page.
+        let len = self.entries.len();
+        let state = self.scroll.0.borrow();
+        let Some(size) = state.last_item_size else {
+            return 1;
+        };
+        if len == 0 {
+            return 1;
+        }
+        let row = size.contents.height / len as f32;
+        if row <= px(0.) {
+            return 1;
+        }
+        ((size.item.height / row) as usize).saturating_sub(1).max(1)
+    }
+
+    /// Where `motion` lands, or `None` when the listing is empty.
+    fn destination(&self, motion: Motion) -> Option<usize> {
+        let len = self.entries.len();
+        let step = |delta: isize| fs::step_row(len, self.cursor_ix, delta);
+        match motion {
+            Motion::Up => step(-1),
+            Motion::Down => step(1),
+            Motion::PageUp => step(-(self.rows_per_page() as isize)),
+            Motion::PageDown => step(self.rows_per_page() as isize),
+            Motion::Top => (len > 0).then_some(0),
+            Motion::Bottom => len.checked_sub(1),
+        }
+    }
+
+    /// Move the lead and take the selection with it.
+    fn move_cursor(&mut self, motion: Motion, cx: &mut Context<Self>) {
+        let Some(ix) = self.destination(motion) else {
             return;
         };
         self.selected = BTreeSet::from([ix]);
@@ -556,9 +616,9 @@ impl DirPane {
         self.reveal(ix, cx);
     }
 
-    /// Shift-arrow: move the lead, select everything back to the anchor.
-    fn extend_cursor(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let Some(ix) = fs::step_row(self.entries.len(), self.cursor_ix, delta) else {
+    /// Move the lead, select everything back to the anchor.
+    fn extend_cursor(&mut self, motion: Motion, cx: &mut Context<Self>) {
+        let Some(ix) = self.destination(motion) else {
             return;
         };
         // A shift-arrow with nothing selected yet anchors where it starts, so
@@ -1364,10 +1424,34 @@ impl Render for DirPane {
             }))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::clear_selection))
-            .on_action(cx.listener(|this, _: &MoveUp, _, cx| this.move_cursor(-1, cx)))
-            .on_action(cx.listener(|this, _: &MoveDown, _, cx| this.move_cursor(1, cx)))
-            .on_action(cx.listener(|this, _: &ExtendUp, _, cx| this.extend_cursor(-1, cx)))
-            .on_action(cx.listener(|this, _: &ExtendDown, _, cx| this.extend_cursor(1, cx)))
+            .on_action(cx.listener(|this, _: &MoveUp, _, cx| this.move_cursor(Motion::Up, cx)))
+            .on_action(cx.listener(|this, _: &MoveDown, _, cx| this.move_cursor(Motion::Down, cx)))
+            .on_action(cx.listener(|this, _: &MovePageUp, _, cx| {
+                this.move_cursor(Motion::PageUp, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MovePageDown, _, cx| {
+                this.move_cursor(Motion::PageDown, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MoveToTop, _, cx| this.move_cursor(Motion::Top, cx)))
+            .on_action(cx.listener(|this, _: &MoveToBottom, _, cx| {
+                this.move_cursor(Motion::Bottom, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExtendUp, _, cx| this.extend_cursor(Motion::Up, cx)))
+            .on_action(cx.listener(|this, _: &ExtendDown, _, cx| {
+                this.extend_cursor(Motion::Down, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExtendPageUp, _, cx| {
+                this.extend_cursor(Motion::PageUp, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExtendPageDown, _, cx| {
+                this.extend_cursor(Motion::PageDown, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExtendToTop, _, cx| {
+                this.extend_cursor(Motion::Top, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExtendToBottom, _, cx| {
+                this.extend_cursor(Motion::Bottom, cx)
+            }))
             .on_mouse_down(
                 MouseButton::Navigate(gpui::NavigationDirection::Back),
                 cx.listener(|this, _: &MouseDownEvent, window, cx| {
