@@ -34,6 +34,7 @@ actions!(
         ToggleHiddenFiles,
         ToggleFoldersFirst,
         Refresh,
+        ReverseSort,
         SortByName,
         SortBySize,
         SortByKind,
@@ -124,6 +125,9 @@ pub struct DirPane {
     /// Per-pane, because panes in a split can be very different widths.
     widths: ColumnWidths,
     view: ViewSettings,
+    /// The directory `entries` was built from. Differs from `dir` while a load
+    /// is in flight, which is how a navigation is told apart from a refresh.
+    loaded_dir: PathBuf,
     /// Set when the directory could not be read at all (permissions, gone, not a dir).
     error: Option<String>,
     /// Held so that navigating away cancels an in-flight read by dropping its task.
@@ -134,9 +138,11 @@ pub struct DirPane {
     path_editor: Option<Entity<PathEditor>>,
     /// Inline rename: the row index and its editor.
     renaming: Option<(usize, Entity<PathEditor>)>,
-    /// After a reload, select the entry with this name (used to keep the
-    /// renamed entry selected once the listing refreshes).
-    pending_select: Option<String>,
+    /// Names to re-select once the listing is rebuilt. Every path that
+    /// replaces `entries` snapshots the current selection into this, so
+    /// sorting, refreshing, or a job finishing elsewhere does not silently
+    /// drop what the user had selected.
+    pending_select: Vec<String>,
     /// Type-ahead find: the last keystroke's time and the accumulated prefix.
     /// One value, so "no buffer" cannot disagree with "no timestamp".
     type_ahead: Option<(Instant, String)>,
@@ -170,13 +176,14 @@ impl DirPane {
             scroll: UniformListScrollHandle::new(),
             widths: ColumnWidths::default(),
             view,
+            loaded_dir: PathBuf::new(),
             error: None,
             load_task: None,
             sort_task: None,
             context_menu: None,
             path_editor: None,
             renaming: None,
-            pending_select: None,
+            pending_select: Vec::new(),
             type_ahead: None,
             _subscriptions: subscriptions,
         };
@@ -213,16 +220,16 @@ impl DirPane {
     }
 
     fn sort_by_name(&mut self, _: &SortByName, _w: &mut Window, cx: &mut Context<Self>) {
-        self.set_sort(SortKey::Name, cx);
+        self.select_sort_key(SortKey::Name, cx);
     }
     fn sort_by_size(&mut self, _: &SortBySize, _w: &mut Window, cx: &mut Context<Self>) {
-        self.set_sort(SortKey::Size, cx);
+        self.select_sort_key(SortKey::Size, cx);
     }
     fn sort_by_kind(&mut self, _: &SortByKind, _w: &mut Window, cx: &mut Context<Self>) {
-        self.set_sort(SortKey::Kind, cx);
+        self.select_sort_key(SortKey::Kind, cx);
     }
     fn sort_by_modified(&mut self, _: &SortByModified, _w: &mut Window, cx: &mut Context<Self>) {
-        self.set_sort(SortKey::Modified, cx);
+        self.select_sort_key(SortKey::Modified, cx);
     }
 
     /// Paths of the current selection, in listing order.
@@ -347,6 +354,12 @@ impl DirPane {
                 dispatch(Box::new(SortByModified)),
             ),
             MenuItem::Separator,
+            MenuItem::toggle(
+                "Reverse Order",
+                self.view.sort.dir == SortDir::Descending,
+                dispatch(Box::new(ReverseSort)),
+            ),
+            MenuItem::Separator,
             MenuItem::action("Refresh", dispatch(Box::new(Refresh))),
         ];
 
@@ -441,6 +454,11 @@ impl DirPane {
     /// Assigning to `self.load_task` drops any previous task, which cancels a read that
     /// is still running — so hammering navigation cannot land stale entries.
     fn reload(&mut self, cx: &mut Context<Self>) {
+        // A directory change starts fresh; a refresh of the same directory
+        // keeps the selection.
+        if self.pending_select.is_empty() && self.dir == self.loaded_dir {
+            self.pending_select = self.selected_names();
+        }
         let dir = self.dir.clone();
         let sort = self.view.sort;
         let show_hidden = self.view.show_hidden;
@@ -468,45 +486,97 @@ impl DirPane {
                         this.error = Some(err.to_string());
                     }
                 }
-                this.selected.clear();
-                this.anchor_ix = None;
                 this.renaming = None;
-                if let Some(name) = this.pending_select.take()
-                    && let Some(ix) = this.entries.iter().position(|e| e.name == name)
-                {
-                    this.selected.insert(ix);
-                    this.anchor_ix = Some(ix);
-                    this.scroll
-                        .scroll_to_item(ix, gpui::ScrollStrategy::Center);
-                } else {
-                    this.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
-                }
+                this.loaded_dir = this.dir.clone();
+                this.restore_selection();
                 // Without this the mutation lands but nothing repaints.
                 cx.notify();
             });
         }));
     }
 
-    /// Header click: same column flips direction, a new column adopts its natural
-    /// starting direction.
-    fn set_sort(&mut self, key: SortKey, cx: &mut Context<Self>) {
-        self.view.sort = if self.view.sort.key == key {
-            Sort {
-                key,
-                dir: self.view.sort.dir.toggled(),
+    /// Names of the currently selected entries, in listing order.
+    fn selected_names(&self) -> Vec<String> {
+        self.selected
+            .iter()
+            .filter_map(|&ix| self.entries.get(ix))
+            .map(|e| e.name.clone())
+            .collect()
+    }
+
+    /// Re-select `pending_select` against the freshly built listing and scroll
+    /// the first survivor into view. Entries that disappeared are dropped.
+    fn restore_selection(&mut self) {
+        let wanted = std::mem::take(&mut self.pending_select);
+        self.selected.clear();
+        self.anchor_ix = None;
+        if wanted.is_empty() {
+            self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
+            return;
+        }
+        for (ix, entry) in self.entries.iter().enumerate() {
+            if wanted.contains(&entry.name) {
+                self.selected.insert(ix);
             }
+        }
+        self.anchor_ix = self.selected.iter().next().copied();
+        match self.anchor_ix {
+            Some(ix) => self.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Nearest),
+            None => self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top),
+        }
+    }
+
+    /// Header click: clicking the active column reverses it, a new column adopts
+    /// its natural starting direction. The header carries a chevron, so the
+    /// reversal is visible where it happens.
+    fn toggle_sort(&mut self, key: SortKey, cx: &mut Context<Self>) {
+        let dir = if self.view.sort.key == key {
+            self.view.sort.dir.toggled()
         } else {
+            Self::natural_direction(key)
+        };
+        self.set_sort(Sort { key, dir }, cx);
+    }
+
+    /// Choose a sort key without reversing. The view menu uses this: its check
+    /// mark cannot show a direction, so picking the key you already have must
+    /// be a no-op rather than a silent reversal.
+    fn select_sort_key(&mut self, key: SortKey, cx: &mut Context<Self>) {
+        if self.view.sort.key == key {
+            return;
+        }
+        self.set_sort(
             Sort {
                 key,
-                // Time starts newest-first; everything else starts ascending. Clicking
-                // "Modified" and getting 2019 first would be nobody's intent.
-                dir: match key {
-                    SortKey::Modified => SortDir::Descending,
-                    _ => SortDir::Ascending,
-                },
-            }
-        };
+                dir: Self::natural_direction(key),
+            },
+            cx,
+        );
+    }
+
+    /// Time starts newest-first; everything else starts ascending. Choosing
+    /// "Modified" and getting 2019 first would be nobody's intent.
+    fn natural_direction(key: SortKey) -> SortDir {
+        match key {
+            SortKey::Modified => SortDir::Descending,
+            _ => SortDir::Ascending,
+        }
+    }
+
+    fn set_sort(&mut self, sort: Sort, cx: &mut Context<Self>) {
+        if self.view.sort == sort {
+            return;
+        }
+        self.view.sort = sort;
         self.apply_sort(cx);
+    }
+
+    fn reverse_sort(&mut self, _: &ReverseSort, _w: &mut Window, cx: &mut Context<Self>) {
+        let sort = Sort {
+            key: self.view.sort.key,
+            dir: self.view.sort.dir.toggled(),
+        };
+        self.set_sort(sort, cx);
     }
 
     /// Re-order the listing already in memory, without re-reading the directory.
@@ -515,6 +585,9 @@ impl DirPane {
     /// frame budget, so it runs on the background executor. The current list stays on
     /// screen until the sorted one arrives rather than blanking.
     fn apply_sort(&mut self, cx: &mut Context<Self>) {
+        if self.pending_select.is_empty() {
+            self.pending_select = self.selected_names();
+        }
         let sort = self.view.sort;
         let folders_first = self.view.folders_first;
         let mut entries = self.entries.clone();
@@ -529,10 +602,9 @@ impl DirPane {
 
             let _ = this.update(cx, |this, cx| {
                 this.entries = entries;
-                // Selected rows are almost certainly somewhere else now.
-                this.selected.clear();
-                this.anchor_ix = None;
+                // The rows moved, so re-find them by name rather than index.
                 this.renaming = None;
+                this.restore_selection();
                 this.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
                 cx.notify();
             });
@@ -596,7 +668,7 @@ impl DirPane {
                 match this.commit_rename(ix, text) {
                     Ok(new_name) => {
                         this.renaming = None;
-                        this.pending_select = Some(new_name);
+                        this.pending_select = vec![new_name];
                         window.focus(&this.focus_handle, cx);
                         this.reload(cx);
                     }
@@ -902,7 +974,7 @@ impl DirPane {
                 .child(div().truncate().child(label))
                 .children(indicator.map(|path| Icon::from_path(path, content).size(px(12.))))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                    this.set_sort(key, cx);
+                    this.toggle_sort(key, cx);
                 }))
         };
 
@@ -1117,6 +1189,7 @@ impl Render for DirPane {
             .on_action(cx.listener(Self::toggle_hidden))
             .on_action(cx.listener(Self::toggle_folders_first))
             .on_action(cx.listener(Self::refresh_action))
+            .on_action(cx.listener(Self::reverse_sort))
             .on_action(cx.listener(Self::sort_by_name))
             .on_action(cx.listener(Self::sort_by_size))
             .on_action(cx.listener(Self::sort_by_kind))
