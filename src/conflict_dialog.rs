@@ -196,8 +196,9 @@ impl Render for ConflictDialog {
                 div()
                     .flex()
                     .flex_row()
-                    .justify_end()
                     .gap_2()
+                    // Cancel sits alone on the left; the per-file choices group
+                    // on the right.
                     .child(
                         div()
                             .id("cancel")
@@ -212,6 +213,7 @@ impl Render for ConflictDialog {
                                 this.send(ConflictDecision::CancelJob, cx)
                             })),
                     )
+                    .child(div().flex_1())
                     .child(button("skip", "Skip", false, ConflictChoice::Skip, cx))
                     .child(button(
                         "keep-both",
