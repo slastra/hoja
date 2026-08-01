@@ -28,6 +28,11 @@ for important data.
   - pane keeps permissions, times, extended attributes, symlinks, and
     hardlinks. Writes are atomic. On removable media, pane flushes data before
     it reports success.
+- **Delete with undo.** `delete` removes the selection and `ctrl-z` puts it
+  back. pane moves the files to the trash directory of the freedesktop
+  specification, on the same filesystem, so a delete is instant and other
+  file managers can empty what pane deletes. pane has no other trash
+  controls: no browser, no restore list, no empty command.
 - **Clipboard.** Copy and paste files between pane and other file managers.
   pane reads and writes the GNOME clipboard format.
 - **Themes.** pane reads Zed theme files. Put a theme file in
@@ -57,33 +62,76 @@ The `PANE_THEME` environment variable also sets the theme.
 
 ## Keys
 
+Keys work on the pane that has focus.
+
+**Move**
+
+| Key | Function |
+|---|---|
+| `↑` `↓` | Move the selection one row |
+| `enter` | Open the selected entry |
+| type a name | Jump to the first match. Repeat one letter to cycle the matches. |
+| `alt-←` `alt-→` | Go back and forward in the history |
+| `alt-↑` or `backspace` | Go to the parent directory |
+| `alt-home` | Go to the home directory |
+| `ctrl-l` | Edit the path |
+
+**Select**
+
+| Key | Function |
+|---|---|
+| `shift-↑` `shift-↓` | Extend the selection one row |
+| `ctrl-a` | Select all |
+| `escape` | Clear the selection |
+
+**Change files**
+
+| Key | Function |
+|---|---|
+| `f2` | Rename the selected entry |
+| `delete` | Delete the selection |
+| `ctrl-z` | Undo the last delete |
+| `ctrl-c` `ctrl-x` `ctrl-v` | Copy, cut, paste |
+
+**Panes and view**
+
 | Key | Function |
 |---|---|
 | `ctrl-k ctrl-←/→/↑/↓` | Split the active pane in that direction |
 | `ctrl-k ←/→/↑/↓` | Move focus to the adjacent pane |
 | `ctrl-k ctrl-w` | Close the active pane |
-| `alt-←` / `alt-→` | Go back / go forward in the history |
-| `alt-↑` / `backspace` | Go to the parent directory |
-| `alt-home` | Go to the home directory |
-| `ctrl-l` | Edit the path |
 | `ctrl-h` | Show or hide hidden files |
-| `f2` | Rename the selected entry |
-| `enter` | Open the selected directory |
-| `ctrl-c` / `ctrl-x` / `ctrl-v` | Copy / cut / paste |
-| `ctrl-a` | Select all |
-| `escape` | Clear the selection |
-| type a name | Jump to the first match; repeat a letter to cycle |
+| `ctrl-shift-d` | Dismiss finished transfers |
 
-Mouse controls:
+**Mouse**
 
-- Click a row to select it. Control-click to add or remove a row.
-  Shift-click to select a range.
-- Double-click a directory to open it.
-- Right-click for the context menu: Open, Open With, Rename, Cut, Copy,
-  Paste, and New Folder.
-- Click a column header to sort. Click again to reverse the order.
-- Drag the line between column headers to resize a column.
-- The extra mouse buttons go back and forward in the history.
+| Action | Function |
+|---|---|
+| Click | Select the row |
+| `ctrl`-click | Add or remove one row |
+| `shift`-click | Select a range |
+| Double-click | Open the entry |
+| Right-click | Open the context menu |
+| Click a column header | Sort. Click again to reverse the order. |
+| Drag a header divider | Resize the column |
+| Back and forward buttons | Go back and forward in the history |
+
+**While you edit a path**
+
+| Key | Function |
+|---|---|
+| `←` `→` or `ctrl-←` `ctrl-→` | Move one character or one word |
+| `home` `end` | Move to the start or the end |
+| add `shift` | Extend the selection instead |
+| `ctrl-backspace` `ctrl-delete` | Delete one word |
+| `enter` or `escape` | Go to the path, or cancel |
+
+**In a menu or a dialog**
+
+| Key | Function |
+|---|---|
+| `↑` `↓` | Move the highlight |
+| `enter` or `escape` | Choose, or close |
 
 ## Transfer engine
 
@@ -109,7 +157,7 @@ PANE_TEST_BTRFS=/tmp/pane-btrfs/mnt cargo test -p pane-transfer -- --ignored
 These features are planned and not complete:
 
 - Parallel copy for many small files
-- A job journal for undo, trash, and resume after a crash
+- A job journal, for undo of a transfer and resume after a crash
 - Tabs, search, previews, and thumbnails
 - Delta sync between machines
 
