@@ -19,7 +19,10 @@ use gpui_platform::application;
 use theme::LoadThemes;
 
 use assets::Assets;
-use dir_pane::{ClearSelection, EditPath, GoHome, GoUp, NavBack, NavForward, OpenSelected, RenameSelected, SelectAll, ToggleHiddenFiles};
+use dir_pane::{
+    ClearSelection, EditPath, ExtendDown, ExtendUp, GoHome, GoUp, MoveDown, MoveUp, NavBack,
+    NavForward, OpenSelected, RenameSelected, SelectAll, ToggleHiddenFiles,
+};
 use file_menu::{Cancel as MenuCancel, Confirm as MenuConfirm, SelectNext, SelectPrevious};
 use path_editor as ab;
 use workspace::{
@@ -121,6 +124,10 @@ fn main() {
             KeyBinding::new("ctrl-c", Copy, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-x", Cut, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-v", Paste, Some("DirPane && !AddressBar")),
+            KeyBinding::new("up", MoveUp, Some("DirPane && !AddressBar")),
+            KeyBinding::new("down", MoveDown, Some("DirPane && !AddressBar")),
+            KeyBinding::new("shift-up", ExtendUp, Some("DirPane && !AddressBar")),
+            KeyBinding::new("shift-down", ExtendDown, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-a", SelectAll, Some("DirPane && !AddressBar")),
             KeyBinding::new("escape", ClearSelection, Some("DirPane && !AddressBar")),
             KeyBinding::new("delete", workspace::Delete, Some("DirPane && !AddressBar")),

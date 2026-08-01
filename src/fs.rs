@@ -321,6 +321,22 @@ pub fn name_problem(name: &str) -> Option<&'static str> {
 /// The byte range of the stem, for pre-selection during rename. Shares its
 /// definition with the engine's ` (copy)` insertion point so the two cannot
 /// drift apart.
+/// The row `delta` away from `cursor` in a listing of `len` rows.
+///
+/// With no cursor — or one left behind by a listing that has since shrunk — a
+/// downward step enters at the top and an upward step at the bottom, which is
+/// what every list does when you first reach for the arrow keys. Steps past
+/// either end clamp rather than wrap: wrapping a file list turns one keypress
+/// too many into a jump across the whole directory.
+pub fn step_row(len: usize, cursor: Option<usize>, delta: isize) -> Option<usize> {
+    let last = len.checked_sub(1)?;
+    Some(match cursor.filter(|&ix| ix <= last) {
+        Some(ix) => ix.saturating_add_signed(delta).min(last),
+        None if delta > 0 => 0,
+        None => last,
+    })
+}
+
 pub fn stem_range(name: &str) -> std::ops::Range<usize> {
     0..pane_transfer::stem_end(name)
 }
@@ -352,6 +368,30 @@ pub fn format_time(time: SystemTime) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stepping_rows() {
+        use super::step_row;
+
+        // An empty listing has nowhere to go.
+        assert_eq!(step_row(0, None, 1), None);
+        assert_eq!(step_row(0, Some(0), -1), None);
+
+        // First press enters from the near end.
+        assert_eq!(step_row(5, None, 1), Some(0));
+        assert_eq!(step_row(5, None, -1), Some(4));
+
+        assert_eq!(step_row(5, Some(2), 1), Some(3));
+        assert_eq!(step_row(5, Some(2), -1), Some(1));
+
+        // Both ends clamp instead of wrapping.
+        assert_eq!(step_row(5, Some(4), 1), Some(4));
+        assert_eq!(step_row(5, Some(0), -1), Some(0));
+
+        // A cursor left behind by a listing that shrank re-enters from the end.
+        assert_eq!(step_row(3, Some(9), 1), Some(0));
+        assert_eq!(step_row(3, Some(9), -1), Some(2));
+    }
+
     use super::*;
 
     #[test]

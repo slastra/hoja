@@ -26,6 +26,10 @@ actions!(
         OpenSelected,
         SelectAll,
         ClearSelection,
+        MoveUp,
+        MoveDown,
+        ExtendUp,
+        ExtendDown,
         NavBack,
         NavForward,
         GoHome,
@@ -136,8 +140,13 @@ pub struct DirPane {
     /// Multi-select: plain click replaces, ctrl-click toggles, shift-click
     /// extends a range from the anchor, ctrl-a selects all.
     selected: BTreeSet<usize>,
-    /// The row a shift-range extends from: last plain- or ctrl-clicked row.
+    /// The row a shift-range extends from. Stays put while the lead moves.
     anchor_ix: Option<usize>,
+    /// The lead row: what Rename, Open, and the context menu act on, and what
+    /// the arrow keys move. Equal to `anchor_ix` except while a range is being
+    /// extended — shift-down then shift-up has to *shrink* the range, which is
+    /// only possible with the two ends tracked separately.
+    cursor_ix: Option<usize>,
     scroll: UniformListScrollHandle,
     /// Per-pane, because panes in a split can be very different widths.
     widths: ColumnWidths,
@@ -192,6 +201,7 @@ impl DirPane {
             entries: Vec::new(),
             selected: BTreeSet::new(),
             anchor_ix: None,
+            cursor_ix: None,
             scroll: UniformListScrollHandle::new(),
             widths: ColumnWidths::default(),
             resize: None,
@@ -324,7 +334,7 @@ impl DirPane {
             // MIME detection reads the head of the file, so it can block for as
             // long as the filesystem wants to take — unacceptable on a network
             // mount. The menu opens without this section and grows it in.
-            let anchor_entry = self.anchor_ix.and_then(|ix| self.entries.get(ix));
+            let anchor_entry = self.cursor_ix.and_then(|ix| self.entries.get(ix));
             if let Some(entry) = anchor_entry.filter(|e| !e.is_dir) {
                 open_with_ix = Some((items.len(), entry.path.clone()));
             }
@@ -501,9 +511,9 @@ impl DirPane {
         }
         buffer.push_str(key_char);
 
-        if let Some(ix) = fs::type_ahead_target(&self.entries, &buffer, self.anchor_ix) {
+        if let Some(ix) = fs::type_ahead_target(&self.entries, &buffer, self.cursor_ix) {
             self.selected = BTreeSet::from([ix]);
-            self.anchor_ix = Some(ix);
+            self.place_cursor(ix);
             self.scroll
                 .scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
             cx.notify();
@@ -514,8 +524,8 @@ impl DirPane {
 
     fn select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
         self.selected = (0..self.entries.len()).collect();
-        if self.anchor_ix.is_none() && !self.entries.is_empty() {
-            self.anchor_ix = Some(0);
+        if self.cursor_ix.is_none() && !self.entries.is_empty() {
+            self.place_cursor(0);
         }
         cx.notify();
     }
@@ -523,7 +533,45 @@ impl DirPane {
     fn clear_selection(&mut self, _: &ClearSelection, _window: &mut Window, cx: &mut Context<Self>) {
         self.selected.clear();
         self.anchor_ix = None;
+        self.cursor_ix = None;
         self.type_ahead = None;
+        cx.notify();
+    }
+
+    /// Put both ends of the selection on `ix`. Every path except a shift-range
+    /// wants this: the row becomes the lead *and* the origin a later range
+    /// extends from.
+    fn place_cursor(&mut self, ix: usize) {
+        self.anchor_ix = Some(ix);
+        self.cursor_ix = Some(ix);
+    }
+
+    /// Arrow key: move the lead and take the selection with it.
+    fn move_cursor(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some(ix) = fs::step_row(self.entries.len(), self.cursor_ix, delta) else {
+            return;
+        };
+        self.selected = BTreeSet::from([ix]);
+        self.place_cursor(ix);
+        self.reveal(ix, cx);
+    }
+
+    /// Shift-arrow: move the lead, select everything back to the anchor.
+    fn extend_cursor(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some(ix) = fs::step_row(self.entries.len(), self.cursor_ix, delta) else {
+            return;
+        };
+        // A shift-arrow with nothing selected yet anchors where it starts, so
+        // the range grows from there rather than from row zero.
+        let anchor = self.anchor_ix.filter(|&a| a < self.entries.len()).unwrap_or(ix);
+        self.anchor_ix = Some(anchor);
+        self.cursor_ix = Some(ix);
+        self.selected = (anchor.min(ix)..=anchor.max(ix)).collect();
+        self.reveal(ix, cx);
+    }
+
+    fn reveal(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
         cx.notify();
     }
 
@@ -588,6 +636,7 @@ impl DirPane {
         let wanted = std::mem::take(&mut self.pending_select);
         self.selected.clear();
         self.anchor_ix = None;
+        self.cursor_ix = None;
         if wanted.is_empty() {
             self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
             return;
@@ -598,6 +647,7 @@ impl DirPane {
             }
         }
         self.anchor_ix = self.selected.iter().next().copied();
+        self.cursor_ix = self.anchor_ix;
         match self.anchor_ix {
             Some(ix) => self.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Nearest),
             None => self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top),
@@ -723,7 +773,7 @@ impl DirPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(ix) = self.anchor_ix.filter(|&ix| ix < self.entries.len()) else {
+        let Some(ix) = self.cursor_ix.filter(|&ix| ix < self.entries.len()) else {
             return;
         };
         self.start_rename(ix, window, cx);
@@ -872,7 +922,7 @@ impl DirPane {
     }
 
     fn open_selected(&mut self, _: &OpenSelected, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(entry) = self.anchor_ix.and_then(|ix| self.entries.get(ix)) else {
+        let Some(entry) = self.cursor_ix.and_then(|ix| self.entries.get(ix)) else {
             return;
         };
         let path = entry.path.clone();
@@ -1199,7 +1249,7 @@ impl DirPane {
                     // Right-click on an unselected row retargets the selection.
                     if !this.selected.contains(&ix) {
                         this.selected = BTreeSet::from([ix]);
-                        this.anchor_ix = Some(ix);
+                        this.place_cursor(ix);
                     }
                     this.open_context_menu(event.position, true, window, cx);
                 }),
@@ -1211,16 +1261,17 @@ impl DirPane {
                     if !this.selected.remove(&ix) {
                         this.selected.insert(ix);
                     }
-                    this.anchor_ix = Some(ix);
+                    this.place_cursor(ix);
                 } else if mods.shift {
                     // Range from the anchor replaces the selection; the anchor
                     // itself stays put so ranges can be re-aimed.
                     let a = this.anchor_ix.unwrap_or(ix);
                     let (lo, hi) = (a.min(ix), a.max(ix));
                     this.selected = (lo..=hi).collect();
+                    this.cursor_ix = Some(ix);
                 } else {
                     this.selected = BTreeSet::from([ix]);
-                    this.anchor_ix = Some(ix);
+                    this.place_cursor(ix);
                     if event.click_count() >= 2 && is_dir {
                         this.navigate_to(path.clone(), cx);
                     }
@@ -1313,6 +1364,10 @@ impl Render for DirPane {
             }))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::clear_selection))
+            .on_action(cx.listener(|this, _: &MoveUp, _, cx| this.move_cursor(-1, cx)))
+            .on_action(cx.listener(|this, _: &MoveDown, _, cx| this.move_cursor(1, cx)))
+            .on_action(cx.listener(|this, _: &ExtendUp, _, cx| this.extend_cursor(-1, cx)))
+            .on_action(cx.listener(|this, _: &ExtendDown, _, cx| this.extend_cursor(1, cx)))
             .on_mouse_down(
                 MouseButton::Navigate(gpui::NavigationDirection::Back),
                 cx.listener(|this, _: &MouseDownEvent, window, cx| {
@@ -1331,6 +1386,7 @@ impl Render for DirPane {
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     this.selected.clear();
                     this.anchor_ix = None;
+                    this.cursor_ix = None;
                     this.open_context_menu(event.position, false, window, cx);
                 }),
             )
