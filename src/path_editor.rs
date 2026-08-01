@@ -34,6 +34,14 @@ actions!(
         SelectAll,
         Home,
         End,
+        WordLeft,
+        WordRight,
+        SelectWordLeft,
+        SelectWordRight,
+        SelectToHome,
+        SelectToEnd,
+        DeleteWordLeft,
+        DeleteWordRight,
         Copy,
         Cut,
         Paste,
@@ -41,6 +49,86 @@ actions!(
         CancelEdit,
     ]
 );
+
+/// A "word" character for word-wise movement: alphanumeric or underscore.
+/// Runs of anything else (path separators, dots, dashes) are boundaries,
+/// matching GTK-entry conventions.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// End of the current or next word, GTK style: skip separators, then the word.
+fn next_word_boundary(text: &str, offset: usize) -> usize {
+    let mut chars = text[offset..].char_indices().peekable();
+    let mut pos = offset;
+    // Skip the separator run.
+    while let Some(&(ix, c)) = chars.peek() {
+        if is_word_char(c) {
+            break;
+        }
+        pos = offset + ix + c.len_utf8();
+        chars.next();
+    }
+    // Skip the word run.
+    while let Some(&(ix, c)) = chars.peek() {
+        if !is_word_char(c) {
+            break;
+        }
+        pos = offset + ix + c.len_utf8();
+        chars.next();
+    }
+    pos
+}
+
+/// Start of the current or previous word, mirroring `next_word_boundary`.
+fn prev_word_boundary(text: &str, offset: usize) -> usize {
+    let mut pos = offset;
+    let before = |p: usize| text[..p].chars().next_back();
+    // Skip the separator run.
+    while let Some(c) = before(pos) {
+        if is_word_char(c) {
+            break;
+        }
+        pos -= c.len_utf8();
+    }
+    // Skip the word run.
+    while let Some(c) = before(pos) {
+        if !is_word_char(c) {
+            break;
+        }
+        pos -= c.len_utf8();
+    }
+    pos
+}
+
+/// The word (or separator run) around `offset`, for double-click selection.
+fn word_range_at(text: &str, offset: usize) -> std::ops::Range<usize> {
+    if text.is_empty() {
+        return 0..0;
+    }
+    let offset = offset.min(text.len());
+    let at = text[offset..]
+        .chars()
+        .next()
+        .or_else(|| text[..offset].chars().next_back());
+    let wordish = at.map(is_word_char).unwrap_or(false);
+
+    let mut start = offset;
+    while let Some(c) = text[..start].chars().next_back() {
+        if is_word_char(c) != wordish {
+            break;
+        }
+        start -= c.len_utf8();
+    }
+    let mut end = offset;
+    for c in text[offset..].chars() {
+        if is_word_char(c) != wordish {
+            break;
+        }
+        end += c.len_utf8();
+    }
+    start..end
+}
 
 /// Emitted to the owning pane.
 pub enum PathEditorEvent {
@@ -180,6 +268,70 @@ impl PathEditor {
         self.move_to(self.content.len(), cx);
     }
 
+    fn word_left(&mut self, _: &WordLeft, _window: &mut Window, cx: &mut Context<Self>) {
+        let target = prev_word_boundary(&self.content, self.cursor_offset());
+        self.move_to(target, cx);
+    }
+
+    fn word_right(&mut self, _: &WordRight, _window: &mut Window, cx: &mut Context<Self>) {
+        let target = next_word_boundary(&self.content, self.cursor_offset());
+        self.move_to(target, cx);
+    }
+
+    fn select_word_left(
+        &mut self,
+        _: &SelectWordLeft,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = prev_word_boundary(&self.content, self.cursor_offset());
+        self.select_to(target, cx);
+    }
+
+    fn select_word_right(
+        &mut self,
+        _: &SelectWordRight,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = next_word_boundary(&self.content, self.cursor_offset());
+        self.select_to(target, cx);
+    }
+
+    fn select_to_home(&mut self, _: &SelectToHome, _window: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(0, cx);
+    }
+
+    fn select_to_end(&mut self, _: &SelectToEnd, _window: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.content.len(), cx);
+    }
+
+    fn delete_word_left(
+        &mut self,
+        _: &DeleteWordLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            let target = prev_word_boundary(&self.content, self.cursor_offset());
+            self.select_to(target, cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    fn delete_word_right(
+        &mut self,
+        _: &DeleteWordRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            let target = next_word_boundary(&self.content, self.cursor_offset());
+            self.select_to(target, cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
     fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(
@@ -269,12 +421,27 @@ impl PathEditor {
     }
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        self.is_selecting = true;
         let index = self.index_for_mouse_position(event.position);
-        if event.modifiers.shift {
-            self.select_to(index, cx);
-        } else {
-            self.move_to(index, cx);
+        match event.click_count {
+            2 => {
+                let range = word_range_at(&self.content, index);
+                self.selected_range = range;
+                self.selection_reversed = false;
+                cx.notify();
+            }
+            n if n >= 3 => {
+                self.selected_range = 0..self.content.len();
+                self.selection_reversed = false;
+                cx.notify();
+            }
+            _ => {
+                self.is_selecting = true;
+                if event.modifiers.shift {
+                    self.select_to(index, cx);
+                } else {
+                    self.move_to(index, cx);
+                }
+            }
         }
     }
 
@@ -488,6 +655,14 @@ impl Render for PathEditor {
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
+            .on_action(cx.listener(Self::select_to_home))
+            .on_action(cx.listener(Self::select_to_end))
+            .on_action(cx.listener(Self::delete_word_left))
+            .on_action(cx.listener(Self::delete_word_right))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::paste))
@@ -688,5 +863,50 @@ impl gpui::Element for PathElement {
             editor.last_bounds = Some(bounds);
             editor.scroll_x = scroll_x;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn word_jumps_over_path_components() {
+        let t = "/home/shaun/Projects";
+        // From the start: land at the end of each component.
+        assert_eq!(next_word_boundary(t, 0), 5); // "/home"
+        assert_eq!(next_word_boundary(t, 5), 11); // "/shaun"
+        assert_eq!(next_word_boundary(t, 11), 20); // "/Projects"
+        assert_eq!(next_word_boundary(t, 20), 20); // at the end: stays
+        // Backwards: land at the start of each component.
+        assert_eq!(prev_word_boundary(t, 20), 12);
+        assert_eq!(prev_word_boundary(t, 12), 6);
+        assert_eq!(prev_word_boundary(t, 6), 1);
+        assert_eq!(prev_word_boundary(t, 1), 0);
+        assert_eq!(prev_word_boundary(t, 0), 0);
+    }
+
+    #[test]
+    fn word_jumps_treat_dots_and_dashes_as_separators() {
+        let t = "my-file.tar.gz";
+        assert_eq!(next_word_boundary(t, 0), 2); // "my"
+        assert_eq!(next_word_boundary(t, 2), 7); // "-file"
+        assert_eq!(next_word_boundary(t, 7), 11); // ".tar"
+        assert_eq!(next_word_boundary(t, 11), 14); // ".gz"
+    }
+
+    #[test]
+    fn double_click_word_ranges() {
+        let t = "/home/shaun/notes.txt";
+        assert_eq!(word_range_at(t, 8), 6..11); // inside "shaun"
+        assert_eq!(word_range_at(t, 0), 0..1); // on the leading slash
+        assert_eq!(word_range_at(t, 21), 18..21); // at the end, in "txt"
+    }
+
+    #[test]
+    fn word_boundaries_handle_unicode() {
+        let t = "naïve-café";
+        assert_eq!(next_word_boundary(t, 0), 6); // "naïve" (ï is 2 bytes)
+        assert_eq!(prev_word_boundary(t, t.len()), 7); // start of "café"
     }
 }
