@@ -45,9 +45,12 @@ impl Place {
     }
 }
 
-/// Home, then bookmarks, then volumes. Ordering is the tie-break for equal
-/// match scores, so the most likely destinations come first.
-pub fn all() -> Vec<Place> {
+/// Home and bookmarks: a file read, cheap enough to do while opening the
+/// finder. Volumes come separately through `volumes`, which shells out.
+///
+/// Ordering is the tie-break for equal match scores, so the most likely
+/// destinations come first.
+pub fn local() -> Vec<Place> {
     let mut places = Vec::new();
 
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
@@ -58,7 +61,6 @@ pub fn all() -> Vec<Place> {
         });
     }
     places.extend(bookmarks());
-    places.extend(volumes());
     places
 }
 
@@ -110,7 +112,7 @@ fn parse_bookmarks(text: &str) -> Vec<Place> {
         .collect()
 }
 
-fn volumes() -> Vec<Place> {
+pub fn volumes() -> Vec<Place> {
     let out = Command::new("lsblk")
         .args(["-J", "-o", "PATH,LABEL,FSTYPE,SIZE,MOUNTPOINT,HOTPLUG"])
         .output();

@@ -9,6 +9,11 @@ use std::time::SystemTime;
 #[derive(Debug, Clone)]
 pub struct DirEntry {
     pub name: String,
+    /// Where to show this entry when it did not come from the listed directory
+    /// — a search result, which lives somewhere below it. `name` stays the
+    /// entry's own name, because rename, git colouring, type-ahead, and
+    /// selection all key on it.
+    pub relative: Option<String>,
     pub path: PathBuf,
     pub is_dir: bool,
     /// `None` for directories and for entries whose metadata could not be read.
@@ -40,6 +45,7 @@ impl DirEntry {
 
         Self {
             name,
+            relative: None,
             size: metadata.as_ref().filter(|_| !is_dir).map(|m| m.len()),
             modified: metadata.as_ref().and_then(|m| m.modified().ok()),
             path,
@@ -318,16 +324,6 @@ pub fn name_problem(name: &str) -> Option<&'static str> {
     None
 }
 
-/// The byte range of the stem, for pre-selection during rename. Shares its
-/// definition with the engine's ` (copy)` insertion point so the two cannot
-/// drift apart.
-/// The row `delta` away from `cursor` in a listing of `len` rows.
-///
-/// With no cursor — or one left behind by a listing that has since shrunk — a
-/// downward step enters at the top and an upward step at the bottom, which is
-/// what every list does when you first reach for the arrow keys. Steps past
-/// either end clamp rather than wrap: wrapping a file list turns one keypress
-/// too many into a jump across the whole directory.
 /// Whether `dest` is a legal destination for a drag carrying `sources`.
 ///
 /// Refuses the two drops that are wrong rather than merely useless:
@@ -343,13 +339,6 @@ pub fn is_valid_drop(sources: &[PathBuf], dest: &Path) -> bool {
     })
 }
 
-/// The closest ancestor of `path` that is still a directory, including `path`
-/// itself.
-///
-/// Used when a pane's directory goes away — deleted elsewhere, or on a volume
-/// that was unmounted. Walking up beats sitting on an error, because the error
-/// state has no way out except typing a new path. `/` always exists, so the
-/// walk terminates.
 /// Whether `name` matches a filter query.
 ///
 /// Substring, not fuzzy. A filename filter wants to be predictable: fuzzy
@@ -367,12 +356,26 @@ pub fn matches_filter(name: &str, query: &str) -> bool {
     }
 }
 
+/// The closest ancestor of `path` that is still a directory, including `path`
+/// itself.
+///
+/// Used when a pane's directory goes away — deleted elsewhere, or on a volume
+/// that was unmounted. Walking up beats sitting on an error, because the error
+/// state has no way out except typing a new path. `/` always exists, so the
+/// walk terminates.
 pub fn nearest_existing_dir(path: &Path) -> Option<PathBuf> {
     path.ancestors()
         .find(|ancestor| ancestor.is_dir())
         .map(Path::to_path_buf)
 }
 
+/// The row `delta` away from `cursor` in a listing of `len` rows.
+///
+/// With no cursor — or one left behind by a listing that has since shrunk — a
+/// downward step enters at the top and an upward step at the bottom, which is
+/// what every list does when you first reach for the arrow keys. Steps past
+/// either end clamp rather than wrap: wrapping a file list turns one keypress
+/// too many into a jump across the whole directory.
 pub fn step_row(len: usize, cursor: Option<usize>, delta: isize) -> Option<usize> {
     let last = len.checked_sub(1)?;
     Some(match cursor.filter(|&ix| ix <= last) {
@@ -382,6 +385,9 @@ pub fn step_row(len: usize, cursor: Option<usize>, delta: isize) -> Option<usize
     })
 }
 
+/// The byte range of the stem, for pre-selection during rename. Shares its
+/// definition with the engine's ` (copy)` insertion point so the two cannot
+/// drift apart.
 pub fn stem_range(name: &str) -> std::ops::Range<usize> {
     0..pane_transfer::stem_end(name)
 }
@@ -533,6 +539,7 @@ mod tests {
 
     fn entry(name: &str, is_dir: bool, size: u64, secs: u64) -> DirEntry {
         DirEntry {
+            relative: None,
             name: name.to_string(),
             path: PathBuf::from(format!("/x/{name}")),
             is_dir,
@@ -726,6 +733,7 @@ mod bench {
     fn time_sort_of_100k_entries() {
         let mut entries: Vec<DirEntry> = (0..100_000)
             .map(|i| DirEntry {
+                relative: None,
                 name: format!("file{i}.txt"),
                 path: PathBuf::from(format!("/tmp/manyfiles/file{i}.txt")),
                 is_dir: false,

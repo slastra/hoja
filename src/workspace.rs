@@ -338,7 +338,9 @@ impl Workspace {
                 self.ensure_polling(window, cx);
                 cx.notify();
             }
-            Err(err) => eprintln!("[pane] job rejected: {err}"),
+            // Drag-and-drop greys an illegal target, but paste has no such
+            // pre-check, so this is the only way the refusal is ever seen.
+            Err(err) => self.set_notice(Some(Notice::Problem(err.to_string())), cx),
         }
     }
 
@@ -411,14 +413,7 @@ impl Workspace {
         }
         self.maybe_show_conflict(window, cx);
 
-        if !finished_dirs.is_empty() {
-            for pane in &self.panes {
-                let pane_dir = pane.read(cx).dir().to_path_buf();
-                if finished_dirs.contains(&pane_dir) {
-                    pane.update(cx, |pane, cx| pane.refresh(cx));
-                }
-            }
-        }
+        self.refresh_dirs(&finished_dirs, cx);
         cx.notify();
     }
 
@@ -967,10 +962,7 @@ impl Render for Workspace {
         // The window had no title at all, which leaves an empty entry in the
         // task switcher. Name it for the active pane's directory.
         let dir = self.active_pane.read(cx).dir().to_path_buf();
-        let title = dir
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| dir.display().to_string());
+        let title = file_label(&dir);
         if title != self.title {
             window.set_window_title(&title);
             self.title = title;

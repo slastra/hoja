@@ -35,7 +35,7 @@ actions!(palette, [Toggle]);
 
 // The palette owns its navigation keys so menu bindings cannot leak in, and so
 // changing menu keys cannot silently change palette behaviour.
-actions!(palette, [SelectNext, SelectPrevious, Confirm, Cancel]);
+actions!(palette, [SelectNext, SelectPrevious]);
 
 const ROW_HEIGHT: f32 = 28.;
 /// Ten rows. Beyond this the list scrolls rather than growing, so the palette
@@ -198,14 +198,13 @@ impl CommandPalette {
         // own, and the deeper context wins, so enter and escape reach the
         // editor rather than the palette's bindings. Its events are the right
         // signal anyway: commit means run, cancel means close.
-        let mut subscriptions = vec![
+        let subscriptions = vec![
             cx.subscribe_in(&query, window, |this, _, event, window, cx| match event {
                 PathEditorEvent::Edited => this.rematch(cx),
-                PathEditorEvent::Committed(_) => this.confirm(&Confirm, window, cx),
+                PathEditorEvent::Committed(_) => this.confirm(window, cx),
                 PathEditorEvent::Cancelled => cx.emit(DismissEvent),
             }),
         ];
-        subscriptions.push(cx.on_blur(&focus_handle, window, |_, _, cx| cx.emit(DismissEvent)));
 
         let history = load_history();
         let mut commands = available_commands(&previous_focus, window, cx);
@@ -279,11 +278,7 @@ impl CommandPalette {
         self.move_selection(-1, cx);
     }
 
-    fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
-        cx.emit(DismissEvent);
-    }
-
-    fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(command) = self
             .matches
             .get(self.selected)
@@ -420,8 +415,6 @@ impl Render for CommandPalette {
             .key_context("palette")
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_previous))
-            .on_action(cx.listener(Self::confirm))
-            .on_action(cx.listener(Self::cancel))
             .flex()
             .flex_col()
             .w(px(544.))
@@ -511,7 +504,7 @@ impl CommandPalette {
             }))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.selected = ix;
-                this.confirm(&Confirm, window, cx);
+                this.confirm(window, cx);
             }))
             .child(
                 div()

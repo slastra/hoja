@@ -159,11 +159,10 @@ fn main() {
             // so it is not scoped to the pane.
             KeyBinding::new("ctrl-shift-p", palette::Toggle, None),
             KeyBinding::new("ctrl-p", places_finder::Toggle, None),
-            // Its own context, so menu and dialog keys cannot leak in. The
-            // query field carries the AddressBar context inside this one, so
-            // these must not collide with the editor's own bindings.
-            KeyBinding::new("escape", palette::Cancel, Some("palette")),
-            KeyBinding::new("enter", palette::Confirm, Some("palette")),
+            // Only the arrows: the query field carries the AddressBar context
+            // inside the palette's, and the deeper context wins, so enter and
+            // escape always reach the editor. The pickers listen for its
+            // Committed and Cancelled instead.
             KeyBinding::new("down", palette::SelectNext, Some("palette")),
             KeyBinding::new("up", palette::SelectPrevious, Some("palette")),
             // Address-bar editing. Every binding here MUST have a matching

@@ -57,7 +57,7 @@ impl PlaceFinder {
         // As in the palette: the query field carries the AddressBar context
         // inside this one, and the deeper context wins, so enter and escape
         // reach the editor. Its events mean exactly open and close.
-        let mut subscriptions = vec![cx.subscribe_in(
+        let subscriptions = vec![cx.subscribe_in(
             &query,
             window,
             |this, _, event, window, cx| match event {
@@ -66,9 +66,12 @@ impl PlaceFinder {
                 PathEditorEvent::Cancelled => cx.emit(DismissEvent),
             },
         )];
-        subscriptions.push(cx.on_blur(&focus_handle, window, |_, _, cx| cx.emit(DismissEvent)));
 
-        let places = places::all();
+        // Home and bookmarks are a file read; volumes shell out to lsblk, which
+        // stalls on a spun-down or flaky enclosure. Open on what is free and
+        // splice the drives in when they arrive — the shape `resolve_open_with`
+        // uses for the context menu.
+        let places = places::local();
         let candidates = places
             .iter()
             .enumerate()
@@ -90,7 +93,30 @@ impl PlaceFinder {
             _subscriptions: subscriptions,
         };
         finder.rematch(cx);
+        finder.load_volumes(cx);
         finder
+    }
+
+    fn load_volumes(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let volumes = cx.background_spawn(async { places::volumes() }).await;
+            if volumes.is_empty() {
+                return;
+            }
+            let _ = this.update(cx, |this, cx| {
+                let base = this.places.len();
+                this.candidates
+                    .extend(volumes.iter().enumerate().map(|(ix, place)| {
+                        StringMatchCandidate::new(
+                            base + ix,
+                            &format!("{} {}", place.label(), place.detail())[..],
+                        )
+                    }));
+                this.places.extend(volumes);
+                this.rematch(cx);
+            });
+        })
+        .detach();
     }
 
     pub fn query_focus(&self, cx: &App) -> FocusHandle {
@@ -212,9 +238,6 @@ impl Render for PlaceFinder {
             }))
             .on_action(cx.listener(|this, _: &crate::command_palette::SelectPrevious, _, cx| {
                 this.move_selection(-1, cx)
-            }))
-            .on_action(cx.listener(|_this, _: &crate::command_palette::Cancel, _, cx| {
-                cx.emit(DismissEvent)
             }))
             .flex()
             .flex_col()

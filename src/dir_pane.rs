@@ -98,14 +98,25 @@ pub enum PaneEvent {
 /// here means an illegal target never lights up. Note that a refusal *consumes*
 /// the drop rather than passing it to the element behind — which is what we
 /// want, but is not a fall-through.
-fn drop_allowed(dragged: &dyn std::any::Any, target: &Path) -> bool {
-    if let Some(paths) = dragged.downcast_ref::<DraggedPaths>() {
-        return fs::is_valid_drop(&paths.paths, target);
+fn drop_allowed(dragged: &dyn std::any::Any, target: &Path, cx: &App) -> bool {
+    if let Some(dragged) = dragged.downcast_ref::<DraggedPaths>() {
+        return fs::is_valid_drop(&dragged.paths(cx), target);
     }
     if let Some(paths) = dragged.downcast_ref::<ExternalPaths>() {
         return fs::is_valid_drop(paths.paths(), target);
     }
     false
+}
+
+/// A search in flight, and the listing it is standing in for.
+struct ActiveSearch {
+    query: String,
+    /// Put back when the search ends. Held rather than re-read, since a second
+    /// copy of a large directory is not free but a second `read_dir` is worse.
+    listing: Vec<DirEntry>,
+    /// Dropping this stops the walk.
+    handle: Option<crate::search::Search>,
+    _poll: Task<()>,
 }
 
 /// What the address bar is being used for. Search reuses the same field
@@ -125,8 +136,25 @@ enum BarMode {
 /// visible row per frame.
 #[derive(Clone)]
 pub struct DraggedPaths {
-    pub paths: std::rc::Rc<Vec<PathBuf>>,
+    /// Resolved on drop rather than carried, because `on_drag` takes its value
+    /// eagerly: gathering the selection for every visible row of every frame
+    /// cost 3.9ms a frame with 100k rows selected, for a payload that almost
+    /// every frame throws away.
+    pane: Entity<DirPane>,
+    /// The row the drag started on, used when it was not part of the selection.
+    anchor: PathBuf,
+    whole_selection: bool,
     pub source_dir: PathBuf,
+}
+
+impl DraggedPaths {
+    pub fn paths(&self, cx: &App) -> Vec<PathBuf> {
+        if self.whole_selection {
+            self.pane.read(cx).selected_paths()
+        } else {
+            vec![self.anchor.clone()]
+        }
+    }
 }
 
 /// What the cursor carries during a drag. The platform draws its own icons for
@@ -294,10 +322,10 @@ pub struct DirPane {
     /// repository, and empty until the background query lands.
     git: crate::git::GitStatuses,
     git_task: Option<Task<()>>,
-    /// The directory the change watcher is armed on, so re-listing the same
-    /// directory does not tear down and rebuild the inotify watch.
-    watched: Option<PathBuf>,
-    watch_task: Option<Task<()>>,
+    /// The directory the change watcher is armed on, paired with its task, so
+    /// re-listing the same directory does not tear down and rebuild the inotify
+    /// watch — and so a watcher that failed to arm cannot be recorded as armed.
+    watch: Option<(PathBuf, Task<()>)>,
     view: ViewSettings,
     /// The directory `entries` was built from. Differs from `dir` while a load
     /// is in flight, which is how a navigation is told apart from a refresh.
@@ -311,14 +339,10 @@ pub struct DirPane {
     context_menu: Option<(Point<Pixels>, Entity<FileMenu>)>,
     /// The address bar doubles as the search field, so both live in one slot.
     path_editor: Option<(BarMode, Entity<PathEditor>)>,
-    /// Active search text. While set, `entries` holds results rather than the
-    /// directory listing.
-    filter: Option<String>,
-    /// The listing to put back when the search ends. Empty otherwise, since a
-    /// second copy of a large directory is not free.
-    unfiltered: Vec<DirEntry>,
-    search: Option<crate::search::Search>,
-    search_task: Option<Task<()>>,
+    /// One value, because these are one fact. Four parallel `Option`s had to be
+    /// cleared together by hand in every teardown path, and a fifth field would
+    /// have meant finding them all again.
+    search: Option<ActiveSearch>,
     /// Inline rename: the row index and its editor.
     renaming: Option<(usize, Entity<PathEditor>)>,
     /// Names to re-select once the listing is rebuilt. Every path that
@@ -362,8 +386,7 @@ impl DirPane {
             resize: None,
             git: crate::git::GitStatuses::new(),
             git_task: None,
-            watched: None,
-            watch_task: None,
+            watch: None,
             view,
             loaded_dir: PathBuf::new(),
             error: None,
@@ -371,10 +394,7 @@ impl DirPane {
             sort_task: None,
             context_menu: None,
             path_editor: None,
-            filter: None,
-            unfiltered: Vec::new(),
             search: None,
-            search_task: None,
             renaming: None,
             pending_select: Vec::new(),
             type_ahead: None,
@@ -395,7 +415,7 @@ impl DirPane {
 
     fn toggle_hidden(&mut self, _: &ToggleHiddenFiles, _w: &mut Window, cx: &mut Context<Self>) {
         self.view.show_hidden = !self.view.show_hidden;
-        self.reload(cx);
+        self.relist(cx);
     }
 
     fn toggle_folders_first(
@@ -452,8 +472,10 @@ impl DirPane {
     /// the end. The listing still holds the departing entries at this point,
     /// which is what makes "next" meaningful.
     pub fn select_after_removal(&mut self, removed: &[PathBuf], cx: &mut Context<Self>) {
-        let gone: Vec<&std::ffi::OsStr> = removed.iter().filter_map(|p| p.file_name()).collect();
-        let surviving = |entry: &DirEntry| !gone.iter().any(|name| *name == entry.name.as_str());
+        let gone: std::collections::HashSet<&std::ffi::OsStr> =
+            removed.iter().filter_map(|p| p.file_name()).collect();
+        let surviving =
+            |entry: &DirEntry| !gone.contains(std::ffi::OsStr::new(entry.name.as_str()));
 
         let first_gone = self
             .entries
@@ -693,12 +715,12 @@ impl DirPane {
         cx.notify();
     }
 
-    fn clear_selection(&mut self, _: &ClearSelection, _window: &mut Window, cx: &mut Context<Self>) {
+    fn clear_selection(&mut self, _: &ClearSelection, window: &mut Window, cx: &mut Context<Self>) {
         // Escape backs out one level at a time: the search before the
         // selection, so results are not dismissed together with what you picked
         // out of them.
         if self.searching() {
-            self.set_filter(None, cx);
+            self.end_search(window, cx);
             return;
         }
         self.selected.clear();
@@ -813,23 +835,37 @@ impl DirPane {
     ///
     /// Assigning to `self.load_task` drops any previous task, which cancels a read that
     /// is still running — so hammering navigation cannot land stale entries.
+    /// Re-list without disturbing anything a re-listing cannot change.
+    ///
+    /// A view-setting change — hidden files, folder grouping — rebuilds the
+    /// rows but cannot alter a file's git status, and re-asking costs two
+    /// process spawns and a work-tree walk. It also blanks `self.git` first, so
+    /// every name would flash back to its default colour and back again.
+    fn relist(&mut self, cx: &mut Context<Self>) {
+        self.reload_inner(false, cx);
+    }
+
     fn reload(&mut self, cx: &mut Context<Self>) {
+        self.reload_inner(true, cx);
+    }
+
+    fn reload_inner(&mut self, refresh_git: bool, cx: &mut Context<Self>) {
         // A directory change starts fresh; a refresh of the same directory
         // keeps the selection.
         if self.pending_select.is_empty() && self.dir == self.loaded_dir {
             self.pending_select = self.selected_names();
         }
-        self.reload_git(cx);
+        if refresh_git {
+            self.reload_git(cx);
+        }
         self.watch_dir(cx);
-        // A listing read would otherwise land on top of search results.
-        if self.searching() {
-            self.filter = None;
-            self.search = None;
-            self.search_task = None;
-            self.unfiltered = Vec::new();
-            if let Some((BarMode::Search, _)) = &self.path_editor {
-                self.path_editor = None;
-            }
+        // A listing read would otherwise land on top of search results. The
+        // saved listing is discarded rather than restored: this read replaces
+        // it anyway.
+        if self.search.take().is_some()
+            && let Some((BarMode::Search, _)) = &self.path_editor
+        {
+            self.path_editor = None;
         }
 
         let dir = self.dir.clone();
@@ -954,10 +990,10 @@ impl DirPane {
     /// leave the pane showing entries that are no longer there. A file manager
     /// showing yesterday's truth is worse than a slow one.
     fn watch_dir(&mut self, cx: &mut Context<Self>) {
-        if self.watched.as_deref() == Some(self.dir.as_path()) {
+        if self.watch.as_ref().map(|(dir, _)| dir.as_path()) == Some(self.dir.as_path()) {
             return;
         }
-        self.watched = Some(self.dir.clone());
+        self.watch = None;
         let dir = self.dir.clone();
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -967,7 +1003,6 @@ impl DirPane {
             Ok(watcher) => watcher,
             Err(err) => {
                 eprintln!("[pane] directory watcher unavailable: {err}");
-                self.watch_task = None;
                 return;
             }
         };
@@ -977,11 +1012,10 @@ impl DirPane {
             // An unreadable or vanished directory is not worth a message: the
             // listing itself already reports that.
             let _ = err;
-            self.watch_task = None;
             return;
         }
 
-        self.watch_task = Some(cx.spawn(async move |this, cx| {
+        let task = cx.spawn(async move |this, cx| {
             // Keep the watcher alive for the lifetime of this task.
             let _watcher = watcher;
             loop {
@@ -1015,7 +1049,8 @@ impl DirPane {
                     break;
                 }
             }
-        }));
+        });
+        self.watch = Some((self.dir.clone(), task));
     }
 
     /// Ask git about this directory off the UI thread.
@@ -1046,7 +1081,11 @@ impl DirPane {
     /// Re-select `pending_select` against the freshly built listing and scroll
     /// the first survivor into view. Entries that disappeared are dropped.
     fn restore_selection(&mut self) {
-        let wanted = std::mem::take(&mut self.pending_select);
+        // A set, not the Vec: this runs once per entry, so a linear scan makes
+        // restoring a large selection quadratic — measured at 11 seconds for
+        // 100k rows selected, on the foreground executor.
+        let wanted: std::collections::HashSet<String> =
+            std::mem::take(&mut self.pending_select).into_iter().collect();
         self.selected.clear();
         self.anchor_ix = None;
         self.cursor_ix = None;
@@ -1271,7 +1310,7 @@ impl DirPane {
     fn start_search(&mut self, _: &StartSearch, window: &mut Window, cx: &mut Context<Self>) {
         // Reopening keeps whatever is already typed, so ctrl-f twice does not
         // silently throw the search away.
-        let initial = self.filter.clone().unwrap_or_default();
+        let initial = self.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
         let editor = cx.new(|cx| {
             PathEditor::new(initial, window, cx).with_placeholder("Search this folder")
         });
@@ -1288,9 +1327,7 @@ impl DirPane {
                 cx.notify();
             }
             PathEditorEvent::Cancelled => {
-                this.path_editor = None;
-                this.set_filter(None, cx);
-                window.focus(&this.focus_handle, cx);
+                this.end_search(window, cx);
                 cx.notify();
             }
         })
@@ -1311,56 +1348,68 @@ impl DirPane {
     /// Start, replace, or end a search of everything under this directory.
     fn set_filter(&mut self, query: Option<String>, cx: &mut Context<Self>) {
         let query = query.filter(|q| !q.is_empty());
-        if query == self.filter {
+        if query.as_deref() == self.search.as_ref().map(|s| s.query.as_str()) {
             return;
         }
 
-        // The listing steps aside for the first query and comes back when the
-        // last one goes.
-        match (&self.filter, &query) {
-            (None, Some(_)) => self.unfiltered = std::mem::take(&mut self.entries),
-            (Some(_), None) => self.entries = std::mem::take(&mut self.unfiltered),
-            _ => {}
-        }
-        self.filter = query;
-        // Dropping the old handle stops its walk, so a new keystroke abandons
-        // the previous query rather than racing it into the same list.
-        self.search = None;
-        self.search_task = None;
-
-        let Some(query) = self.filter.clone() else {
-            self.selected.clear();
-            self.anchor_ix = None;
-            self.cursor_ix = None;
+        // Dropping the old search stops its walk, so a new keystroke abandons
+        // the previous query rather than racing it into the same list, and
+        // hands the listing back when the last query goes.
+        let previous = self.search.take();
+        let Some(query) = query else {
+            if let Some(previous) = previous {
+                self.entries = previous.listing;
+            }
+            self.clear_cursor();
             self.restore_selection();
             cx.notify();
             return;
         };
 
+        // The listing steps aside for the first query and stays aside while
+        // later ones replace each other.
+        let listing = match previous {
+            Some(previous) => previous.listing,
+            None => std::mem::take(&mut self.entries),
+        };
         self.entries.clear();
-        self.selected.clear();
-        self.anchor_ix = None;
-        self.cursor_ix = None;
+        self.clear_cursor();
         self.error = None;
-        self.search = Some(crate::search::spawn(
-            self.dir.clone(),
-            query,
-            self.view.show_hidden,
-        ));
+
+        let dir = self.dir.clone();
+        let show_hidden = self.view.show_hidden;
+        let spawn_query = query.clone();
 
         // Results arrive over the life of the walk, so the pane collects them
         // on a timer rather than waiting for the end.
-        self.search_task = Some(cx.spawn(async move |this, cx| {
+        let poll = cx.spawn(async move |this, cx| {
+            // Settle before walking: without this every keystroke spawned a
+            // thread and re-walked the whole tree.
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(120))
+                .await;
+            if this
+                .update(cx, |this, _| {
+                    if let Some(search) = this.search.as_mut() {
+                        search.handle =
+                            Some(crate::search::spawn(dir, spawn_query, show_hidden));
+                    }
+                })
+                .is_err()
+            {
+                return;
+            }
             loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(60))
                     .await;
                 let keep_going = this.update(cx, |this, cx| {
-                    let Some(search) = this.search.as_ref() else {
+                    let Some(handle) = this.search.as_ref().and_then(|s| s.handle.as_ref())
+                    else {
                         return false;
                     };
-                    let batch = search.drain();
-                    let finished = search.is_done();
+                    let batch = handle.drain();
+                    let finished = handle.is_done();
                     if !batch.is_empty() {
                         this.entries.extend(batch);
                         // Aim at the first hit as soon as there is one, so
@@ -1382,13 +1431,38 @@ impl DirPane {
                     break;
                 }
             }
-        }));
+        });
+
+        self.search = Some(ActiveSearch {
+            query,
+            listing,
+            handle: None,
+            _poll: poll,
+        });
         cx.notify();
+    }
+
+    /// Forget which row is current. Called wherever the rows themselves change
+    /// out from under the indices.
+    fn clear_cursor(&mut self) {
+        self.selected.clear();
+        self.anchor_ix = None;
+        self.cursor_ix = None;
     }
 
     /// Whether a search is running or has results on screen.
     fn searching(&self) -> bool {
-        self.filter.is_some()
+        self.search.is_some()
+    }
+
+    /// Leave search mode from wherever: escape, the toolbar button, or the
+    /// field being cancelled. Each used to clear a different subset.
+    fn end_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((BarMode::Search, _)) = &self.path_editor {
+            self.path_editor = None;
+        }
+        self.set_filter(None, cx);
+        window.focus(&self.focus_handle, cx);
     }
 
     /// A word about the results, since the listing is no longer this directory.
@@ -1397,9 +1471,13 @@ impl DirPane {
     pub fn search_status(&self) -> Option<String> {
         let search = self.search.as_ref()?;
         let found = self.entries.len();
-        Some(if !search.is_done() {
+        // No handle yet means the debounce has not elapsed.
+        let Some(handle) = search.handle.as_ref() else {
+            return Some("searching…".to_string());
+        };
+        Some(if !handle.is_done() {
             format!("searching… {found}")
-        } else if search.hit_cap() {
+        } else if handle.hit_cap() {
             format!("first {found} matches")
         } else {
             match found {
@@ -1652,9 +1730,7 @@ impl DirPane {
                             cx.stop_propagation();
                             // A second press ends the search, matching escape.
                             if this.searching() {
-                                this.path_editor = None;
-                                this.set_filter(None, cx);
-                                window.focus(&this.focus_handle, cx);
+                                this.end_search(window, cx);
                             } else {
                                 this.start_search(&StartSearch, window, cx);
                             }
@@ -1746,12 +1822,7 @@ impl DirPane {
     /// `use<>` opts out of capturing the `&self` / `&Context` lifetimes: the returned
     /// element owns every value it needs, and `uniform_list`'s callback must return
     /// something with no borrows outstanding.
-    fn render_entry(
-        &self,
-        ix: usize,
-        selection: &std::rc::Rc<Vec<PathBuf>>,
-        cx: &Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_entry(&self, ix: usize, cx: &Context<Self>) -> impl IntoElement + use<> {
         let entry = &self.entries[ix];
         let rename_editor = self
             .renaming
@@ -1821,19 +1892,25 @@ impl DirPane {
         // and this keeps the cells in lockstep with the header.
         let cells = Column::ALL.map(|column| (self.widths.get(column), column.value(entry)));
 
+        // A search result is labelled by where it sits; everything else by its
+        // own name.
+        let label = entry.relative.clone().unwrap_or_else(|| entry.name.clone());
+
         // Dragging a selected row takes the whole selection; dragging an
         // unselected one takes only itself, without disturbing the selection.
         let dragged = DraggedPaths {
-            paths: if selected && !selection.is_empty() {
-                selection.clone()
-            } else {
-                std::rc::Rc::new(vec![entry.path.clone()])
-            },
+            pane: cx.entity(),
+            anchor: entry.path.clone(),
+            whole_selection: selected,
             source_dir: self.dir.clone(),
         };
-        let drag_label: SharedString = match dragged.paths.len() {
-            1 => entry.name.clone().into(),
-            n => format!("{n} items").into(),
+        let drag_label: SharedString = if selected {
+            match self.selected.len() {
+                1 => entry.name.clone().into(),
+                n => format!("{n} items").into(),
+            }
+        } else {
+            entry.name.clone().into()
         };
 
         let row = div()
@@ -1876,10 +1953,7 @@ impl DirPane {
                     .children(icon_path.map(|path| Icon::from_path(path, content)))
                     .child(match rename_editor {
                         Some(editor) => editor.into_any_element(),
-                        None => div()
-                            .truncate()
-                            .child(entry.name.clone())
-                            .into_any_element(),
+                        None => div().truncate().child(label).into_any_element(),
                     }),
             );
 
@@ -1893,14 +1967,14 @@ impl DirPane {
                 let highlight = colors.drop_target_background;
                 row.can_drop({
                     let target = target.clone();
-                    move |dragged, _, _| drop_allowed(dragged, &target)
+                    move |dragged, _, cx| drop_allowed(dragged, &target, cx)
                 })
                 .drag_over::<DraggedPaths>(move |style, _, _, _| style.bg(highlight))
                 .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(highlight))
                 .on_drop(cx.listener({
                     let target = target.clone();
                     move |this, dragged: &DraggedPaths, window, cx| {
-                        let sources = dragged.paths.as_ref().clone();
+                        let sources = dragged.paths(cx);
                         this.accept_drop(
                             sources,
                             Some(&dragged.source_dir.clone()),
@@ -1922,12 +1996,13 @@ impl DirPane {
             // Promotes the same drag to a native one when it leaves the window.
             // The resolver runs once, at promotion — never per frame — which is
             // why the is_dir probes belong here and not in the payload.
-            .external_drag_payload(|dragged: &DraggedPaths, _, _| {
+            .external_drag_payload(|dragged: &DraggedPaths, _, cx: &mut App| {
                 Some(gpui::ExternalDragPayload::Files(gpui::FileDragPaths::new(
                     dragged
-                        .paths
-                        .iter()
-                        .map(|path| (path.clone(), path.is_dir())),
+                        .paths(cx)
+                        .into_iter()
+                        .map(|path| (path.is_dir(), path))
+                        .map(|(is_dir, path)| (path, is_dir)),
                 )))
             })
             .on_mouse_down(
@@ -1994,13 +2069,7 @@ impl DirPane {
             "entries",
             self.entries.len(),
             cx.processor(|this, range: Range<usize>, _window, cx| {
-                // Shared once per batch: dragging any selected row carries the
-                // whole selection, and cloning that per row per frame is what
-                // the Rc exists to avoid.
-                let selection = std::rc::Rc::new(this.selected_paths());
-                range
-                    .map(|ix| this.render_entry(ix, &selection, cx))
-                    .collect()
+                range.map(|ix| this.render_entry(ix, cx)).collect()
             }),
         )
         .track_scroll(&self.scroll)
@@ -2030,7 +2099,7 @@ impl Render for DirPane {
             // accepts consumes the drop first, so the two never both fire.
             .can_drop({
                 let here = here.clone();
-                move |dragged, _, _| drop_allowed(dragged, &here)
+                move |dragged, _, cx| drop_allowed(dragged, &here, cx)
             })
             // A border rather than a fill: the whole pane going solid would hide
             // the listing you are aiming at.
@@ -2039,7 +2108,7 @@ impl Render for DirPane {
             .on_drop(cx.listener({
                 let here = here.clone();
                 move |this, dragged: &DraggedPaths, window, cx| {
-                    let sources = dragged.paths.as_ref().clone();
+                    let sources = dragged.paths(cx);
                     let source_dir = dragged.source_dir.clone();
                     this.accept_drop(sources, Some(&source_dir), here.clone(), window, cx);
                 }

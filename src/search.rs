@@ -90,28 +90,48 @@ pub fn spawn(root: PathBuf, query: String, show_hidden: bool) -> Search {
                         if cancel.load(Ordering::Relaxed) {
                             break;
                         }
-                        let name = entry.file_name().to_string_lossy().into_owned();
-                        let hidden = name.starts_with('.');
-                        if hidden && !show_hidden {
+                        let raw = entry.file_name();
+                        let name = raw.to_string_lossy();
+                        if name.starts_with('.') && !show_hidden {
+                            continue;
+                        }
+                        if pane_transfer::is_partial_name(&name) {
                             continue;
                         }
 
-                        let mut item = DirEntry::from_std(&entry);
-                        if item.is_dir {
-                            queue.push_back(item.path.clone());
+                        // `file_type` comes from the readdir record on Linux;
+                        // `metadata` is a statx per entry. Only the recursion
+                        // decision is needed for the whole tree, and only the
+                        // handful of hits need size and time — asking for
+                        // metadata up front cost 8.9s over 2.5M entries against
+                        // 1.7s for this.
+                        let is_dir = entry
+                            .file_type()
+                            .map(|t| {
+                                t.is_dir()
+                                    || (t.is_symlink()
+                                        && entry.path().metadata().is_ok_and(|m| m.is_dir()))
+                            })
+                            .unwrap_or(false);
+                        if is_dir {
+                            queue.push_back(entry.path());
                         }
                         if !fs::matches_filter(&name, &query) {
                             continue;
                         }
 
+                        let mut item = DirEntry::from_std(&entry);
                         // Show where it is, not just what it is called: a bare
-                        // name is ambiguous once results span the tree.
-                        item.name = item
-                            .path
-                            .strip_prefix(&root)
-                            .unwrap_or(&item.path)
-                            .display()
-                            .to_string();
+                        // name is ambiguous once results span the tree. This is
+                        // a label, so it goes beside the name rather than over
+                        // it — rename and git colouring key on `name`.
+                        item.relative = Some(
+                            item.path
+                                .strip_prefix(&root)
+                                .unwrap_or(&item.path)
+                                .display()
+                                .to_string(),
+                        );
                         batch.push(item);
                         found += 1;
                         if found >= RESULT_CAP {
@@ -152,9 +172,9 @@ mod tests {
     fn wait(search: &Search) -> Vec<String> {
         let mut found = Vec::new();
         for _ in 0..200 {
-            found.extend(search.drain().into_iter().map(|e| e.name));
+            found.extend(search.drain().into_iter().filter_map(|e| e.relative));
             if search.is_done() {
-                found.extend(search.drain().into_iter().map(|e| e.name));
+                found.extend(search.drain().into_iter().filter_map(|e| e.relative));
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
