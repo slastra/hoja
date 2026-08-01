@@ -1,5 +1,9 @@
 # Pane — File Sync Engine Implementation Spec
 
+> **Historical document.** The tiered strategy in
+> [`transfer-plan.md`](transfer-plan.md) supersedes this spec. This file stays
+> as a record of the initial design.
+
 ## Project Context
 
 Pane is a file manager built on GPUI (Zed's Rust GPU-accelerated UI framework). This document specifies the core file sync/copy engine — the primary differentiator of the project. The goal is a state-of-the-art local and remote file transfer engine that surpasses rsync's 1996-era design, implemented as a standalone Rust crate that the GPUI frontend consumes.

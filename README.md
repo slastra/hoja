@@ -107,7 +107,7 @@ These features are planned and not complete:
 - Tabs, search, previews, and thumbnails
 - Delta sync between machines
 
-See `pane-transfer-plan.md` for the full design.
+See [`docs/transfer-plan.md`](docs/transfer-plan.md) for the full design.
 
 ## License
 
