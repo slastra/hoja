@@ -5,6 +5,7 @@ mod dir_pane;
 mod file_menu;
 mod history;
 mod fs;
+mod git;
 mod icon;
 mod opener;
 mod pane_group;

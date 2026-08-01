@@ -33,6 +33,10 @@ for important data.
   specification, on the same filesystem, so a delete is instant and other
   file managers can empty what pane deletes. pane has no other trash
   controls: no browser, no restore list, no empty command.
+- **Git status.** In a git repository, the colour of a file name shows its
+  status: added, modified, deleted, renamed, or in conflict. A folder shows
+  the status of the files in it. Ignored files are dim. pane asks `git`
+  itself, so the result always agrees with the command line.
 - **Clipboard.** Copy and paste files between pane and other file managers.
   pane reads and writes the GNOME clipboard format.
 - **Themes.** pane reads Zed theme files. Put a theme file in

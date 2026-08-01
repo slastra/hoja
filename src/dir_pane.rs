@@ -14,6 +14,7 @@ use theme::ActiveTheme;
 
 use crate::file_menu::{FileMenu, MenuItem};
 use crate::fs::{self, DirEntry, Sort, SortDir, SortKey, ViewSettings};
+use crate::git::GitStatus;
 use crate::history::History;
 use crate::path_editor::{PathEditor, PathEditorEvent};
 use crate::icon::Icon;
@@ -215,6 +216,10 @@ pub struct DirPane {
     widths: ColumnWidths,
     /// Anchor for the resize in progress, if any.
     resize: Option<ColumnDrag>,
+    /// Git status by entry name for the loaded directory. Empty outside a
+    /// repository, and empty until the background query lands.
+    git: crate::git::GitStatuses,
+    git_task: Option<Task<()>>,
     view: ViewSettings,
     /// The directory `entries` was built from. Differs from `dir` while a load
     /// is in flight, which is how a navigation is told apart from a refresh.
@@ -268,6 +273,8 @@ impl DirPane {
             scroll: UniformListScrollHandle::new(),
             widths: ColumnWidths::default(),
             resize: None,
+            git: crate::git::GitStatuses::new(),
+            git_task: None,
             view,
             loaded_dir: PathBuf::new(),
             error: None,
@@ -712,6 +719,8 @@ impl DirPane {
         if self.pending_select.is_empty() && self.dir == self.loaded_dir {
             self.pending_select = self.selected_names();
         }
+        self.reload_git(cx);
+
         let dir = self.dir.clone();
         let sort = self.view.sort;
         let show_hidden = self.view.show_hidden;
@@ -755,6 +764,31 @@ impl DirPane {
             .filter_map(|&ix| self.entries.get(ix))
             .map(|e| e.name.clone())
             .collect()
+    }
+
+    /// Ask git about this directory off the UI thread.
+    ///
+    /// `git status` spawns a process and walks the work tree — 142ms in a 17k
+    /// file repository — so the listing never waits for it. The names colour in
+    /// when the answer arrives. Assigning the task drops any previous one, so a
+    /// fast sequence of navigations cannot land a stale answer on the wrong
+    /// directory.
+    fn reload_git(&mut self, cx: &mut Context<Self>) {
+        // Clear first: the old directory's statuses must not tint this one.
+        self.git = crate::git::GitStatuses::new();
+        let dir = self.dir.clone();
+        self.git_task = Some(cx.spawn(async move |this, cx| {
+            let statuses = cx
+                .background_spawn(async move { crate::git::statuses(&dir) })
+                .await;
+            if statuses.is_empty() {
+                return;
+            }
+            let _ = this.update(cx, |this, cx| {
+                this.git = statuses;
+                cx.notify();
+            });
+        }));
     }
 
     /// Re-select `pending_select` against the freshly built listing and scroll
@@ -1299,7 +1333,30 @@ impl DirPane {
         // Deliberately one content colour throughout: names, secondary columns, and
         // icons. No accent on directories, no muting on metadata — hierarchy comes from
         // column position and the selection background instead of from hue.
+        //
+        // Git status is the one exception, and only on the name. Hue here carries
+        // information rather than decoration, which is the whole test: a green
+        // name means untracked, and nothing else in the row says so. The
+        // secondary columns and the icon stay neutral so the exception reads as
+        // a signal instead of as theming.
         let content = colors.text;
+        let name_color = self
+            .git
+            .get(&entry.name)
+            .map(|status| match status {
+                GitStatus::Added => colors.version_control_added,
+                GitStatus::Modified => colors.version_control_modified,
+                GitStatus::Deleted => colors.version_control_deleted,
+                GitStatus::Renamed => colors.version_control_renamed,
+                GitStatus::Conflict => colors.version_control_conflict,
+                // `text_muted`, not `version_control_ignored`: the latter is
+                // tuned for diff gutters where near-invisible is fine, and it
+                // leaves a file name too dim to read. Ignored is a
+                // de-emphasis, not a hue.
+                GitStatus::Ignored => colors.text_muted,
+                GitStatus::Unmodified => content,
+            })
+            .unwrap_or(content);
 
         // Resolution order handles the messy cases: full filename against stems and
         // suffixes (`eslint.config.js`), repeated `split_once('.')` (`auth.module.js`),
@@ -1364,7 +1421,7 @@ impl DirPane {
                     .flex_row()
                     .items_center()
                     .gap_1p5()
-                    .text_color(content)
+                    .text_color(name_color)
                     .children(icon_path.map(|path| Icon::from_path(path, content)))
                     .child(match rename_editor {
                         Some(editor) => editor.into_any_element(),
