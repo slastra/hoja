@@ -17,7 +17,7 @@ pub struct DirEntry {
 }
 
 impl DirEntry {
-    fn from_std(entry: &std::fs::DirEntry) -> Self {
+    pub(crate) fn from_std(entry: &std::fs::DirEntry) -> Self {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
 
@@ -350,6 +350,23 @@ pub fn is_valid_drop(sources: &[PathBuf], dest: &Path) -> bool {
 /// that was unmounted. Walking up beats sitting on an error, because the error
 /// state has no way out except typing a new path. `/` always exists, so the
 /// walk terminates.
+/// Whether `name` matches a filter query.
+///
+/// Substring, not fuzzy. A filename filter wants to be predictable: fuzzy
+/// matching turns "test" into a hit on `the_second_thing.rs` and the result
+/// reads as noise. Smart case, as everywhere else — a lower-case query ignores
+/// case, and any capital makes it exact.
+pub fn matches_filter(name: &str, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    if query.chars().any(char::is_uppercase) {
+        name.contains(query)
+    } else {
+        name.to_lowercase().contains(query)
+    }
+}
+
 pub fn nearest_existing_dir(path: &Path) -> Option<PathBuf> {
     path.ancestors()
         .find(|ancestor| ancestor.is_dir())
@@ -396,6 +413,25 @@ pub fn format_time(time: SystemTime) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn filtering_names() {
+        use super::matches_filter;
+
+        assert!(matches_filter("main.rs", ""), "an empty query matches all");
+        assert!(matches_filter("dir_pane.rs", "pane"));
+        assert!(!matches_filter("main.rs", "pane"));
+
+        // Lower case ignores case; a capital anywhere makes it exact.
+        assert!(matches_filter("README.md", "readme"));
+        assert!(matches_filter("README.md", "READ"));
+        assert!(!matches_filter("readme.md", "README"));
+        assert!(matches_filter("MyNotes.txt", "Notes"));
+        assert!(!matches_filter("mynotes.txt", "Notes"));
+
+        // Substring, not subsequence: the letters must be adjacent.
+        assert!(!matches_filter("the_second_thing.rs", "test"));
+    }
+
     #[test]
     fn falling_back_to_an_existing_ancestor() {
         use super::nearest_existing_dir;

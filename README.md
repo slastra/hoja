@@ -38,6 +38,10 @@ for important data.
   the files on one filesystem and copies them across filesystems, which is the
   usual behaviour. Hold `ctrl` to copy or `shift` to move. Files that come from
   another application are always copied.
+- **Search.** Press `ctrl-f` and type. pane searches every folder below the one
+  the pane shows and lists what it finds, with the path of each result. Results
+  appear while the search runs. Press enter to go back to the list, then enter
+  again to open. Press escape to stop searching.
 - **Command palette.** Press `ctrl-shift-p`, type part of a command name, and
   press enter. The list shows only the commands that apply right now, with
   their keys. Commands you use often move to the top.
@@ -97,6 +101,7 @@ Keys work on the pane that has focus.
 | `alt-↑` or `backspace` | Go to the parent directory |
 | `alt-home` | Go to the home directory |
 | `ctrl-l` | Edit the path |
+| `ctrl-f` | Search this folder and everything below it |
 
 **Select**
 
@@ -113,7 +118,7 @@ not next to each other.
 | `ctrl-↑` `ctrl-↓` | Move the outline and keep the selection |
 | `ctrl-space` | Add or remove the outlined entry |
 | `ctrl-a` | Select all |
-| `escape` | Clear the selection |
+| `escape` | Stop searching, or clear the selection |
 
 **Change files**
 

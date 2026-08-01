@@ -14,6 +14,7 @@ mod path_editor;
 mod picker;
 mod place_finder;
 mod places;
+mod search;
 mod theming;
 mod workspace;
 
@@ -25,7 +26,7 @@ use theme::LoadThemes;
 
 use assets::Assets;
 use dir_pane::{
-    ClearSelection, CursorDown, CursorUp, EditPath, ExtendDown, ExtendPageDown, ExtendPageUp,
+    ClearSelection, CursorDown, CursorUp, EditPath, StartSearch, ExtendDown, ExtendPageDown, ExtendPageUp,
     ExtendToBottom, ExtendToTop, ExtendUp, GoHome, GoUp, MoveDown, MovePageDown, MovePageUp,
     MoveToBottom, MoveToTop, MoveUp, NavBack, NavForward, OpenSelected, RenameSelected,
     SelectAll, ToggleHiddenFiles, ToggleSelection,
@@ -118,6 +119,7 @@ fn main() {
             KeyBinding::new("alt-right", NavForward, Some("DirPane && !AddressBar")),
             KeyBinding::new("alt-home", GoHome, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-l", EditPath, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-f", StartSearch, Some("DirPane && !AddressBar")),
             KeyBinding::new("f2", RenameSelected, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-h", ToggleHiddenFiles, Some("DirPane && !AddressBar")),
             KeyBinding::new("enter", OpenSelected, Some("DirPane && !AddressBar")),

@@ -47,6 +47,7 @@ actions!(
         NavForward,
         GoHome,
         EditPath,
+        StartSearch,
         RenameSelected,
         ToggleHiddenFiles,
         ToggleFoldersFirst,
@@ -105,6 +106,15 @@ fn drop_allowed(dragged: &dyn std::any::Any, target: &Path) -> bool {
         return fs::is_valid_drop(paths.paths(), target);
     }
     false
+}
+
+/// What the address bar is being used for. Search reuses the same field
+/// rather than adding a second one: there is one text slot in the toolbar and
+/// two things worth typing into it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BarMode {
+    Path,
+    Search,
 }
 
 /// Rows being dragged, and where they came from so a drop back onto their own
@@ -299,7 +309,16 @@ pub struct DirPane {
     /// Separate from `load_task` so a header click cannot cancel a pending read.
     sort_task: Option<Task<()>>,
     context_menu: Option<(Point<Pixels>, Entity<FileMenu>)>,
-    path_editor: Option<Entity<PathEditor>>,
+    /// The address bar doubles as the search field, so both live in one slot.
+    path_editor: Option<(BarMode, Entity<PathEditor>)>,
+    /// Active search text. While set, `entries` holds results rather than the
+    /// directory listing.
+    filter: Option<String>,
+    /// The listing to put back when the search ends. Empty otherwise, since a
+    /// second copy of a large directory is not free.
+    unfiltered: Vec<DirEntry>,
+    search: Option<crate::search::Search>,
+    search_task: Option<Task<()>>,
     /// Inline rename: the row index and its editor.
     renaming: Option<(usize, Entity<PathEditor>)>,
     /// Names to re-select once the listing is rebuilt. Every path that
@@ -352,6 +371,10 @@ impl DirPane {
             sort_task: None,
             context_menu: None,
             path_editor: None,
+            filter: None,
+            unfiltered: Vec::new(),
+            search: None,
+            search_task: None,
             renaming: None,
             pending_select: Vec::new(),
             type_ahead: None,
@@ -671,6 +694,13 @@ impl DirPane {
     }
 
     fn clear_selection(&mut self, _: &ClearSelection, _window: &mut Window, cx: &mut Context<Self>) {
+        // Escape backs out one level at a time: the search before the
+        // selection, so results are not dismissed together with what you picked
+        // out of them.
+        if self.searching() {
+            self.set_filter(None, cx);
+            return;
+        }
         self.selected.clear();
         self.anchor_ix = None;
         self.cursor_ix = None;
@@ -791,6 +821,16 @@ impl DirPane {
         }
         self.reload_git(cx);
         self.watch_dir(cx);
+        // A listing read would otherwise land on top of search results.
+        if self.searching() {
+            self.filter = None;
+            self.search = None;
+            self.search_task = None;
+            self.unfiltered = Vec::new();
+            if let Some((BarMode::Search, _)) = &self.path_editor {
+                self.path_editor = None;
+            }
+        }
 
         let dir = self.dir.clone();
         let sort = self.view.sort;
@@ -1228,6 +1268,146 @@ impl DirPane {
         self.start_edit(window, cx);
     }
 
+    fn start_search(&mut self, _: &StartSearch, window: &mut Window, cx: &mut Context<Self>) {
+        // Reopening keeps whatever is already typed, so ctrl-f twice does not
+        // silently throw the search away.
+        let initial = self.filter.clone().unwrap_or_default();
+        let editor = cx.new(|cx| {
+            PathEditor::new(initial, window, cx).with_placeholder("Search this folder")
+        });
+
+        cx.subscribe_in(&editor, window, |this, _, event, window, cx| match event {
+            PathEditorEvent::Edited => {}
+            // Enter hands the listing back the focus and *keeps* the search, so
+            // the arrow keys work on the results. They cannot work while the
+            // field has focus, because every pane binding is masked by
+            // `!AddressBar`. Escape from there clears it.
+            PathEditorEvent::Committed(_) => {
+                this.path_editor = None;
+                window.focus(&this.focus_handle, cx);
+                cx.notify();
+            }
+            PathEditorEvent::Cancelled => {
+                this.path_editor = None;
+                this.set_filter(None, cx);
+                window.focus(&this.focus_handle, cx);
+                cx.notify();
+            }
+        })
+        .detach();
+
+        // Live: the pane re-filters on every keystroke rather than on enter.
+        cx.observe(&editor, |this, editor, cx| {
+            let query = editor.read(cx).text().to_string();
+            this.set_filter(Some(query), cx);
+        })
+        .detach();
+
+        window.focus(&editor.focus_handle(cx), cx);
+        self.path_editor = Some((BarMode::Search, editor));
+        cx.notify();
+    }
+
+    /// Start, replace, or end a search of everything under this directory.
+    fn set_filter(&mut self, query: Option<String>, cx: &mut Context<Self>) {
+        let query = query.filter(|q| !q.is_empty());
+        if query == self.filter {
+            return;
+        }
+
+        // The listing steps aside for the first query and comes back when the
+        // last one goes.
+        match (&self.filter, &query) {
+            (None, Some(_)) => self.unfiltered = std::mem::take(&mut self.entries),
+            (Some(_), None) => self.entries = std::mem::take(&mut self.unfiltered),
+            _ => {}
+        }
+        self.filter = query;
+        // Dropping the old handle stops its walk, so a new keystroke abandons
+        // the previous query rather than racing it into the same list.
+        self.search = None;
+        self.search_task = None;
+
+        let Some(query) = self.filter.clone() else {
+            self.selected.clear();
+            self.anchor_ix = None;
+            self.cursor_ix = None;
+            self.restore_selection();
+            cx.notify();
+            return;
+        };
+
+        self.entries.clear();
+        self.selected.clear();
+        self.anchor_ix = None;
+        self.cursor_ix = None;
+        self.error = None;
+        self.search = Some(crate::search::spawn(
+            self.dir.clone(),
+            query,
+            self.view.show_hidden,
+        ));
+
+        // Results arrive over the life of the walk, so the pane collects them
+        // on a timer rather than waiting for the end.
+        self.search_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(60))
+                    .await;
+                let keep_going = this.update(cx, |this, cx| {
+                    let Some(search) = this.search.as_ref() else {
+                        return false;
+                    };
+                    let batch = search.drain();
+                    let finished = search.is_done();
+                    if !batch.is_empty() {
+                        this.entries.extend(batch);
+                        // Aim at the first hit as soon as there is one, so
+                        // enter opens it without arrowing down first. Only
+                        // while nothing is chosen — later batches must not
+                        // yank the selection off what you picked.
+                        if this.cursor_ix.is_none() && !this.entries.is_empty() {
+                            this.selected = BTreeSet::from([0]);
+                            this.place_cursor(0);
+                        }
+                        cx.notify();
+                    }
+                    if finished {
+                        cx.notify();
+                    }
+                    !finished
+                });
+                if !keep_going.unwrap_or(false) {
+                    break;
+                }
+            }
+        }));
+        cx.notify();
+    }
+
+    /// Whether a search is running or has results on screen.
+    fn searching(&self) -> bool {
+        self.filter.is_some()
+    }
+
+    /// A word about the results, since the listing is no longer this directory.
+    fn search_status(&self) -> Option<String> {
+        let search = self.search.as_ref()?;
+        let found = self.entries.len();
+        Some(if !search.is_done() {
+            format!("searching… {found}")
+        } else if search.hit_cap() {
+            format!("first {found} matches")
+        } else {
+            match found {
+                0 => "no matches".to_string(),
+                1 => "1 match".to_string(),
+                n => format!("{n} matches"),
+            }
+        })
+    }
+
     fn start_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let editor = cx.new(|cx| {
             PathEditor::new(self.dir.display().to_string(), window, cx)
@@ -1260,7 +1440,7 @@ impl DirPane {
         .detach();
 
         window.focus(&editor.focus_handle(cx), cx);
-        self.path_editor = Some(editor);
+        self.path_editor = Some((BarMode::Path, editor));
         cx.notify();
     }
 
@@ -1429,8 +1609,18 @@ impl DirPane {
                 Box::new(GoHome),
                 cx,
             ))
+            .when_some(self.search_status(), |el, status| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .px_2()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(status),
+                )
+            })
             .child(match self.path_editor.clone() {
-                Some(editor) => editor.into_any_element(),
+                Some((_, editor)) => editor.into_any_element(),
                 None => div()
                     .id("path-display-slot")
                     .flex_1()
@@ -1836,6 +2026,7 @@ impl Render for DirPane {
             .on_action(cx.listener(Self::nav_forward))
             .on_action(cx.listener(Self::go_home))
             .on_action(cx.listener(Self::edit_path))
+            .on_action(cx.listener(Self::start_search))
             .on_action(cx.listener(Self::rename_selected))
             .on_action(cx.listener(Self::toggle_hidden))
             .on_action(cx.listener(Self::toggle_folders_first))
