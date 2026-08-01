@@ -907,6 +907,10 @@ impl Render for Workspace {
                         .bg(hsla(0., 0., 0., 0.45))
                         .flex()
                         .justify_center()
+                        // Without this the palette stretches to the full height
+                        // of the scrim and trails empty background below its
+                        // last row.
+                        .items_start()
                         // Anchored near the top rather than centred: the list
                         // grows downward, so a centred modal would shift under
                         // the cursor as results narrow.

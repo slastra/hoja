@@ -37,6 +37,11 @@ actions!(palette, [Toggle]);
 // changing menu keys cannot silently change palette behaviour.
 actions!(palette, [SelectNext, SelectPrevious, Confirm, Cancel]);
 
+const ROW_HEIGHT: f32 = 28.;
+/// Ten rows. Beyond this the list scrolls rather than growing, so the palette
+/// never runs off the bottom of the window.
+const MAX_VISIBLE_ROWS: f32 = 10.;
+
 /// Actions that exist to be bound to a key, not to be read from a list. Row
 /// movement and selection are meaningless as palette entries: you cannot
 /// usefully "run" `move down` from a modal that closes when you do.
@@ -421,7 +426,10 @@ impl Render for CommandPalette {
             }),
         )
         .track_scroll(&self.scroll)
-        .h(px(320.));
+        // uniform_list virtualizes, so it needs a definite height rather than a
+        // maximum: given only a max it renders nothing. Size it to the rows
+        // there are, capped, so a three-result palette is three rows tall.
+        .h(px(ROW_HEIGHT * (count as f32).min(MAX_VISIBLE_ROWS)));
 
         div()
             .occlude()
@@ -517,7 +525,7 @@ impl CommandPalette {
 
         div()
             .id(ix)
-            .h(px(28.))
+            .h(px(ROW_HEIGHT))
             .w_full()
             .px_3()
             .flex()
