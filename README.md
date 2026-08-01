@@ -80,11 +80,18 @@ Keys work on the pane that has focus.
 
 **Select**
 
+An outline marks the entry that the keys act on. It is usually also selected.
+Use `ctrl` with the movement keys to move the outline alone, and `ctrl-space`
+to add or remove that one entry. This builds a selection of entries that are
+not next to each other.
+
 | Key | Function |
 |---|---|
 | `shift-↑` `shift-↓` | Extend the selection one row |
 | `shift-pageup` `shift-pagedown` | Extend the selection one screen |
 | `shift-home` `shift-end` | Extend the selection to the first or the last entry |
+| `ctrl-↑` `ctrl-↓` | Move the outline and keep the selection |
+| `ctrl-space` | Add or remove the outlined entry |
 | `ctrl-a` | Select all |
 | `escape` | Clear the selection |
 
@@ -163,6 +170,7 @@ These features are planned and not complete:
 - Parallel copy for many small files
 - A job journal, for undo of a transfer and resume after a crash
 - Drag and drop, between panes and with other applications
+- A relative time option for the Modified column, such as "2 hours ago"
 - Tabs, search, previews, and thumbnails
 - Delta sync between machines
 

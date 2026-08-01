@@ -20,10 +20,10 @@ use theme::LoadThemes;
 
 use assets::Assets;
 use dir_pane::{
-    ClearSelection, EditPath, ExtendDown, ExtendPageDown, ExtendPageUp, ExtendToBottom,
-    ExtendToTop, ExtendUp, GoHome, GoUp, MoveDown, MovePageDown, MovePageUp, MoveToBottom,
-    MoveToTop, MoveUp, NavBack, NavForward, OpenSelected, RenameSelected, SelectAll,
-    ToggleHiddenFiles,
+    ClearSelection, CursorDown, CursorUp, EditPath, ExtendDown, ExtendPageDown, ExtendPageUp,
+    ExtendToBottom, ExtendToTop, ExtendUp, GoHome, GoUp, MoveDown, MovePageDown, MovePageUp,
+    MoveToBottom, MoveToTop, MoveUp, NavBack, NavForward, OpenSelected, RenameSelected,
+    SelectAll, ToggleHiddenFiles, ToggleSelection,
 };
 use file_menu::{Cancel as MenuCancel, Confirm as MenuConfirm, SelectNext, SelectPrevious};
 use path_editor as ab;
@@ -138,6 +138,9 @@ fn main() {
             KeyBinding::new("end", MoveToBottom, Some("DirPane && !AddressBar")),
             KeyBinding::new("shift-home", ExtendToTop, Some("DirPane && !AddressBar")),
             KeyBinding::new("shift-end", ExtendToBottom, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-up", CursorUp, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-down", CursorDown, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-space", ToggleSelection, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-a", SelectAll, Some("DirPane && !AddressBar")),
             KeyBinding::new("escape", ClearSelection, Some("DirPane && !AddressBar")),
             KeyBinding::new("delete", workspace::Delete, Some("DirPane && !AddressBar")),

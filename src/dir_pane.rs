@@ -38,6 +38,9 @@ actions!(
         ExtendPageDown,
         ExtendToTop,
         ExtendToBottom,
+        CursorUp,
+        CursorDown,
+        ToggleSelection,
         NavBack,
         NavForward,
         GoHome,
@@ -614,6 +617,30 @@ impl DirPane {
         self.selected = BTreeSet::from([ix]);
         self.place_cursor(ix);
         self.reveal(ix, cx);
+    }
+
+    /// Move the lead and leave the selection alone, so a row can be added to a
+    /// scattered selection without disturbing what is already in it. Pointless
+    /// without the lead ring drawn in `render_row` — otherwise the next
+    /// `ToggleSelection` is a blind guess.
+    fn focus_cursor(&mut self, motion: Motion, cx: &mut Context<Self>) {
+        let Some(ix) = self.destination(motion) else {
+            return;
+        };
+        self.place_cursor(ix);
+        self.reveal(ix, cx);
+    }
+
+    /// Add or remove the lead row, the keyboard twin of a control-click.
+    fn toggle_selection(&mut self, _: &ToggleSelection, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.cursor_ix.filter(|&ix| ix < self.entries.len()) else {
+            return;
+        };
+        if !self.selected.remove(&ix) {
+            self.selected.insert(ix);
+        }
+        self.place_cursor(ix);
+        cx.notify();
     }
 
     /// Move the lead, select everything back to the anchor.
@@ -1221,6 +1248,9 @@ impl DirPane {
             .filter(|(renaming_ix, _)| *renaming_ix == ix)
             .map(|(_, editor)| editor.clone());
         let selected = self.selected.contains(&ix);
+        // The lead row is where ctrl-arrow has moved to and what ctrl-space
+        // acts on. It is usually also selected, so it needs its own mark.
+        let is_lead = self.cursor_ix == Some(ix);
         let is_dir = entry.is_dir;
         let path = entry.path.clone();
 
@@ -1273,6 +1303,15 @@ impl DirPane {
             .items_center()
             .cursor_pointer()
             .text_sm()
+            // Every row carries the border, and only the lead one colours it:
+            // uniform_list virtualizes on a single measured row height, so the
+            // geometry cannot differ between rows.
+            .border_1()
+            .border_color(if is_lead {
+                colors.border_focused
+            } else {
+                gpui::transparent_black()
+            })
             .when(selected, |this| this.bg(colors.element_selected))
             .when(!selected, |this| {
                 this.hover(|style| style.bg(colors.element_hover))
@@ -1452,6 +1491,11 @@ impl Render for DirPane {
             .on_action(cx.listener(|this, _: &ExtendToBottom, _, cx| {
                 this.extend_cursor(Motion::Bottom, cx)
             }))
+            .on_action(cx.listener(|this, _: &CursorUp, _, cx| this.focus_cursor(Motion::Up, cx)))
+            .on_action(cx.listener(|this, _: &CursorDown, _, cx| {
+                this.focus_cursor(Motion::Down, cx)
+            }))
+            .on_action(cx.listener(Self::toggle_selection))
             .on_mouse_down(
                 MouseButton::Navigate(gpui::NavigationDirection::Back),
                 cx.listener(|this, _: &MouseDownEvent, window, cx| {
