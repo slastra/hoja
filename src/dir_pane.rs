@@ -14,6 +14,7 @@ use theme::ActiveTheme;
 use crate::file_menu::{FileMenu, MenuItem};
 use crate::fs::{self, DirEntry, Sort, SortDir, SortKey};
 use crate::history::History;
+use std::time::{Duration, Instant};
 use crate::path_editor::{PathEditor, PathEditorEvent};
 use crate::icon::Icon;
 use crate::workspace;
@@ -138,6 +139,10 @@ pub struct DirPane {
     /// After a reload, select the entry with this name (used to keep the
     /// renamed entry selected once the listing refreshes).
     pending_select: Option<String>,
+    /// Type-ahead find: the accumulated prefix and the time of the last key.
+    /// The buffer resets lazily when a key arrives after the timeout.
+    type_ahead: String,
+    type_ahead_at: Option<Instant>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -172,6 +177,8 @@ impl DirPane {
             path_editor: None,
             renaming: None,
             pending_select: None,
+            type_ahead: String::new(),
+            type_ahead_at: None,
             _subscriptions: subscriptions,
         };
         this.reload(cx);
@@ -418,6 +425,35 @@ impl DirPane {
         cx.notify();
     }
 
+    /// Type-ahead: handle a printable key. Returns true when consumed.
+    fn type_ahead_key(&mut self, key_char: &str, cx: &mut Context<Self>) -> bool {
+        // Reserve bare space for future use (preview); mid-buffer spaces are
+        // legitimate name characters ("New Folder").
+        if key_char == " " && self.type_ahead.is_empty() {
+            return false;
+        }
+        const TIMEOUT: Duration = Duration::from_millis(1000);
+        let now = Instant::now();
+        if self
+            .type_ahead_at
+            .is_none_or(|last| now.duration_since(last) > TIMEOUT)
+        {
+            self.type_ahead.clear();
+        }
+        self.type_ahead_at = Some(now);
+        self.type_ahead.push_str(key_char);
+
+        let names: Vec<&str> = self.entries.iter().map(|e| e.name.as_str()).collect();
+        if let Some(ix) = type_ahead_target(&names, &self.type_ahead, self.anchor_ix) {
+            self.selected = BTreeSet::from([ix]);
+            self.anchor_ix = Some(ix);
+            self.scroll
+                .scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
+            cx.notify();
+        }
+        true
+    }
+
     fn select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
         self.selected = (0..self.entries.len()).collect();
         if self.anchor_ix.is_none() && !self.entries.is_empty() {
@@ -429,6 +465,8 @@ impl DirPane {
     fn clear_selection(&mut self, _: &ClearSelection, _window: &mut Window, cx: &mut Context<Self>) {
         self.selected.clear();
         self.anchor_ix = None;
+        self.type_ahead.clear();
+        self.type_ahead_at = None;
         cx.notify();
     }
 
@@ -1084,6 +1122,34 @@ impl DirPane {
     }
 }
 
+/// First entry matching the type-ahead buffer.
+///
+/// A buffer that is one character repeated ("ddd") cycles: the next entry
+/// after `current` whose name starts with that character, wrapping. Anything
+/// else is a case-insensitive prefix match from the top.
+fn type_ahead_target(names: &[&str], buffer: &str, current: Option<usize>) -> Option<usize> {
+    if names.is_empty() || buffer.is_empty() {
+        return None;
+    }
+    let lower = buffer.to_lowercase();
+
+    let mut chars = lower.chars();
+    let first = chars.next()?;
+    let is_cycle = buffer.chars().count() > 1 && chars.all(|c| c == first);
+
+    if is_cycle {
+        let start = current.map(|ix| ix + 1).unwrap_or(0);
+        let n = names.len();
+        return (0..n)
+            .map(|offset| (start + offset) % n)
+            .find(|&ix| names[ix].to_lowercase().starts_with(first));
+    }
+
+    names
+        .iter()
+        .position(|name| name.to_lowercase().starts_with(&lower))
+}
+
 impl Focusable for DirPane {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -1111,6 +1177,20 @@ impl Render for DirPane {
             .on_action(cx.listener(Self::sort_by_size))
             .on_action(cx.listener(Self::sort_by_kind))
             .on_action(cx.listener(Self::sort_by_modified))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _window, cx| {
+                // Type-ahead find: unmodified printable keys only. Bound keys
+                // (chords, function keys) carry modifiers or no key_char and
+                // fall through untouched.
+                let mods = &event.keystroke.modifiers;
+                if mods.control || mods.alt || mods.platform || mods.function {
+                    return;
+                }
+                if let Some(key_char) = event.keystroke.key_char.clone()
+                    && this.type_ahead_key(&key_char, cx)
+                {
+                    cx.stop_propagation();
+                }
+            }))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::clear_selection))
             .on_mouse_down(
@@ -1157,5 +1237,35 @@ impl Render for DirPane {
                     .with_priority(1),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod type_ahead_tests {
+    use super::type_ahead_target;
+
+    const NAMES: &[&str] = &["Documents", "Downloads", "Music", "dotfiles", "notes.txt"];
+
+    #[test]
+    fn prefix_match_is_case_insensitive_and_first_wins() {
+        assert_eq!(type_ahead_target(NAMES, "do", None), Some(0));
+        assert_eq!(type_ahead_target(NAMES, "dow", None), Some(1));
+        assert_eq!(type_ahead_target(NAMES, "n", None), Some(4));
+        assert_eq!(type_ahead_target(NAMES, "zzz", None), None);
+    }
+
+    #[test]
+    fn repeated_letter_cycles_through_matches() {
+        // d, then d again: Documents -> Downloads -> dotfiles -> wrap.
+        assert_eq!(type_ahead_target(NAMES, "d", None), Some(0));
+        assert_eq!(type_ahead_target(NAMES, "dd", Some(0)), Some(1));
+        assert_eq!(type_ahead_target(NAMES, "ddd", Some(1)), Some(3));
+        assert_eq!(type_ahead_target(NAMES, "dddd", Some(3)), Some(0));
+    }
+
+    #[test]
+    fn empty_inputs_match_nothing() {
+        assert_eq!(type_ahead_target(&[], "a", None), None);
+        assert_eq!(type_ahead_target(NAMES, "", None), None);
     }
 }

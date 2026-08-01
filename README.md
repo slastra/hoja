@@ -72,6 +72,7 @@ The `PANE_THEME` environment variable also sets the theme.
 | `ctrl-c` / `ctrl-x` / `ctrl-v` | Copy / cut / paste |
 | `ctrl-a` | Select all |
 | `escape` | Clear the selection |
+| type a name | Jump to the first match; repeat a letter to cycle |
 
 Mouse controls:
 
