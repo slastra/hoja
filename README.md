@@ -152,6 +152,7 @@ not next to each other.
 | Right-click | Open the context menu |
 | Click a column header | Sort. Click again to reverse the order. |
 | Drag a header divider | Resize the column |
+| Click the magnifier | Start or stop a search |
 | Drag rows | Move them. Across filesystems, pane copies them. |
 | `ctrl`-drag / `shift`-drag | Always copy / always move |
 | Drop on a folder row | Put the files in that folder |

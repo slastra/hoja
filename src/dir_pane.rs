@@ -1392,7 +1392,9 @@ impl DirPane {
     }
 
     /// A word about the results, since the listing is no longer this directory.
-    fn search_status(&self) -> Option<String> {
+    /// Shown in the workspace's status strip, which is where the pane's other
+    /// running work already reports.
+    pub fn search_status(&self) -> Option<String> {
         let search = self.search.as_ref()?;
         let found = self.entries.len();
         Some(if !search.is_done() {
@@ -1546,6 +1548,7 @@ impl DirPane {
         let content = colors.text;
         let muted = colors.text_muted;
         let hover_bg = colors.element_hover;
+        let searching = self.searching();
 
         let nav_button = |id: &'static str,
                           icon: &'static str,
@@ -1609,16 +1612,6 @@ impl DirPane {
                 Box::new(GoHome),
                 cx,
             ))
-            .when_some(self.search_status(), |el, status| {
-                el.child(
-                    div()
-                        .flex_none()
-                        .px_2()
-                        .text_xs()
-                        .text_color(muted)
-                        .child(status),
-                )
-            })
             .child(match self.path_editor.clone() {
                 Some((_, editor)) => editor.into_any_element(),
                 None => div()
@@ -1634,6 +1627,40 @@ impl DirPane {
                     .child(self.dir.display().to_string())
                     .into_any_element(),
             })
+            .child(
+                div()
+                    .id("pane-search")
+                    .flex_none()
+                    .size(px(20.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    // Lit while a search is on, since the listing is then
+                    // results rather than this directory and the toolbar is the
+                    // only thing that says so.
+                    .when(searching, |el| el.bg(colors.element_selected))
+                    .hover(|s| s.bg(hover_bg))
+                    .child(Icon::from_path(
+                        "icons/file_icons/magnifying_glass.svg",
+                        content,
+                    ))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            // A second press ends the search, matching escape.
+                            if this.searching() {
+                                this.path_editor = None;
+                                this.set_filter(None, cx);
+                                window.focus(&this.focus_handle, cx);
+                            } else {
+                                this.start_search(&StartSearch, window, cx);
+                            }
+                        }),
+                    ),
+            )
             .child(
                 div()
                     .id("pane-menu")

@@ -733,6 +733,7 @@ impl Workspace {
 
     fn render_job_strip(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let colors = cx.theme().colors();
+        let search = self.active_pane.read(cx).search_status();
         let text = colors.text;
         let muted = colors.text_muted;
         let error_color = cx.theme().status().error;
@@ -848,6 +849,18 @@ impl Workspace {
             .bg(colors.title_bar_background)
             .border_t_1()
             .border_color(colors.border)
+            .when_some(search, |el, status| {
+                el.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .px_2()
+                        .h(px(26.))
+                        .text_xs()
+                        .text_color(colors.text_muted)
+                        .child(status),
+                )
+            })
             .when_some(self.notice.as_ref(), |el, notice| {
                 let color = if notice.is_problem() { error_color } else { muted };
                 el.child(
@@ -990,9 +1003,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_palette))
             .on_action(cx.listener(Self::toggle_places))
             .child(self.center.render(&self.active_pane, window, cx))
-            .when(!self.jobs.is_empty() || self.notice.is_some(), |el| {
-                el.child(self.render_job_strip(cx))
-            })
+            .when(
+                !self.jobs.is_empty()
+                    || self.notice.is_some()
+                    || self.active_pane.read(cx).search_status().is_some(),
+                |el| el.child(self.render_job_strip(cx)),
+            )
             .when_some(self.palette.clone(), |el, palette| {
                 el.child(
                     div()
