@@ -76,8 +76,16 @@ pub enum PaneEvent {
     Remove,
 }
 
-/// The three fixed-width columns. Name is not listed because it flexes to fill whatever
-/// space these leave, so it is never resized directly.
+/// A fixed-width column after the Name column.
+///
+/// Name is not a variant: it flexes to fill whatever these leave, holds the icon
+/// and the rename editor, and has no divider of its own, so it is built directly
+/// rather than driven from this table.
+///
+/// Everything about a column lives here — its order, label, sort key, starting
+/// width, and the text it shows — so a new column is one variant, one entry in
+/// `ALL`, and one arm in each method. The header, the rows, and the resize
+/// handles all follow.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Column {
     Size,
@@ -85,39 +93,71 @@ pub enum Column {
     Modified,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct ColumnWidths {
-    size: Pixels,
-    kind: Pixels,
-    modified: Pixels,
+impl Column {
+    /// Display order. The length is part of the type, so adding a variant here
+    /// makes the compiler point at `ColumnWidths` rather than silently leaving
+    /// the new column without a width.
+    const ALL: [Column; 3] = [Column::Size, Column::Kind, Column::Modified];
+
+    fn label(self) -> &'static str {
+        match self {
+            Column::Size => "Size",
+            Column::Kind => "Kind",
+            Column::Modified => "Modified",
+        }
+    }
+
+    fn sort_key(self) -> SortKey {
+        match self {
+            Column::Size => SortKey::Size,
+            Column::Kind => SortKey::Kind,
+            Column::Modified => SortKey::Modified,
+        }
+    }
+
+    fn default_width(self) -> Pixels {
+        match self {
+            Column::Size | Column::Kind => px(90.),
+            Column::Modified => px(140.),
+        }
+    }
+
+    /// The cell text for one entry. Empty where the entry has no such value —
+    /// directories have no size, and unreadable metadata has no time.
+    fn value(self, entry: &DirEntry) -> String {
+        match self {
+            Column::Size => entry.size.map(fs::format_size).unwrap_or_default(),
+            Column::Kind => entry.kind(),
+            Column::Modified => entry.modified.map(fs::format_time).unwrap_or_default(),
+        }
+    }
 }
+
+/// Per-column widths, positional so the set can grow without new fields.
+///
+/// Indexed by discriminant, not by position in `ALL`, so `ALL` must hold every
+/// variant exactly once — otherwise a column indexes a width that belongs to
+/// another, or runs off the end.
+#[derive(Clone, Copy, Debug)]
+struct ColumnWidths([Pixels; Column::ALL.len()]);
 
 impl Default for ColumnWidths {
     fn default() -> Self {
-        Self {
-            size: px(90.),
-            kind: px(90.),
-            modified: px(140.),
+        let mut widths = [px(0.); Column::ALL.len()];
+        for column in Column::ALL {
+            widths[column as usize] = column.default_width();
         }
+        Self(widths)
     }
 }
 
 impl ColumnWidths {
     fn get(&self, column: Column) -> Pixels {
-        match column {
-            Column::Size => self.size,
-            Column::Kind => self.kind,
-            Column::Modified => self.modified,
-        }
+        self.0[column as usize]
     }
 
     fn set(&mut self, column: Column, width: Pixels) {
-        let slot = match column {
-            Column::Size => &mut self.size,
-            Column::Kind => &mut self.kind,
-            Column::Modified => &mut self.modified,
-        };
-        *slot = width.clamp(px(COL_MIN_WIDTH), px(COL_MAX_WIDTH));
+        self.0[column as usize] = width.clamp(px(COL_MIN_WIDTH), px(COL_MAX_WIDTH));
     }
 }
 
@@ -1185,7 +1225,8 @@ impl DirPane {
         let sort = self.view.sort;
 
         // Clickable header cell. The resize handles are siblings, not ancestors, so
-        // dragging a divider never lands a click on the cell beside it.
+        // dragging a divider never lands a click on the cell beside it. `width` is
+        // `None` for the flexible Name column.
         let head = |key: SortKey, label: &'static str, width: Option<Pixels>| {
             let indicator = (sort.key == key).then_some(match sort.dir {
                 SortDir::Ascending => "icons/file_icons/chevron_up.svg",
@@ -1213,7 +1254,7 @@ impl DirPane {
                 }))
         };
 
-        div()
+        let header = div()
             .flex()
             .flex_row()
             .items_center()
@@ -1224,17 +1265,17 @@ impl DirPane {
             .border_color(colors.border)
             .text_xs()
             .text_color(content)
-            .child(head(SortKey::Name, "Name", None))
-            .child(self.render_column_handle(Column::Size, cx))
-            .child(head(SortKey::Size, "Size", Some(self.widths.size)))
-            .child(self.render_column_handle(Column::Kind, cx))
-            .child(head(SortKey::Kind, "Kind", Some(self.widths.kind)))
-            .child(self.render_column_handle(Column::Modified, cx))
-            .child(head(
-                SortKey::Modified,
-                "Modified",
-                Some(self.widths.modified),
-            ))
+            .child(head(SortKey::Name, "Name", None));
+
+        Column::ALL.into_iter().fold(header, |header, column| {
+            header
+                .child(self.render_column_handle(column, cx))
+                .child(head(
+                    column.sort_key(),
+                    column.label(),
+                    Some(self.widths.get(column)),
+                ))
+        })
     }
 
     /// `use<>` opts out of capturing the `&self` / `&Context` lifetimes: the returned
@@ -1253,12 +1294,6 @@ impl DirPane {
         let is_lead = self.cursor_ix == Some(ix);
         let is_dir = entry.is_dir;
         let path = entry.path.clone();
-
-        let size_label = match entry.size {
-            Some(bytes) => fs::format_size(bytes),
-            None => String::new(),
-        };
-        let modified_label = entry.modified.map(fs::format_time).unwrap_or_default();
 
         let colors = cx.theme().colors();
         // Deliberately one content colour throughout: names, secondary columns, and
@@ -1289,7 +1324,11 @@ impl DirPane {
                 .child(text)
         };
 
-        div()
+        // Resolved before the element is built: `use<>` forbids capturing `self`,
+        // and this keeps the cells in lockstep with the header.
+        let cells = Column::ALL.map(|column| (self.widths.get(column), column.value(entry)));
+
+        let row = div()
             .id(ix)
             // Uniform row height is what lets `uniform_list` virtualize.
             .h(px(ROW_HEIGHT))
@@ -1334,13 +1373,13 @@ impl DirPane {
                             .child(entry.name.clone())
                             .into_any_element(),
                     }),
-            )
-            .child(spacer())
-            .child(cell(self.widths.size, size_label))
-            .child(spacer())
-            .child(cell(self.widths.kind, entry.kind()))
-            .child(spacer())
-            .child(cell(self.widths.modified, modified_label))
+            );
+
+        cells
+            .into_iter()
+            .fold(row, |row, (width, text)| {
+                row.child(spacer()).child(cell(width, text))
+            })
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
