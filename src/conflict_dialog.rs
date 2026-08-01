@@ -171,11 +171,18 @@ impl Render for ConflictDialog {
                     }))
                     .child(
                         div()
-                            .size(px(14.))
+                            .size(px(16.))
                             .flex_none()
                             .rounded_sm()
+                            // The box must read as a control in both states: an
+                            // inset fill plus a border that brightens with use.
+                            .bg(colors.editor_background)
                             .border_1()
-                            .border_color(colors.border)
+                            .border_color(if apply_to_all {
+                                colors.border_selected
+                            } else {
+                                muted
+                            })
                             .flex()
                             .items_center()
                             .justify_center()
