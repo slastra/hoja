@@ -125,6 +125,11 @@ impl PaneGroup {
     /// Structural dump for debugging, e.g. `H[P, P, P]` for three panes in one
     /// horizontal axis versus `H[P, V[P, P]]` for a nested split. Splitting along an
     /// axis that already runs that way must produce the former, never `H[P, H[P, P]]`.
+    ///
+    /// Gated to match its only caller, the split/close tracing in `workspace`.
+    /// Without this it is dead code in a release build — which a debug build
+    /// cannot tell you, so it only ever surfaced from `makepkg`.
+    #[cfg(debug_assertions)]
     pub fn shape(&self) -> String {
         self.root.shape()
     }
@@ -214,6 +219,7 @@ impl Member {
         }
     }
 
+    #[cfg(debug_assertions)]
     fn shape(&self) -> String {
         match self {
             Member::Pane(_) => "P".to_string(),
