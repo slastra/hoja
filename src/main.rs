@@ -1,5 +1,6 @@
 mod assets;
 mod clipboard;
+mod config;
 mod command_palette;
 mod conflict_dialog;
 mod dir_pane;
@@ -81,6 +82,10 @@ fn parse_args() -> Args {
 
 fn main() {
     let args = parse_args();
+    // Read before the window exists: the theme, the first pane's view, and the
+    // window size all come from these.
+    let settings = config::Settings::load();
+    let state = config::State::load();
 
     application().with_assets(Assets).run(move |cx: &mut App| {
         // Sets up ThemeRegistry, FontFamilyCache, SystemAppearance, and GlobalTheme so
@@ -102,9 +107,11 @@ fn main() {
             std::process::exit(0);
         }
 
-        if let Some(name) = &args.theme {
-            match theming::apply(name, cx) {
-                Ok(()) => theming::watch_user_themes(name.clone(), cx),
+        // --theme beats $HOJA_THEME beats settings.json. Whichever wins, its
+        // themes/ directory is watched so an edit applies without a restart.
+        if let Some(name) = args.theme.clone().or_else(|| settings.theme.clone()) {
+            match theming::apply(&name, cx) {
+                Ok(()) => theming::watch_user_themes(name, cx),
                 Err(err) => eprintln!("[hoja] theme {name:?} not available: {err}"),
             }
         }
@@ -210,7 +217,11 @@ fn main() {
         // before the first right-click asks for them.
         cx.background_spawn(async { opener::warm_caches() }).detach();
 
-        let bounds = Bounds::centered(None, size(px(1100.0), px(700.0)), cx);
+        let window_size = state
+            .window
+            .map(|w| size(px(w.width), px(w.height)))
+            .unwrap_or_else(|| size(px(1100.0), px(700.0)));
+        let bounds = Bounds::centered(None, window_size, cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -218,7 +229,9 @@ fn main() {
                 app_id: Some("hoja".into()),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| Workspace::new(args.dir.clone(), window, cx)),
+            |window, cx| {
+                cx.new(|cx| Workspace::new(args.dir.clone(), settings, state, window, cx))
+            },
         )
         .unwrap();
         cx.activate(true);

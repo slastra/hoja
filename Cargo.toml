@@ -41,6 +41,9 @@ anyhow = "1"
 chrono = "0.4"
 rust-embed = "8"
 # Lenient JSON: hand-edited themes routinely carry comments and trailing commas.
+# Already in the tree through the Zed crates; declared so the settings types
+# can derive rather than being parsed by hand.
+serde = { version = "1", features = ["derive"] }
 serde_json_lenient = "0.2"
 notify = "8"
 parking_lot = "0.12"

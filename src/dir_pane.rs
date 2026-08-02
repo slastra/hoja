@@ -83,6 +83,8 @@ pub enum PaneEvent {
     Remove,
     /// Something worth saying that has no job to attach to.
     Notice(String),
+    /// A view setting or column width changed and is worth remembering.
+    ViewChanged,
     /// A drop landed here. The workspace owns the engine and the job strip, so
     /// it starts the transfer.
     Transfer {
@@ -212,6 +214,17 @@ impl Column {
     /// makes the compiler point at `ColumnWidths` rather than silently leaving
     /// the new column without a width.
     const ALL: [Column; 3] = [Column::Size, Column::Kind, Column::Modified];
+
+    /// The key this column's width is stored under. Deliberately not the
+    /// display label: renaming what the header says must not discard the width
+    /// everyone has already dragged.
+    fn key(self) -> &'static str {
+        match self {
+            Column::Size => "size",
+            Column::Kind => "kind",
+            Column::Modified => "modified",
+        }
+    }
 
     fn label(self) -> &'static str {
         match self {
@@ -424,8 +437,36 @@ impl DirPane {
         self.view
     }
 
+    /// Replace the view wholesale, as a settings edit does. Re-lists, because
+    /// hidden files and the sort order both change what the rows are.
+    pub fn set_view_settings(&mut self, view: ViewSettings, cx: &mut Context<Self>) {
+        if self.view == view {
+            return;
+        }
+        self.view = view;
+        self.relist(cx);
+    }
+
+    pub fn column_widths(&self) -> std::collections::HashMap<String, f32> {
+        Column::ALL
+            .into_iter()
+            .map(|column| (column.key().to_string(), f32::from(self.widths.get(column))))
+            .collect()
+    }
+
+    /// Apply widths remembered from a previous run. Unknown keys are ignored,
+    /// so a column that no longer exists cannot resurrect itself.
+    pub fn set_column_widths(&mut self, widths: &std::collections::HashMap<String, f32>) {
+        for column in Column::ALL {
+            if let Some(width) = widths.get(column.key()) {
+                self.widths.set(column, px(*width));
+            }
+        }
+    }
+
     fn toggle_hidden(&mut self, _: &ToggleHiddenFiles, _w: &mut Window, cx: &mut Context<Self>) {
         self.view.show_hidden = !self.view.show_hidden;
+        cx.emit(PaneEvent::ViewChanged);
         self.relist(cx);
     }
 
@@ -436,6 +477,7 @@ impl DirPane {
         cx: &mut Context<Self>,
     ) {
         self.view.folders_first = !self.view.folders_first;
+        cx.emit(PaneEvent::ViewChanged);
         self.apply_sort(cx);
     }
 
@@ -1042,11 +1084,7 @@ impl DirPane {
                 // iteration.
                 cx.background_executor().timer(WATCH_INTERVAL).await;
 
-                let mut changed = false;
-                while rx.try_recv().is_ok() {
-                    changed = true;
-                }
-                if !changed {
+                if !crate::config::drain_changes(&rx) {
                     continue;
                 }
 
@@ -1054,7 +1092,7 @@ impl DirPane {
                 // burst so a long operation re-lists a few times rather than
                 // thousands, which matters when the directory is large.
                 cx.background_executor().timer(WATCH_INTERVAL).await;
-                while rx.try_recv().is_ok() {}
+                crate::config::drain_changes(&rx);
 
                 let alive = this.update(cx, |this, cx| this.reload(cx));
                 if alive.is_err() {
@@ -1177,6 +1215,7 @@ impl DirPane {
     /// frame budget, so it runs on the background executor. The current list stays on
     /// screen until the sorted one arrives rather than blanking.
     fn apply_sort(&mut self, cx: &mut Context<Self>) {
+        cx.emit(PaneEvent::ViewChanged);
         if self.pending_select.is_empty() {
             self.pending_select = self.selected_names();
         }
@@ -1648,6 +1687,7 @@ impl DirPane {
                     };
                     let moved = event.event.position.x - drag.start_x;
                     this.widths.set(column, drag.start_width - moved);
+                    cx.emit(PaneEvent::ViewChanged);
                     cx.notify();
                 },
             ))

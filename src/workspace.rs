@@ -17,6 +17,7 @@ use crate::command_palette::{self, CommandPalette};
 use crate::place_finder::{self, PlaceEvent, PlaceFinder};
 use crate::conflict_dialog::ConflictDialog;
 use crate::dir_pane::{DirPane, PaneEvent};
+use crate::config::{self, Settings, State};
 use crate::fs::ViewSettings;
 use crate::fs;
 use crate::pane_group::{PaneGroup, SplitDirection};
@@ -134,6 +135,11 @@ pub struct Workspace {
     /// Last title pushed to the compositor, so an unchanged one is not re-sent
     /// on every frame.
     title: String,
+    /// What hoja remembers between runs. Written from `save_state`, never read
+    /// after startup — the panes own the live values.
+    state: State,
+    save_task: Option<Task<()>>,
+    settings_task: Option<Task<()>>,
     poll_task: Option<Task<()>>,
     /// Conflicts wait here while one dialog is up; one worker blocks per job,
     /// so concurrent jobs can queue several. Tagged with the job so cancelling
@@ -143,11 +149,23 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub fn new(start_dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let pane = cx.new(|cx| DirPane::new(start_dir, ViewSettings::default(), window, cx));
+    pub fn new(
+        start_dir: PathBuf,
+        settings: Settings,
+        state: State,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let view = config::initial_view(&settings, &state);
+        let widths = state.column_widths.clone();
+        let pane = cx.new(|cx| {
+            let mut pane = DirPane::new(start_dir, view, window, cx);
+            pane.set_column_widths(&widths);
+            pane
+        });
         let subscription = Self::subscribe_to_pane(&pane, window, cx);
 
-        Self {
+        let mut workspace = Self {
             center: PaneGroup::new(pane.clone()),
             panes: vec![pane.clone()],
             active_pane: pane.clone(),
@@ -159,10 +177,15 @@ impl Workspace {
             notice: None,
             modal: None,
             title: String::new(),
+            state,
+            save_task: None,
+            settings_task: None,
             poll_task: None,
             pending_conflicts: VecDeque::new(),
             conflict_dialog: None,
-        }
+        };
+        workspace.watch_settings(cx);
+        workspace
     }
 
     fn subscribe_to_pane(
@@ -173,6 +196,7 @@ impl Workspace {
         cx.subscribe_in(pane, window, |this, pane, event, window, cx| match event {
             PaneEvent::Focus => this.set_active_pane(pane, cx),
             PaneEvent::Remove => this.remove_pane(&pane.clone(), window, cx),
+            PaneEvent::ViewChanged => this.remember_view(cx),
             PaneEvent::Notice(message) => {
                 this.set_notice(Some(Notice::Problem(message.clone())), cx)
             }
@@ -197,7 +221,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<DirPane> {
-        let pane = cx.new(|cx| DirPane::new(dir, view, window, cx));
+        let widths = self.state.column_widths.clone();
+        let pane = cx.new(|cx| {
+            let mut pane = DirPane::new(dir, view, window, cx);
+            pane.set_column_widths(&widths);
+            pane
+        });
         let subscription = Self::subscribe_to_pane(&pane, window, cx);
         self.pane_subscriptions
             .insert(pane.entity_id(), subscription);
@@ -718,6 +747,113 @@ impl Workspace {
             });
         })
         .detach();
+    }
+
+    /// Re-read `settings.json` when it changes and apply it over what was
+    /// remembered.
+    ///
+    /// This is what makes the two files coherent. State wins at startup, so a
+    /// toggle survives a restart; but an edit to the hand-written file happens
+    /// *later* than that toggle, so it takes effect and is then itself
+    /// remembered. Whichever answer is most recent is the one in force, which
+    /// is the only rule that does not surprise.
+    fn watch_settings(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = config::settings_file() else {
+            return;
+        };
+        let Some(dir) = path.parent().map(std::path::Path::to_path_buf) else {
+            return;
+        };
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = match notify::recommended_watcher(move |res| {
+            let _ = tx.send(res);
+        }) {
+            Ok(watcher) => watcher,
+            Err(err) => {
+                eprintln!("[hoja] settings watcher unavailable: {err}");
+                return;
+            }
+        };
+        // The directory, not the file: an editor that writes by rename would
+        // otherwise leave the watch pointing at a deleted inode.
+        use notify::Watcher as _;
+        if watcher
+            .watch(&dir, notify::RecursiveMode::NonRecursive)
+            .is_err()
+        {
+            return;
+        }
+
+        self.settings_task = Some(cx.spawn(async move |this, cx| {
+            let _watcher = watcher;
+            loop {
+                cx.background_executor()
+                    .timer(config::SAVE_DEBOUNCE)
+                    .await;
+                if !config::drain_changes(&rx) {
+                    continue;
+                }
+                if this
+                    .update(cx, |this, cx| this.apply_settings(config::Settings::load(), cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// Push a freshly read settings file over every pane, and remember it.
+    fn apply_settings(&mut self, settings: Settings, cx: &mut Context<Self>) {
+        if let Some(name) = &settings.theme
+            && let Err(err) = crate::theming::apply(name, cx)
+        {
+            eprintln!("[hoja] theme {name:?} not available: {err}");
+        }
+
+        // The edit is the newest answer, so it beats what was remembered — pass
+        // an empty state rather than the stored one.
+        let view = config::initial_view(&settings, &State::default());
+        for pane in &self.panes {
+            pane.update(cx, |pane, cx| pane.set_view_settings(view, cx));
+        }
+        self.remember_view(cx);
+        cx.notify();
+    }
+
+    /// Record what the active pane is showing, and write it out shortly.
+    ///
+    /// Debounced because a column drag changes this on every frame; without it
+    /// a single resize would be a few hundred writes.
+    pub fn remember_view(&mut self, cx: &mut Context<Self>) {
+        let pane = self.active_pane.read(cx);
+        let view = pane.view_settings();
+        self.state.sort = Some(config::SortSetting {
+            key: view.sort.key.into(),
+            direction: view.sort.dir.into(),
+        });
+        self.state.show_hidden = Some(view.show_hidden);
+        self.state.folders_first = Some(view.folders_first);
+        self.state.column_widths = pane.column_widths();
+
+        // Throttle rather than debounce: `self.state` is already up to date, so
+        // a write that is coming will carry the latest values. Rescheduling on
+        // every change would let a rapid stream of them — a column drag, or a
+        // watcher that keeps firing — postpone the write indefinitely.
+        if self.save_task.is_some() {
+            return;
+        }
+        self.save_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(config::SAVE_DEBOUNCE).await;
+            let _ = this.update(cx, |this, cx| {
+                this.save_task = None;
+                this.state.save(cx);
+            });
+        }));
     }
 
     fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {

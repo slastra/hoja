@@ -297,10 +297,7 @@ fn mimeapps_files() -> Vec<PathBuf> {
         files.push(dir.join("mimeapps.list"));
     };
 
-    if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-    {
+    if let Some(config_home) = crate::config::config_home() {
         push_variants(config_home);
     }
     for dir in std::env::var("XDG_CONFIG_DIRS")
@@ -318,10 +315,7 @@ fn mimeapps_files() -> Vec<PathBuf> {
 
 fn xdg_data_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Some(home) = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-    {
+    if let Some(home) = crate::config::data_home() {
         dirs.push(home);
     }
     for dir in std::env::var("XDG_DATA_DIRS")

@@ -62,6 +62,9 @@ for important data.
   itself, so the result always agrees with the command line.
 - **Clipboard.** Copy and paste files between pane and other file managers.
   hoja reads and writes the GNOME clipboard format.
+- **Settings.** `~/.config/hoja/settings.json` sets the theme and what a new
+  pane shows. hoja never writes this file, so your comments and your layout
+  stay. It applies changes to the file immediately.
 - **Themes.** hoja reads Zed theme files. Put a theme file in
   `~/.config/hoja/themes/`. hoja applies changes to these files immediately.
   The Rosé Pine themes are included.
@@ -88,6 +91,34 @@ It builds from the current `main`, since there are no releases yet.
 
 Note: Cargo compiles GPUI with your local toolchain. The toolchain file in the
 Zed repository does not apply to git dependencies.
+
+## Settings
+
+Write `~/.config/hoja/settings.json`. Every field is optional, comments are
+allowed, and hoja applies a change as soon as you save.
+
+```jsonc
+{
+  // A theme in ~/.config/hoja/themes/, or a bundled Rosé Pine variant.
+  "theme": "Rosé Pine Moon",
+
+  // What a new pane shows.
+  "view": {
+    "sort": { "key": "name", "direction": "ascending" },
+    "show_hidden": false,
+    "folders_first": true
+  }
+}
+```
+
+`--theme` on the command line, then `$HOJA_THEME`, then this file.
+
+hoja keeps what you change through the interface — the sort order, hidden
+files, and the column widths you drag — in `~/.local/state/hoja/state.json`,
+and reads it back at the next start. It writes that file and you write the
+other one, so neither can overwrite the other. When both have an answer, the
+more recent one applies: what you last toggled survives a restart, and editing
+the settings file takes effect over it.
 
 ## Start
 

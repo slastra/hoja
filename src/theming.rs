@@ -10,11 +10,10 @@ use crate::assets::Assets;
 
 /// Where user themes live, mirroring Zed's `~/.config/zed/themes`.
 pub fn themes_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("hoja").join("themes")
+    crate::config::config_home()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("hoja")
+        .join("themes")
 }
 
 /// Parse one theme family file.
@@ -122,11 +121,7 @@ pub fn watch_user_themes(active: String, cx: &mut App) {
                 .timer(Duration::from_millis(250))
                 .await;
 
-            let mut changed = false;
-            while rx.try_recv().is_ok() {
-                changed = true;
-            }
-            if !changed {
+            if !crate::config::drain_changes(&rx) {
                 continue;
             }
 
@@ -135,7 +130,7 @@ pub fn watch_user_themes(active: String, cx: &mut App) {
             cx.background_executor()
                 .timer(Duration::from_millis(100))
                 .await;
-            while rx.try_recv().is_ok() {}
+            crate::config::drain_changes(&rx);
 
             let active = active.clone();
             cx.update(|cx| {
