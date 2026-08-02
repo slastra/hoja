@@ -119,10 +119,15 @@ struct JobView {
 ///
 /// A 120ms window over a tree of small files is violently bursty — one large
 /// file lands and the instantaneous figure jumps by an order of magnitude — and
-/// a number that jitters like that is worse than no number. Low enough to
-/// settle within a couple of seconds, high enough to follow a real change of
-/// speed when the transfer crosses onto slower media.
-const RATE_SMOOTHING: f64 = 0.25;
+/// a number that jitters like that is worse than no number.
+///
+/// The weight sets a time constant of roughly `JOB_POLL_INTERVAL / w`, so this
+/// averages over about two seconds. It was 0.25 to begin with, which is half a
+/// second, and at that the reading chased every burst: 1.6, 2.1, 3.1, 1.9 GB/s
+/// in consecutive frames of the same steady copy. Two seconds still follows a
+/// real change of speed — crossing onto slower media, or into a directory of
+/// small files — within a few frames, which is as fast as anyone can read it.
+const RATE_SMOOTHING: f64 = 0.06;
 
 /// Fold one interval's worth of bytes into the running rate estimate.
 ///
@@ -139,53 +144,88 @@ fn fold_rate(previous: Option<f64>, bytes: u64, secs: f64) -> Option<f64> {
     })
 }
 
-/// Column widths for the three metrics.
+/// A number and the words that follow it, kept apart so the words can be
+/// pinned. "1.5 MB" splits at its last space into "1.5" and "MB".
 ///
-/// Fixed, and wide enough for the longest each can be: "1023 MB / 1023 MB",
-/// "1023 MB/s", "1h 59m left". A cell sized to its content instead makes the
-/// progress bar beside it grow and shrink on every repaint, since the bar is
-/// what absorbs the difference — and the bar is the one thing on the strip that
-/// should hold still.
-const PROGRESS_W: f32 = 132.;
-const RATE_W: f32 = 76.;
-const LEFT_W: f32 = 76.;
-/// The three plus the two gaps between them, so the states that show a sentence
-/// instead line up with the states that show numbers.
-const STATUS_W: f32 = PROGRESS_W + RATE_W + LEFT_W + 16.;
+/// Together with a right-aligned number and a left-aligned unit, this is what
+/// stops the unit sliding about: the number grows leftwards into its own cell
+/// and the word after it never moves at all.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Figure {
+    value: String,
+    unit: String,
+}
 
-/// The right-hand metrics of a job row, one per column.
+impl Figure {
+    fn split(formatted: &str) -> Self {
+        match formatted.rsplit_once(' ') {
+            Some((value, unit)) => Figure {
+                value: value.to_string(),
+                unit: unit.to_string(),
+            },
+            // No space to split on — "…" while the scan is still running.
+            None => Figure {
+                value: String::new(),
+                unit: formatted.to_string(),
+            },
+        }
+    }
+}
+
+/// Column widths, in the order they are laid out. Fixed, and sized for the
+/// longest each can hold: four digits and a decimal point, "MB/s", "1h 59m",
+/// "left". A cell sized to its content instead makes the progress bar beside it
+/// grow and shrink on every repaint, since the bar is what absorbs the
+/// difference — and the bar is the one thing on the strip that should hold
+/// still.
+const VALUE_W: f32 = 34.;
+const SIZE_UNIT_W: f32 = 20.;
+const SEP_W: f32 = 10.;
+const RATE_VALUE_W: f32 = 32.;
+const RATE_UNIT_W: f32 = 32.;
+const LEFT_VALUE_W: f32 = 44.;
+const LEFT_UNIT_W: f32 = 28.;
+/// Everything above plus the gaps, so the states that show a sentence line up
+/// with the states that show numbers.
+const STATUS_W: f32 = VALUE_W * 2.
+    + SIZE_UNIT_W * 2.
+    + SEP_W
+    + RATE_VALUE_W
+    + RATE_UNIT_W
+    + LEFT_VALUE_W
+    + LEFT_UNIT_W
+    + 30.;
+
+/// The right-hand metrics of a job row, each number split from its unit.
 ///
-/// Three strings rather than one sentence: they are laid out in three cells of
-/// their own, and a metric that has nothing to say leaves its cell empty rather
-/// than shortening the row.
+/// A metric with nothing to say leaves its cells empty rather than shortening
+/// the row.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Metrics {
-    progress: String,
-    rate: String,
-    left: String,
+    done: Figure,
+    total: Figure,
+    rate: Figure,
+    left: Figure,
 }
 
 fn transfer_metrics(done: u64, total: u64, walk_complete: bool, rate: Option<f64>) -> Metrics {
     let mut metrics = Metrics {
-        progress: format!(
-            "{} / {}",
-            fs::format_size(done),
-            if walk_complete {
-                fs::format_size(total)
-            } else {
-                "…".to_string()
-            }
-        ),
+        done: Figure::split(&fs::format_size(done)),
+        total: if walk_complete {
+            Figure::split(&fs::format_size(total))
+        } else {
+            Figure::split("…")
+        },
         ..Metrics::default()
     };
     // Rate as soon as there is one; time remaining only once the scan has
     // settled a denominator to subtract from. A rate near zero means a stall,
     // and dividing by it would promise infinity — say nothing instead.
     if let Some(rate) = rate.filter(|r| *r > 1.) {
-        metrics.rate = format!("{}/s", fs::format_size(rate as u64));
+        metrics.rate = Figure::split(&format!("{}/s", fs::format_size(rate as u64)));
         if walk_complete && total > done {
             let left = (total - done) as f64 / rate;
-            metrics.left = format!("{} left", fs::format_remaining(left));
+            metrics.left = Figure::split(&format!("{} left", fs::format_remaining(left)));
         }
     }
     metrics
@@ -1235,10 +1275,9 @@ impl Workspace {
                             ),
                     )
                     .child({
-                        // Right-aligned in a cell of its own, so a metric that
-                        // gains a digit grows leftwards into its own slack
-                        // instead of shoving everything beside it.
-                        let cell = |width: f32, text: String| {
+                        // A number grows leftwards into its own cell; the unit
+                        // beside it starts at a fixed edge and so never moves.
+                        let value = |width: f32, text: String| {
                             div()
                                 .w(px(width))
                                 .flex_none()
@@ -1248,13 +1287,29 @@ impl Workspace {
                                 .overflow_hidden()
                                 .child(text)
                         };
+                        let unit = |width: f32, text: String| {
+                            div()
+                                .w(px(width))
+                                .flex_none()
+                                .overflow_hidden()
+                                .child(text)
+                        };
                         let row = div()
                             .flex_none()
                             .w(px(STATUS_W))
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap_2()
+                            .gap_1()
+                            // Tabular figures: Noto Sans carries `tnum`, so every
+                            // digit takes the same width and a number changing
+                            // does not reflow the cell it sits in. Without it a
+                            // "1" is markedly narrower than an "8" and the text
+                            // shuffles on every repaint.
+                            .font_features(gpui::FontFeatures(std::sync::Arc::new(vec![(
+                                "tnum".to_string(),
+                                1,
+                            )])))
                             .text_color(if job.errors > 0 { error_color } else { muted });
                         match status {
                             // One sentence, right-aligned across the whole block
@@ -1268,10 +1323,24 @@ impl Workspace {
                                     .overflow_hidden()
                                     .child(sentence),
                             ),
-                            Ok(metrics) => row
-                                .child(cell(PROGRESS_W, metrics.progress))
-                                .child(cell(RATE_W, metrics.rate))
-                                .child(cell(LEFT_W, metrics.left)),
+                            Ok(m) => row
+                                .child(value(VALUE_W, m.done.value))
+                                .child(unit(SIZE_UNIT_W, m.done.unit))
+                                .child(
+                                    div()
+                                        .w(px(SEP_W))
+                                        .flex_none()
+                                        .flex()
+                                        .flex_row()
+                                        .justify_center()
+                                        .child("/"),
+                                )
+                                .child(value(VALUE_W, m.total.value))
+                                .child(unit(SIZE_UNIT_W, m.total.unit))
+                                .child(value(RATE_VALUE_W, m.rate.value))
+                                .child(unit(RATE_UNIT_W, m.rate.unit))
+                                .child(value(LEFT_VALUE_W, m.left.value))
+                                .child(unit(LEFT_UNIT_W, m.left.unit)),
                         }
                     })
                     .child(
@@ -1507,71 +1576,100 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_figure_keeps_its_unit_separate() {
+        // The layout gives the number and the unit cells of their own, so they
+        // have to arrive apart. Split at the last space, since a unit can hold
+        // one — "28s left".
+        assert_eq!(
+            Figure::split("1.5 MB"),
+            Figure { value: "1.5".into(), unit: "MB".into() }
+        );
+        assert_eq!(
+            Figure::split("28s left"),
+            Figure { value: "28s".into(), unit: "left".into() }
+        );
+        assert_eq!(
+            Figure::split("1h 20m left"),
+            Figure { value: "1h 20m".into(), unit: "left".into() }
+        );
+        // Nothing to split: the whole of it is the unit, so it lands in the
+        // cell that does not move.
+        assert_eq!(
+            Figure::split("…"),
+            Figure { value: String::new(), unit: "…".into() }
+        );
+    }
+
+    #[test]
     fn metrics_say_only_what_they_know() {
-        let m = |d, t, w, r| transfer_metrics(d, t, w, r);
+        let fig = |v: &str, u: &str| Figure { value: v.into(), unit: u.into() };
 
         // Mid-scan: no denominator yet, so no time remaining either.
         assert_eq!(
-            m(1_200_000, 0, false, None),
-            Metrics { progress: "1.1 MB / …".into(), ..Default::default() }
+            transfer_metrics(1_200_000, 0, false, None),
+            Metrics { done: fig("1.1", "MB"), total: fig("", "…"), ..Default::default() }
         );
         assert_eq!(
-            m(1_200_000, 0, false, Some(50_000_000.)),
+            transfer_metrics(1_200_000, 0, false, Some(50_000_000.)),
             Metrics {
-                progress: "1.1 MB / …".into(),
-                rate: "47.7 MB/s".into(),
-                left: String::new(),
+                done: fig("1.1", "MB"),
+                total: fig("", "…"),
+                rate: fig("47.7", "MB/s"),
+                left: Figure::default(),
             }
         );
         // Scan finished: everything.
         assert_eq!(
-            m(100_000_000, 500_000_000, true, Some(50_000_000.)),
+            transfer_metrics(100_000_000, 500_000_000, true, Some(50_000_000.)),
             Metrics {
-                progress: "95.4 MB / 477 MB".into(),
-                rate: "47.7 MB/s".into(),
-                left: "8s left".into(),
+                done: fig("95.4", "MB"),
+                total: fig("477", "MB"),
+                rate: fig("47.7", "MB/s"),
+                left: fig("8s", "left"),
             }
         );
         // A stalled transfer must not promise an infinite wait.
         assert_eq!(
-            m(100, 500_000_000, true, Some(0.)),
-            Metrics { progress: "100 B / 477 MB".into(), ..Default::default() }
+            transfer_metrics(100, 500_000_000, true, Some(0.)),
+            Metrics { done: fig("100", "B"), total: fig("477", "MB"), ..Default::default() }
         );
         // Nothing left to do is not "0s left" forever.
         assert_eq!(
-            m(500, 500, true, Some(1000.)),
+            transfer_metrics(500, 500, true, Some(1000.)),
             Metrics {
-                progress: "500 B / 500 B".into(),
-                rate: "1000 B/s".into(),
-                left: String::new(),
+                done: fig("500", "B"),
+                total: fig("500", "B"),
+                rate: fig("1000", "B/s"),
+                left: Figure::default(),
             }
         );
     }
 
     #[test]
     fn every_metric_fits_the_column_it_is_given() {
-        // The columns are fixed, so the longest each can be has to fit. At
-        // text_xs a character is about 6px; the widths allow for that with room
-        // to spare, and this pins the assumption so a formatting change that
-        // outgrows a column is caught here rather than by truncation on screen.
-        let widest = transfer_metrics(
+        // The cells are fixed, so the widest each can hold has to fit. At
+        // text_xs with tabular figures a digit is about 6.5px; this pins the
+        // assumption so a formatting change that outgrows a column is caught
+        // here rather than by truncation on screen.
+        let wide = transfer_metrics(
             1023 * 1024 * 1024,
             1023 * 1024 * 1024 + 1,
             true,
             Some(1023. * 1024. * 1024.),
         );
-        for (text, width) in [
-            (&widest.progress, PROGRESS_W),
-            (&widest.rate, RATE_W),
-            (&transfer_metrics(0, 1, true, Some(1.5)).left, LEFT_W),
-        ] {
+        let fits = |text: &str, width: f32| {
             assert!(
                 text.chars().count() as f32 * 6.5 <= width,
                 "{text:?} needs more than {width}px"
             );
-        }
-        // The longest duration form, which is the one that decides LEFT_W.
-        assert!("1h 59m left".chars().count() as f32 * 6.5 <= LEFT_W);
+        };
+        fits(&wide.done.value, VALUE_W);
+        fits(&wide.done.unit, SIZE_UNIT_W);
+        fits(&wide.rate.value, RATE_VALUE_W);
+        fits(&wide.rate.unit, RATE_UNIT_W);
+        // The longest forms of the remaining time, which decide its two cells.
+        fits("1h 59m", LEFT_VALUE_W);
+        fits("left", LEFT_UNIT_W);
     }
 
     #[test]
@@ -1580,13 +1678,17 @@ mod tests {
         let first = fold_rate(None, 1000, 1.0).unwrap();
         assert!((first - 1000.).abs() < 1e-6);
 
-        // A tenfold burst must not drag the estimate tenfold in one step.
+        // A tenfold burst must not drag the estimate far in one step: at this
+        // weight it moves about half again, not ten times.
         let after = fold_rate(Some(1000.), 10_000, 1.0).unwrap();
-        assert!(after > 1000. && after < 4000., "got {after}");
+        assert!(after > 1000. && after < 2000., "got {after}");
 
-        // Sustained, it converges on the new speed.
+        // Sustained, it converges on the new speed. The count is generous
+        // because the weight sets how long that takes: at 0.06 the estimate is
+        // within a percent after about 75 samples, which at a 120ms poll is the
+        // couple of seconds the constant is documented to average over.
         let mut rate = Some(1000.);
-        for _ in 0..40 {
+        for _ in 0..150 {
             rate = fold_rate(rate, 10_000, 1.0);
         }
         assert!((rate.unwrap() - 10_000.).abs() < 100., "got {rate:?}");
