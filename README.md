@@ -260,6 +260,20 @@ because they are rare.
 Note: Cargo compiles GPUI with your local toolchain. The toolchain file in the
 Zed repository does not apply to git dependencies.
 
+## Testing the interface
+
+`scripts/x11-harness.sh` runs hoja on a private X display, so a test of the
+interface does not touch the desktop you are using:
+
+```sh
+cargo build
+scripts/x11-harness.sh ~/some/dir my-test.sh   # prints where the shots went
+```
+
+The test script it is given can click rows, send keys, and capture the window
+or just its footer. Nothing appears on screen and nothing takes your focus:
+`xdotool` and `import` are both scoped to a display that is not on any monitor.
+
 ## Transfer engine
 
 The `hoja-transfer` crate contains the transfer engine. It is a standard

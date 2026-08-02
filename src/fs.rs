@@ -445,6 +445,80 @@ pub fn format_time(time: SystemTime) -> String {
     local.format("%Y-%m-%d %H:%M").to_string()
 }
 
+/// The selected rows, and a number that changes whenever they do.
+///
+/// The set is private and these methods are the only way in, because the footer
+/// and the Size column both re-derive from `revision` and "remember to bump the
+/// counter" is the kind of rule that survives a review and not the edit after
+/// it. It was tried the other way first: eight mutation sites were found and
+/// bumped, seven more inside `cx.listener` closures were not, and clicking a
+/// row silently stopped updating the footer.
+///
+/// It lives here rather than beside `DirPane` for the only reason that makes it
+/// work — privacy in Rust is per module, so a field on the pane would be freely
+/// assignable from every line in that file.
+#[derive(Default, Debug)]
+pub struct Selection {
+    rows: BTreeSet<usize>,
+    revision: u64,
+}
+
+impl Selection {
+    /// Changes on every mutation, whether or not the mutation changed anything.
+    /// Over-counting costs one rebuild of a line of text; under-counting leaves
+    /// the footer describing a selection that has gone.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        self.rows.iter().copied()
+    }
+
+    pub fn contains(&self, ix: usize) -> bool {
+        self.rows.contains(&ix)
+    }
+
+    pub fn first(&self) -> Option<usize> {
+        self.rows.iter().next().copied()
+    }
+
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    pub fn set(&mut self, rows: BTreeSet<usize>) {
+        self.rows = rows;
+        self.revision += 1;
+    }
+
+    /// The common case: this row and nothing else.
+    pub fn only(&mut self, ix: usize) {
+        self.set(BTreeSet::from([ix]));
+    }
+
+    pub fn clear(&mut self) {
+        self.set(BTreeSet::new());
+    }
+
+    pub fn insert(&mut self, ix: usize) {
+        self.rows.insert(ix);
+        self.revision += 1;
+    }
+
+    /// Add the row, or take it away if it is already there.
+    pub fn toggle(&mut self, ix: usize) {
+        if !self.rows.remove(&ix) {
+            self.rows.insert(ix);
+        }
+        self.revision += 1;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The pane footer's line.
 //
@@ -509,8 +583,8 @@ pub fn summarise_dir(entries: &[DirEntry]) -> Summary {
 }
 
 /// The selection line: one file, one folder, or a count.
-pub fn summarise_selection(entries: &[DirEntry], selected: &BTreeSet<usize>) -> Summary {
-    let rows = || selected.iter().filter_map(|ix| entries.get(*ix));
+pub fn summarise_selection(entries: &[DirEntry], selected: &Selection) -> Summary {
+    let rows = || selected.iter().filter_map(|ix| entries.get(ix));
 
     let mut summary = Summary {
         sized: true,
@@ -536,7 +610,7 @@ pub fn summarise_selection(entries: &[DirEntry], selected: &BTreeSet<usize>) -> 
 
     // The fast path is this loop finding no directory: `rows` stays empty,
     // `known` is the whole total, and the pane has nothing to wait for.
-    for ix in selected.iter().copied() {
+    for ix in selected.iter() {
         let Some(entry) = entries.get(ix) else {
             continue;
         };
@@ -574,6 +648,12 @@ pub fn compose(summary: &Summary, walked: u64, settled: bool) -> String {
 mod tests {
     use super::*;
 
+    fn selection<const N: usize>(rows: [usize; N]) -> Selection {
+        let mut selection = Selection::default();
+        selection.set(BTreeSet::from(rows));
+        selection
+    }
+
     fn row(name: &str, is_dir: bool, size: Option<u64>) -> DirEntry {
         DirEntry {
             name: name.to_string(),
@@ -594,7 +674,7 @@ mod tests {
             row("b.bin", false, Some(2000)),
             row("c.bin", false, Some(4000)),
         ];
-        let summary = summarise_selection(&entries, &BTreeSet::from([0, 2]));
+        let summary = summarise_selection(&entries, &selection([0, 2]));
         assert!(summary.rows.is_empty(), "nothing to walk");
         assert_eq!(summary.known, 5000);
         assert_eq!(compose(&summary, 0, true), "2 selected · 4.9 KB");
@@ -603,7 +683,7 @@ mod tests {
     #[test]
     fn a_selected_folder_defers_to_the_walk() {
         let entries = vec![row("src", true, None), row("a.bin", false, Some(1000))];
-        let summary = summarise_selection(&entries, &BTreeSet::from([0]));
+        let summary = summarise_selection(&entries, &selection([0]));
         assert_eq!(summary.rows, vec![0], "the folder's row");
         assert_eq!(summary.known, 0);
         assert_eq!(compose(&summary, 0, false), "src · folder · …");
@@ -618,7 +698,7 @@ mod tests {
             row("a.bin", false, Some(1000)),
             row("docs", true, None),
         ];
-        let summary = summarise_selection(&entries, &BTreeSet::from([0, 1, 2]));
+        let summary = summarise_selection(&entries, &selection([0, 1, 2]));
         assert_eq!(summary.known, 1000, "the file only");
         assert_eq!(summary.rows, vec![0, 2], "both folders' rows");
         assert_eq!(compose(&summary, 9000, true), "3 selected · 9.8 KB");
@@ -628,7 +708,7 @@ mod tests {
     fn one_file_is_named_and_dated() {
         let mut file = row("Cargo.toml", false, Some(2867));
         file.modified = Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000));
-        let summary = summarise_selection(&[file], &BTreeSet::from([0]));
+        let summary = summarise_selection(&[file], &selection([0]));
         let line = compose(&summary, 0, true);
         assert!(line.starts_with("Cargo.toml · 2.8 KB · "), "got {line}");
     }
@@ -636,7 +716,7 @@ mod tests {
     #[test]
     fn a_selection_of_vanished_rows_says_nothing() {
         // Mid-rebuild the indices outlive the rows for a frame.
-        let summary = summarise_selection(&[], &BTreeSet::from([3, 7]));
+        let summary = summarise_selection(&[], &selection([3, 7]));
         assert_eq!(summary, Summary::default());
         assert_eq!(compose(&summary, 0, true), "");
     }

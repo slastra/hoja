@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -445,7 +445,7 @@ pub struct DirPane {
     entries: Vec<DirEntry>,
     /// Multi-select: plain click replaces, ctrl-click toggles, shift-click
     /// extends a range from the anchor, ctrl-a selects all.
-    selected: BTreeSet<usize>,
+    selected: fs::Selection,
     /// The row a shift-range extends from. Stays put while the lead moves.
     anchor_ix: Option<usize>,
     /// The lead row: what Rename, Open, and the context menu act on, and what
@@ -492,11 +492,6 @@ pub struct DirPane {
     /// Paths, not names: a search listing holds entries from many directories,
     /// where a name identifies nothing.
     pending_select: Vec<PathBuf>,
-    /// Bumped by every path that touches `selected`, so the footer can tell in
-    /// O(1) whether it needs to look again. Over-counting costs one rebuild of
-    /// a line of text; under-counting leaves the footer describing a selection
-    /// that has gone.
-    selection_moved: u64,
     /// Bumped whenever the rows themselves are replaced. Separate from
     /// `selection_moved` because the walk belongs to the listing: moving the
     /// selection must not restart it, and a re-listing must.
@@ -533,7 +528,7 @@ impl DirPane {
             dir,
             history,
             entries: Vec::new(),
-            selected: BTreeSet::new(),
+            selected: fs::Selection::default(),
             anchor_ix: None,
             cursor_ix: None,
             scroll: UniformListScrollHandle::new(),
@@ -552,7 +547,6 @@ impl DirPane {
             search: None,
             renaming: None,
             pending_select: Vec::new(),
-            selection_moved: 0,
             listing_moved: 0,
             footer: Footer::default(),
             type_ahead: None,
@@ -642,9 +636,7 @@ impl DirPane {
 
     /// Paths of the current selection, in listing order.
     pub fn selected_paths(&self) -> Vec<PathBuf> {
-        self.selected
-            .iter()
-            .filter_map(|&ix| self.entries.get(ix))
+        self.selected.iter().filter_map(|ix| self.entries.get(ix))
             .map(|e| e.path.clone())
             .collect()
     }
@@ -891,8 +883,7 @@ impl DirPane {
         buffer.push_str(key_char);
 
         if let Some(ix) = fs::type_ahead_target(&self.entries, &buffer, self.cursor_ix) {
-            self.selected = BTreeSet::from([ix]);
-            self.selection_moved += 1;
+            self.selected.only(ix);
             self.place_cursor(ix);
             self.scroll
                 .scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
@@ -903,8 +894,7 @@ impl DirPane {
     }
 
     fn select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
-        self.selected = (0..self.entries.len()).collect();
-        self.selection_moved += 1;
+        self.selected.set((0..self.entries.len()).collect());
         if self.cursor_ix.is_none() && !self.entries.is_empty() {
             self.place_cursor(0);
         }
@@ -920,7 +910,6 @@ impl DirPane {
             return;
         }
         self.selected.clear();
-        self.selection_moved += 1;
         self.anchor_ix = None;
         self.cursor_ix = None;
         self.type_ahead = None;
@@ -980,8 +969,7 @@ impl DirPane {
         let Some(ix) = self.destination(motion) else {
             return;
         };
-        self.selected = BTreeSet::from([ix]);
-        self.selection_moved += 1;
+        self.selected.only(ix);
         self.place_cursor(ix);
         self.reveal(ix, cx);
     }
@@ -1003,10 +991,7 @@ impl DirPane {
         let Some(ix) = self.cursor_ix.filter(|&ix| ix < self.entries.len()) else {
             return;
         };
-        if !self.selected.remove(&ix) {
-            self.selected.insert(ix);
-        }
-        self.selection_moved += 1;
+        self.selected.toggle(ix);
         self.place_cursor(ix);
         cx.notify();
     }
@@ -1021,8 +1006,7 @@ impl DirPane {
         let anchor = self.anchor_ix.filter(|&a| a < self.entries.len()).unwrap_or(ix);
         self.anchor_ix = Some(anchor);
         self.cursor_ix = Some(ix);
-        self.selected = (anchor.min(ix)..=anchor.max(ix)).collect();
-        self.selection_moved += 1;
+        self.selected.set((anchor.min(ix)..=anchor.max(ix)).collect());
         self.reveal(ix, cx);
     }
 
@@ -1294,7 +1278,6 @@ impl DirPane {
         let wanted: std::collections::HashSet<PathBuf> =
             std::mem::take(&mut self.pending_select).into_iter().collect();
         self.selected.clear();
-        self.selection_moved += 1;
         self.anchor_ix = None;
         self.cursor_ix = None;
         if wanted.is_empty() {
@@ -1306,7 +1289,7 @@ impl DirPane {
                 self.selected.insert(ix);
             }
         }
-        self.anchor_ix = self.selected.iter().next().copied();
+        self.anchor_ix = self.selected.first();
         self.cursor_ix = self.anchor_ix;
         match self.anchor_ix {
             Some(ix) => self.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Nearest),
@@ -1651,7 +1634,7 @@ impl DirPane {
                         // while nothing is chosen — later batches must not
                         // yank the selection off what you picked.
                         if this.cursor_ix.is_none() && !this.entries.is_empty() {
-                            this.selected = BTreeSet::from([0]);
+                            this.selected.only(0);
                             this.place_cursor(0);
                         }
                         cx.notify();
@@ -1680,7 +1663,6 @@ impl DirPane {
     /// out from under the indices.
     fn clear_cursor(&mut self) {
         self.selected.clear();
-        self.selection_moved += 1;
         self.anchor_ix = None;
         self.cursor_ix = None;
     }
@@ -1722,8 +1704,8 @@ impl DirPane {
             self.footer.dir = self.dir.clone();
             self.restart_walk(cx);
         }
-        if relisted || self.footer.selection != self.selection_moved {
-            self.footer.selection = self.selection_moved;
+        if relisted || self.footer.selection != self.selected.revision() {
+            self.footer.selection = self.selected.revision();
             self.footer.summary = self.summarise();
             self.footer.text = self.footer_text();
         }
@@ -2326,7 +2308,7 @@ impl DirPane {
             .as_ref()
             .filter(|renaming| renaming.ix == ix)
             .map(|renaming| renaming.editor.clone());
-        let selected = self.selected.contains(&ix);
+        let selected = self.selected.contains(ix);
         // The lead row is where ctrl-arrow has moved to and what ctrl-space
         // acts on. It is usually also selected, so it needs its own mark.
         let is_lead = self.cursor_ix == Some(ix);
@@ -2530,8 +2512,8 @@ impl DirPane {
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
                     // Right-click on an unselected row retargets the selection.
-                    if !this.selected.contains(&ix) {
-                        this.selected = BTreeSet::from([ix]);
+                    if !this.selected.contains(ix) {
+                        this.selected.only(ix);
                         this.place_cursor(ix);
                     }
                     this.open_context_menu(event.position, true, window, cx);
@@ -2541,19 +2523,17 @@ impl DirPane {
                 let mods = event.modifiers();
                 if mods.control {
                     // Toggle membership; the toggled row becomes the new anchor.
-                    if !this.selected.remove(&ix) {
-                        this.selected.insert(ix);
-                    }
+                    this.selected.toggle(ix);
                     this.place_cursor(ix);
                 } else if mods.shift {
                     // Range from the anchor replaces the selection; the anchor
                     // itself stays put so ranges can be re-aimed.
                     let a = this.anchor_ix.unwrap_or(ix);
                     let (lo, hi) = (a.min(ix), a.max(ix));
-                    this.selected = (lo..=hi).collect();
+                    this.selected.set((lo..=hi).collect());
                     this.cursor_ix = Some(ix);
                 } else {
-                    this.selected = BTreeSet::from([ix]);
+                    this.selected.only(ix);
                     this.place_cursor(ix);
                     if event.click_count() >= 2 && is_dir {
                         this.navigate_to(path.clone(), cx);
