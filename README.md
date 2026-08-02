@@ -262,17 +262,25 @@ Zed repository does not apply to git dependencies.
 
 ## Testing the interface
 
-`scripts/x11-harness.sh` runs hoja on a private X display, so a test of the
-interface does not touch the desktop you are using:
+Two harnesses run hoja in a compositor of its own, so a test of the interface
+does not touch the desktop you are using. Both take a directory to open and a
+script of things to do, and print where the screenshots went:
 
 ```sh
 cargo build
-scripts/x11-harness.sh ~/some/dir my-test.sh   # prints where the shots went
+scripts/sway-harness.sh ~/some/dir my-test.sh   # a nested sway you can watch
+scripts/x11-harness.sh  ~/some/dir my-test.sh   # a private X display
 ```
 
-The test script it is given can click rows, send keys, and capture the window
-or just its footer. Nothing appears on screen and nothing takes your focus:
-`xdotool` and `import` are both scoped to a display that is not on any monitor.
+The test script can click rows, send keys, and capture the window or just its
+footer. Nothing takes your focus either way: the sway harness drives the app
+through the virtual keyboard and pointer protocols, and the X11 one through
+`xdotool`, both scoped to a display that is not the one you are looking at.
+
+Prefer the sway harness, which exercises the Wayland backend hoja actually
+ships on; it needs `sway`, `grim`, `wtype` and `wlrctl`. The X11 one needs only
+`Xvfb`, `xdotool` and ImageMagick, but tests gpui's X11 backend instead — so it
+cannot say anything about drag and drop, the clipboard, or window state.
 
 ## Transfer engine
 
