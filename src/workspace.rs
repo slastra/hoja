@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui::{
@@ -7,8 +7,8 @@ use gpui::{
     Window, actions, div, hsla, prelude::*, px, relative,
 };
 use hoja_transfer::{
-    ConflictDecision, Event as JobEvent, JobHandle, JobId, JobPolicy, JobSpec, Operation, Outcome,
-    Phase, TrashedItem,
+    ConflictDecision, Event as JobEvent, JobHandle, JobId, JobPolicy, JobSpec, JobSummary,
+    Operation, Outcome, Phase, TrashedItem,
 };
 use theme::ActiveTheme;
 
@@ -18,6 +18,7 @@ use crate::place_finder::{self, PlaceEvent, PlaceFinder};
 use crate::conflict_dialog::ConflictDialog;
 use crate::dir_pane::{DirPane, PaneEvent};
 use crate::config::{self, Settings, State};
+use crate::notifications;
 use crate::fs::ViewSettings;
 use crate::fs;
 use crate::pane_group::{PaneGroup, SplitDirection};
@@ -106,6 +107,9 @@ struct JobView {
     done: Option<Outcome>,
     errors: usize,
     last_error: Option<String>,
+    /// When the transfer started, so a job short enough to have been watched
+    /// does not raise a notification about it — see `notifications::NOTIFY_AFTER`.
+    started: std::time::Instant,
 }
 
 /// Owns the pane tree and the notion of which pane is active.
@@ -416,6 +420,7 @@ impl Workspace {
                     done: None,
                     errors: 0,
                     last_error: None,
+                    started: std::time::Instant::now(),
                 });
                 self.ensure_polling(window, cx);
                 cx.notify();
@@ -454,6 +459,7 @@ impl Workspace {
     fn poll_jobs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut finished_dirs: Vec<PathBuf> = Vec::new();
         let mut finished_jobs: Vec<JobId> = Vec::new();
+        let mut announce: Vec<(String, PathBuf, std::time::Duration, JobSummary)> = Vec::new();
 
         for job in &mut self.jobs {
             let job_id = job.handle.id();
@@ -480,6 +486,12 @@ impl Workspace {
                         }
                         finished_dirs.push(job.dest_dir.clone());
                         finished_dirs.extend(job.src_parents.iter().cloned());
+                        announce.push((
+                            job.handle.label().to_string(),
+                            job.dest_dir.clone(),
+                            job.started.elapsed(),
+                            summary,
+                        ));
                     }
                 }
             }
@@ -495,8 +507,47 @@ impl Workspace {
         }
         self.maybe_show_conflict(window, cx);
 
+        for (label, dest, elapsed, summary) in announce {
+            Self::announce_finished(&label, &dest, elapsed, &summary, cx);
+        }
+
         self.refresh_dirs(&finished_dirs, cx);
         cx.notify();
+    }
+
+    /// Tell the desktop a transfer finished, when it is worth telling.
+    ///
+    /// Not for a job you watched happen, and not for one you cancelled — you
+    /// already know. Errors always announce, however brief the job: the strip
+    /// keeps a failed transfer around until it is dismissed, but only a
+    /// notification reaches you when hoja is not the window you are looking at.
+    fn announce_finished(
+        label: &str,
+        dest: &Path,
+        elapsed: std::time::Duration,
+        summary: &JobSummary,
+        cx: &App,
+    ) {
+        if !notifications::worth_announcing(summary.outcome, summary.errors.len(), elapsed) {
+            return;
+        }
+        let failed = !summary.errors.is_empty();
+
+        let where_to = dest
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| dest.display().to_string());
+        let files = notifications::count(summary.files_copied);
+        let body = if failed {
+            format!(
+                "{files} of {} to {where_to} — {} failed",
+                notifications::count(summary.files_copied + summary.errors.len() as u64),
+                notifications::count(summary.errors.len() as u64)
+            )
+        } else {
+            format!("{files} files to {where_to}")
+        };
+        notifications::transfer_finished(label.to_string(), body, failed, cx);
     }
 
     /// Show the next queued conflict in the themed dialog. The engine's worker

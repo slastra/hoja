@@ -52,6 +52,10 @@ for important data.
   another application are always copied.
 - **Clipboard.** Copy and paste files between hoja and other file managers.
   hoja reads and writes the GNOME clipboard format.
+- **Notifications.** A transfer that runs for more than a few seconds tells
+  your desktop when it finishes, and a failed one tells you whatever its
+  length. hoja uses the freedesktop notification service, so the notification
+  looks like every other notification on your desktop.
 
 ### Finding things
 

@@ -9,6 +9,7 @@ mod history;
 mod fs;
 mod git;
 mod icon;
+mod notifications;
 mod opener;
 mod pane_group;
 mod path_editor;

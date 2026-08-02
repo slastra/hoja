@@ -32,6 +32,7 @@ optdepends=(
   'git: colour file names by version control status'
   'xdg-utils: open files with their default application'
   'wl-clipboard: copy and paste files with other applications'
+  'libnotify: desktop notification when a long transfer finishes'
   'udisks2: mount attached drives from the place finder'
   'shared-mime-info: identify file types for the Open With menu'
   'vulkan-radeon: Vulkan driver for AMD graphics'

@@ -19,6 +19,7 @@ pkgbase = hoja-git
 	optdepends = git: colour file names by version control status
 	optdepends = xdg-utils: open files with their default application
 	optdepends = wl-clipboard: copy and paste files with other applications
+	optdepends = libnotify: desktop notification when a long transfer finishes
 	optdepends = udisks2: mount attached drives from the place finder
 	optdepends = shared-mime-info: identify file types for the Open With menu
 	optdepends = vulkan-radeon: Vulkan driver for AMD graphics
