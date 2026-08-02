@@ -145,6 +145,43 @@ enum BarMode {
     Search,
 }
 
+/// How long the selection or the directory must hold still before a walk is
+/// worth starting.
+///
+/// The debounce sits between the keystroke and the *thread*, which is the whole
+/// point: a held arrow key replaces this timer thirty times a second and starts
+/// nothing at all, and the walk begins once, on the row you stopped on. The same
+/// interval the search field settles for, for the same reason.
+const MEASURE_DEBOUNCE: Duration = Duration::from_millis(120);
+
+/// How often the footer reads the running total. A size is a magnitude, not a
+/// counter — it has to look alive, not be exact to the byte.
+const MEASURE_POLL: Duration = Duration::from_millis(100);
+
+/// The line at the bottom of the pane, and the walk behind its total.
+///
+/// One value rather than five fields, for the reason `ActiveSearch` is one:
+/// every replacement has to drop the handle and the poll together, and a field
+/// added later would otherwise have to be found in each teardown path.
+#[derive(Default)]
+struct Footer {
+    /// What this was resolved against. A defaulted footer is out of date by
+    /// construction — no directory is the empty path.
+    dir: PathBuf,
+    selection: u64,
+    summary: fs::Summary,
+    /// The line as it reads now. Held rather than rebuilt per frame, and
+    /// compared against by the poll so a total that has not moved a printed
+    /// digit does not repaint the pane.
+    text: String,
+    /// `None` until the debounce elapses, and for good when the listing already
+    /// held the whole answer. Dropping it stops the walk.
+    walk: Option<crate::measure::Measure>,
+    /// Dropping this stops the poll, and with it any walk the debounce had not
+    /// yet let it start.
+    poll: Option<Task<()>>,
+}
+
 /// How much of the selection colour survives in a pane that is not active.
 const INACTIVE_SELECTION_ALPHA: f32 = 0.5;
 
@@ -435,6 +472,12 @@ pub struct DirPane {
     /// Paths, not names: a search listing holds entries from many directories,
     /// where a name identifies nothing.
     pending_select: Vec<PathBuf>,
+    /// Bumped by every path that touches `selected`, so the footer can tell in
+    /// O(1) whether it needs to look again. Over-counting costs one rebuild of
+    /// a line of text; under-counting leaves the footer describing a selection
+    /// that has gone.
+    selection_moved: u64,
+    footer: Footer,
     /// Type-ahead find: the last keystroke's time and the accumulated prefix.
     /// One value, so "no buffer" cannot disagree with "no timestamp".
     type_ahead: Option<(Instant, String)>,
@@ -485,6 +528,8 @@ impl DirPane {
             search: None,
             renaming: None,
             pending_select: Vec::new(),
+            selection_moved: 0,
+            footer: Footer::default(),
             type_ahead: None,
             _subscriptions: subscriptions,
         };
@@ -822,6 +867,7 @@ impl DirPane {
 
         if let Some(ix) = fs::type_ahead_target(&self.entries, &buffer, self.cursor_ix) {
             self.selected = BTreeSet::from([ix]);
+            self.selection_moved += 1;
             self.place_cursor(ix);
             self.scroll
                 .scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
@@ -833,6 +879,7 @@ impl DirPane {
 
     fn select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
         self.selected = (0..self.entries.len()).collect();
+        self.selection_moved += 1;
         if self.cursor_ix.is_none() && !self.entries.is_empty() {
             self.place_cursor(0);
         }
@@ -848,6 +895,7 @@ impl DirPane {
             return;
         }
         self.selected.clear();
+        self.selection_moved += 1;
         self.anchor_ix = None;
         self.cursor_ix = None;
         self.type_ahead = None;
@@ -908,6 +956,7 @@ impl DirPane {
             return;
         };
         self.selected = BTreeSet::from([ix]);
+        self.selection_moved += 1;
         self.place_cursor(ix);
         self.reveal(ix, cx);
     }
@@ -932,6 +981,7 @@ impl DirPane {
         if !self.selected.remove(&ix) {
             self.selected.insert(ix);
         }
+        self.selection_moved += 1;
         self.place_cursor(ix);
         cx.notify();
     }
@@ -947,6 +997,7 @@ impl DirPane {
         self.anchor_ix = Some(anchor);
         self.cursor_ix = Some(ix);
         self.selected = (anchor.min(ix)..=anchor.max(ix)).collect();
+        self.selection_moved += 1;
         self.reveal(ix, cx);
     }
 
@@ -1217,6 +1268,7 @@ impl DirPane {
         let wanted: std::collections::HashSet<PathBuf> =
             std::mem::take(&mut self.pending_select).into_iter().collect();
         self.selected.clear();
+        self.selection_moved += 1;
         self.anchor_ix = None;
         self.cursor_ix = None;
         if wanted.is_empty() {
@@ -1598,6 +1650,7 @@ impl DirPane {
     /// out from under the indices.
     fn clear_cursor(&mut self) {
         self.selected.clear();
+        self.selection_moved += 1;
         self.anchor_ix = None;
         self.cursor_ix = None;
     }
@@ -1618,6 +1671,130 @@ impl DirPane {
         }
     }
 
+    /// Bring the footer in line with what is on screen, starting or abandoning
+    /// the walk behind its total.
+    ///
+    /// Called from `render`, which is the one place guaranteed to run after any
+    /// of its inputs move — every path that changes the selection, replaces the
+    /// rows, or changes directory already notifies. A call at each of the eight
+    /// selection sites instead is the arrangement that goes stale the first time
+    /// a ninth is added.
+    ///
+    /// Two comparisons and out on the frames where nothing moved, which is most
+    /// of them. It must not notify: that would be asking for the frame it is
+    /// already inside.
+    fn sync_footer(&mut self, cx: &mut Context<Self>) {
+        if self.footer.selection == self.selection_moved && self.footer.dir == self.dir {
+            return;
+        }
+        self.footer.selection = self.selection_moved;
+        self.footer.dir = self.dir.clone();
+
+        let summary = if self.searching() || self.error.is_some() {
+            // A search says its own thing, and its rows come from directories
+            // this pane is not showing, so nothing here is true of them. An
+            // unreadable directory has already said what there is to say, in
+            // the body. Both leave `roots` empty, which stops the walk below.
+            fs::Summary::default()
+        } else if self.selected.is_empty() {
+            fs::summarise_dir(&self.dir, &self.entries, self.listing_is_complete())
+        } else {
+            fs::summarise_selection(&self.entries, &self.selected)
+        };
+
+        // A walk survives a re-listing of the same target, and only that.
+        //
+        // The watcher fires for every write into the directory on screen, so a
+        // download re-lists this pane twice a second for as long as it runs.
+        // Restarting the count each time would spin a core for the length of
+        // the download and never once finish. What the listing itself knows —
+        // the item count, the sizes of plain files — is rebuilt here and stays
+        // exact; only the recursive part goes stale.
+        let same_target = !summary.roots.is_empty() && summary.roots == self.footer.summary.roots;
+        self.footer.summary = summary;
+
+        if !same_target {
+            // Both go, and in either order: the handle stops the thread, the
+            // task stops the poll and any walk it had not started yet.
+            self.footer.walk = None;
+            self.footer.poll = None;
+            if !self.footer.summary.roots.is_empty() {
+                self.footer.poll = Some(Self::spawn_measure_poll(cx));
+            }
+        }
+        self.footer.text = self.footer_text();
+    }
+
+    /// Whether `entries` is everything in `dir` rather than the part of it on
+    /// show — the condition for trusting the rows' own sizes instead of walking.
+    fn listing_is_complete(&self) -> bool {
+        self.view.show_hidden
+            && !self.searching()
+            && self.error.is_none()
+            // Mid-navigation the rows still belong to the previous directory.
+            && self.dir == self.loaded_dir
+    }
+
+    /// The line, against whatever the walk has counted so far.
+    fn footer_text(&self) -> String {
+        let (walked, settled) = match self.footer.walk.as_ref() {
+            Some(walk) => (walk.bytes(), walk.is_done()),
+            // No walk: either the listing held the whole answer, or the
+            // debounce has not elapsed and nothing has been counted yet.
+            None => (0, self.footer.summary.roots.is_empty()),
+        };
+        fs::compose(&self.footer.summary, walked, settled)
+    }
+
+    /// Wait out the debounce, start the walk, then feed the footer until it ends.
+    ///
+    /// The task carries nothing of its own: it reads the roots out of the pane
+    /// when the timer fires, and the total out of whichever handle the pane owns
+    /// at each tick. So there is no captured directory and no captured selection
+    /// for a late result to land on, and no generation counter is needed to
+    /// notice one — replacing `footer.poll` drops this future at its `await`,
+    /// and a future that never resumes cannot install anything.
+    fn spawn_measure_poll(cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(MEASURE_DEBOUNCE).await;
+
+            let started = this.update(cx, |this, cx| {
+                let roots = this.footer.summary.roots.clone();
+                if roots.is_empty() {
+                    return false;
+                }
+                this.footer.walk = Some(crate::measure::spawn(roots));
+                this.footer.text = this.footer_text();
+                cx.notify();
+                true
+            });
+            if !started.unwrap_or(false) {
+                return;
+            }
+
+            loop {
+                cx.background_executor().timer(MEASURE_POLL).await;
+                let running = this.update(cx, |this, cx| {
+                    let Some(walk) = this.footer.walk.as_ref() else {
+                        return false;
+                    };
+                    let settled = walk.is_done();
+                    let text = this.footer_text();
+                    // Repaint only when the line reads differently. The total
+                    // moves continuously; the three digits printed of it do not.
+                    if this.footer.text != text {
+                        this.footer.text = text;
+                        cx.notify();
+                    }
+                    !settled
+                });
+                if !running.unwrap_or(false) {
+                    break;
+                }
+            }
+        })
+    }
+
     /// Whether a search is running or has results on screen.
     fn searching(&self) -> bool {
         self.search.is_some()
@@ -1634,8 +1811,8 @@ impl DirPane {
     }
 
     /// A word about the results, since the listing is no longer this directory.
-    /// Shown in the workspace's status strip, which is where the pane's other
-    /// running work already reports.
+    /// Shown in this pane's own footer: a search belongs to the pane running it,
+    /// and in the window-wide strip only the active pane's was ever visible.
     pub fn search_status(&self) -> Option<String> {
         let search = self.search.as_ref()?;
         let found = self.entries.len();
@@ -2245,6 +2422,36 @@ impl DirPane {
             }))
     }
 
+    /// The line at the bottom of the pane: what is selected, what the directory
+    /// holds, or what a search is doing.
+    fn render_footer(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let colors = cx.theme().colors();
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .flex_none()
+            .h(px(HEADER_HEIGHT))
+            .px_2()
+            .bg(colors.title_bar_background)
+            .border_t_1()
+            .border_color(colors.border)
+            .text_xs()
+            // Muted in both panes, like the column headers and for the same
+            // reason: this is furniture. It says the same kind of thing every
+            // time you look, and must not compete with the names above it.
+            .text_color(colors.text_muted)
+            .child(
+                div().truncate().child(
+                    // A search is the pane's loudest running work, and while one
+                    // is on the rows are not this directory's — so nothing the
+                    // footer would otherwise say about them is true.
+                    self.search_status()
+                        .unwrap_or_else(|| self.footer.text.clone()),
+                ),
+            )
+    }
+
     fn render_body(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         if let Some(error) = &self.error {
             return div()
@@ -2290,6 +2497,10 @@ impl EventEmitter<PaneEvent> for DirPane {}
 
 impl Render for DirPane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Here rather than at each site that moves the selection: this runs
+        // after every one of them, and cannot be forgotten by the next one.
+        self.sync_footer(cx);
+
         let here = self.dir.clone();
         let drop_border = cx.theme().colors().drop_target_background;
 
@@ -2422,6 +2633,7 @@ impl Render for DirPane {
             .child(self.render_toolbar(cx))
             .child(self.render_header(cx))
             .child(self.render_body(cx))
+            .child(self.render_footer(cx))
             .when_some(self.context_menu.clone(), |el, (position, menu)| {
                 el.child(
                     deferred(

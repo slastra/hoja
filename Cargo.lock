@@ -3151,6 +3151,7 @@ dependencies = [
  "hoja-transfer",
  "notify 8.2.0",
  "parking_lot",
+ "rayon",
  "rust-embed",
  "rustix 1.1.4",
  "serde",

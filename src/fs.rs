@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -433,8 +434,235 @@ pub fn format_time(time: SystemTime) -> String {
     local.format("%Y-%m-%d %H:%M").to_string()
 }
 
+// ---------------------------------------------------------------------------
+// The pane footer's line.
+//
+// Kept here, as pure functions over a listing, so that what the footer says is
+// decided without a window and can be tested without one. `dir_pane` is left
+// only the parts that genuinely need a `Context`: owning the walk and drawing
+// the row.
+
+/// What the footer has to say about a listing or a selection.
+///
+/// The split between `known` and `roots` is the whole point: every size that
+/// arrived with the listing is already in `known`, and only directories — whose
+/// size nothing knows without walking them — end up in `roots`. A selection of
+/// plain files therefore leaves `roots` empty, and empty roots is what tells the
+/// pane not to start a thread at all.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Summary {
+    /// Segments before the size: `14 items`, or `src · folder`.
+    pub lead: Vec<String>,
+    /// Segments after it — a lone file's timestamp.
+    pub trail: Vec<String>,
+    /// Whether a size belongs on the line at all.
+    pub sized: bool,
+    /// Bytes the listing already knew.
+    pub known: u64,
+    /// Directories still to be walked. Empty means the total is already final.
+    pub roots: Vec<PathBuf>,
+}
+
+/// The idle line: what this directory holds.
+///
+/// `complete` says whether `entries` is the whole of `dir` rather than the part
+/// of it on show, and it is load-bearing twice. Only a complete listing lets the
+/// rows' own sizes be summed instead of walked, and only a complete listing that
+/// holds no subdirectory *proves* the directory has none — with hidden files
+/// off, `.git` is a subdirectory that is not in the list, and in a source tree
+/// it is usually the big one.
+pub fn summarise_dir(dir: &Path, entries: &[DirEntry], complete: bool) -> Summary {
+    let items = match entries.len() {
+        1 => "1 item".to_string(),
+        n => format!("{} items", crate::notifications::count(n as u64)),
+    };
+    // Nothing below this directory to find, so the rows are the whole answer
+    // and no thread is woken. A folder of photos, a downloads directory — the
+    // common case gets the instant number.
+    let flat = complete && !entries.iter().any(|entry| entry.is_dir);
+
+    Summary {
+        lead: vec![items],
+        trail: Vec::new(),
+        sized: true,
+        known: if flat {
+            entries.iter().filter_map(|entry| entry.size).sum()
+        } else {
+            0
+        },
+        roots: if flat {
+            Vec::new()
+        } else {
+            vec![dir.to_path_buf()]
+        },
+    }
+}
+
+/// The selection line: one file, one folder, or a count.
+pub fn summarise_selection(entries: &[DirEntry], selected: &BTreeSet<usize>) -> Summary {
+    let rows = || selected.iter().filter_map(|ix| entries.get(*ix));
+
+    let mut summary = Summary {
+        sized: true,
+        ..Summary::default()
+    };
+    // One row is worth naming; past that the name of any one of them is noise
+    // and only the count and the total earn the width.
+    match (selected.len(), rows().next()) {
+        // A selection whose rows have all gone is not a selection yet: the
+        // listing is mid-rebuild and `restore_selection` is about to speak.
+        (0, _) | (_, None) => return Summary::default(),
+        (1, Some(entry)) if entry.is_dir => {
+            summary.lead = vec![entry.name.clone(), "folder".to_string()];
+        }
+        (1, Some(entry)) => {
+            summary.lead = vec![entry.name.clone()];
+            summary.trail = entry.modified.map(format_time).into_iter().collect();
+        }
+        (n, _) => {
+            summary.lead = vec![format!("{} selected", crate::notifications::count(n as u64))];
+        }
+    }
+
+    // The fast path is this loop finding no directory: `roots` stays empty,
+    // `known` is the whole total, and nothing is started.
+    for entry in rows() {
+        if entry.is_dir {
+            summary.roots.push(entry.path.clone());
+        } else {
+            summary.known += entry.size.unwrap_or(0);
+        }
+    }
+    summary
+}
+
+/// The line as it reads, given how much of the walk has landed.
+///
+/// The ellipsis goes on the number rather than the line, because the number is
+/// the only part still moving — the shape the job strip already uses for a total
+/// it does not have yet.
+pub fn compose(summary: &Summary, walked: u64, settled: bool) -> String {
+    let mut parts = summary.lead.clone();
+    if summary.sized {
+        let total = summary.known + walked;
+        parts.push(match (settled, total) {
+            (true, total) => format_size(total),
+            // Nothing counted yet. "0 B" would be a claim rather than a
+            // placeholder, and a wrong one within two frames.
+            (false, 0) => "…".to_string(),
+            (false, total) => format!("{}…", format_size(total)),
+        });
+    }
+    parts.extend(summary.trail.iter().cloned());
+    parts.join(" · ")
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn row(name: &str, is_dir: bool, size: Option<u64>) -> DirEntry {
+        DirEntry {
+            name: name.to_string(),
+            relative: None,
+            path: PathBuf::from("/tmp/fixture").join(name),
+            is_dir,
+            size,
+            modified: None,
+        }
+    }
+
+    #[test]
+    fn a_selection_of_files_needs_no_walk() {
+        // The requirement this whole split exists for: files carry their size
+        // in the listing, so selecting them starts no thread.
+        let entries = vec![
+            row("a.bin", false, Some(1000)),
+            row("b.bin", false, Some(2000)),
+            row("c.bin", false, Some(4000)),
+        ];
+        let summary = summarise_selection(&entries, &BTreeSet::from([0, 2]));
+        assert!(summary.roots.is_empty(), "nothing to walk");
+        assert_eq!(summary.known, 5000);
+        assert_eq!(compose(&summary, 0, true), "2 selected · 4.9 KB");
+    }
+
+    #[test]
+    fn a_selected_folder_defers_to_the_walk() {
+        let entries = vec![row("src", true, None), row("a.bin", false, Some(1000))];
+        let summary = summarise_selection(&entries, &BTreeSet::from([0]));
+        assert_eq!(summary.roots, vec![PathBuf::from("/tmp/fixture/src")]);
+        assert_eq!(summary.known, 0);
+        assert_eq!(compose(&summary, 0, false), "src · folder · …");
+        assert_eq!(compose(&summary, 4_300_000, false), "src · folder · 4.1 MB…");
+        assert_eq!(compose(&summary, 4_300_000, true), "src · folder · 4.1 MB");
+    }
+
+    #[test]
+    fn a_mixed_selection_splits_what_is_known_from_what_is_not() {
+        let entries = vec![
+            row("src", true, None),
+            row("a.bin", false, Some(1000)),
+            row("docs", true, None),
+        ];
+        let summary = summarise_selection(&entries, &BTreeSet::from([0, 1, 2]));
+        assert_eq!(summary.known, 1000, "the file only");
+        assert_eq!(summary.roots.len(), 2, "both folders");
+        assert_eq!(compose(&summary, 9000, true), "3 selected · 9.8 KB");
+    }
+
+    #[test]
+    fn one_file_is_named_and_dated() {
+        let mut file = row("Cargo.toml", false, Some(2867));
+        file.modified = Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000));
+        let summary = summarise_selection(&[file], &BTreeSet::from([0]));
+        let line = compose(&summary, 0, true);
+        assert!(line.starts_with("Cargo.toml · 2.8 KB · "), "got {line}");
+    }
+
+    #[test]
+    fn a_selection_of_vanished_rows_says_nothing() {
+        // Mid-rebuild the indices outlive the rows for a frame.
+        let summary = summarise_selection(&[], &BTreeSet::from([3, 7]));
+        assert_eq!(summary, Summary::default());
+        assert_eq!(compose(&summary, 0, true), "");
+    }
+
+    #[test]
+    fn a_flat_directory_is_totalled_without_walking() {
+        let entries = vec![
+            row("a.bin", false, Some(1000)),
+            row("b.bin", false, Some(2000)),
+        ];
+        let summary = summarise_dir(Path::new("/tmp/fixture"), &entries, true);
+        assert!(summary.roots.is_empty(), "no subdirectories, so nothing to walk");
+        assert_eq!(compose(&summary, 0, true), "2 items · 2.9 KB");
+    }
+
+    #[test]
+    fn a_listing_with_hidden_files_off_cannot_prove_a_directory_is_flat() {
+        // The trap: `.git` is a subdirectory that is not in the list, and in a
+        // source tree it is usually the large one. Only a complete listing may
+        // take the no-walk shortcut.
+        let entries = vec![row("a.bin", false, Some(1000))];
+        let summary = summarise_dir(Path::new("/tmp/fixture"), &entries, false);
+        assert_eq!(
+            summary.roots,
+            vec![PathBuf::from("/tmp/fixture")],
+            "it must walk, however flat the visible rows look"
+        );
+        assert_eq!(summary.known, 0);
+    }
+
+    #[test]
+    fn item_counts_are_grouped_and_singular_where_they_should_be() {
+        let one = summarise_dir(Path::new("/x"), &[row("a", false, Some(1))], true);
+        assert_eq!(one.lead, vec!["1 item"]);
+        let many: Vec<DirEntry> = (0..1234).map(|i| row(&i.to_string(), false, Some(0))).collect();
+        let big = summarise_dir(Path::new("/x"), &many, true);
+        assert_eq!(big.lead, vec!["1,234 items"]);
+    }
+
     #[test]
     fn remaining_time_gets_coarser_the_further_out_it_is() {
         use super::format_remaining;
@@ -537,8 +765,6 @@ mod tests {
         assert_eq!(step_row(3, Some(9), 1), Some(0));
         assert_eq!(step_row(3, Some(9), -1), Some(2));
     }
-
-    use super::*;
 
     #[test]
     fn natural_order_sorts_numbers_by_value() {

@@ -46,6 +46,11 @@ rust-embed = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json_lenient = "0.2"
 notify = "8"
+# Parallel directory walking for the pane footer's size totals. Measured on a
+# 1.5M-file tree: 4.16s single-threaded against 1.09s on four threads, and no
+# better beyond eight — which is what dua and dust are doing to be quick.
+# Already in the graph through the Zed crates, so this adds nothing to the tree.
+rayon = "1"
 # flock, for the state file's read-modify-write. Already in the graph at 1.x
 # through gpui's smol chain and hoja-transfer, so this is feature unification.
 rustix = { version = "1.1", features = ["fs"] }
