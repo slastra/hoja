@@ -130,36 +130,6 @@ struct JobView {
     last_sample: (std::time::Instant, u64),
 }
 
-/// A monospaced family the system actually has, or `None` to leave the metrics
-/// in the UI font with tabular figures.
-///
-/// gpui matches a family name exactly and a miss loads nothing at all, so the
-/// name cannot simply be asserted: generic aliases like "monospace" are a
-/// fontconfig idea that never reaches the font database. The list is checked
-/// against what is installed and the first hit wins.
-fn metrics_font(cx: &App) -> Option<gpui::SharedString> {
-    static CHOSEN: std::sync::OnceLock<Option<gpui::SharedString>> = std::sync::OnceLock::new();
-    CHOSEN
-        .get_or_init(|| {
-            const PREFERRED: [&str; 8] = [
-                "DejaVu Sans Mono",
-                "Liberation Mono",
-                "Noto Sans Mono",
-                "JetBrains Mono",
-                "Source Code Pro",
-                "Fira Code",
-                "Hack",
-                "Ubuntu Mono",
-            ];
-            let installed = cx.text_system().all_font_names();
-            PREFERRED
-                .iter()
-                .find(|name| installed.iter().any(|have| have == *name))
-                .map(|name| gpui::SharedString::from(*name))
-        })
-        .clone()
-}
-
 /// Weight of the newest sample in the rate estimate.
 ///
 /// A 120ms window over a tree of small files is violently bursty, one large
@@ -417,7 +387,7 @@ impl Workspace {
                         this.state.window = Some(resized);
                         this.dirty.window = true;
                     }
-                    this.remember_view(cx);
+                    this.remember_view(&this.active_pane.clone(), cx);
                 }),
                 // The throttled write is a `Task` this entity owns, so closing
                 // the window drops it: cancelling the timer before it ever
@@ -445,7 +415,7 @@ impl Workspace {
         cx.subscribe_in(pane, window, |this, pane, event, window, cx| match event {
             PaneEvent::Focus => this.set_active_pane(pane, cx),
             PaneEvent::Remove => this.remove_pane(&pane.clone(), window, cx),
-            PaneEvent::ViewChanged => this.remember_view(cx),
+            PaneEvent::ViewChanged => this.remember_view(&pane.clone(), cx),
             PaneEvent::Notice(message) => {
                 this.set_notice(Some(Notice::Problem(message.clone())), cx)
             }
@@ -1169,16 +1139,21 @@ impl Workspace {
         for pane in &self.panes {
             pane.update(cx, |pane, cx| pane.set_view_settings(view, cx));
         }
-        self.remember_view(cx);
+        self.remember_view(&self.active_pane.clone(), cx);
         cx.notify();
     }
 
-    /// Record what the active pane is showing, and write it out shortly.
+    /// Record what `pane` is showing, and write it out shortly.
+    ///
+    /// The pane is passed in rather than taken from `active_pane`, because the
+    /// two are not always the same one: a column dragged in a pane that does
+    /// not hold focus reported the change from the pane that did, and saved
+    /// widths nobody had touched.
     ///
     /// Debounced because a column drag changes this on every frame; without it
     /// a single resize would be a few hundred writes.
-    pub fn remember_view(&mut self, cx: &mut Context<Self>) {
-        let pane = self.active_pane.read(cx);
+    pub fn remember_view(&mut self, pane: &Entity<DirPane>, cx: &mut Context<Self>) {
+        let pane = pane.read(cx);
         let view = pane.view_settings();
         let sort = config::SortSetting {
             key: view.sort.key.into(),
@@ -1423,7 +1398,7 @@ impl Workspace {
                                 "tnum".to_string(),
                                 1,
                             )])))
-                            .when_some(metrics_font(cx), |el, family| el.font_family(family))
+                            .when_some(crate::theming::numeric_font(cx), |el, family| el.font_family(family))
                             .text_color(muted);
                         match status {
                             // One sentence, right-aligned across the whole block

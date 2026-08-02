@@ -172,3 +172,38 @@ pub fn watch_user_themes(cx: &mut App) {
     })
     .detach();
 }
+
+/// A monospaced family the system actually has, or `None` to leave numbers in
+/// the UI font with tabular figures.
+///
+/// Everything that prints a figure uses this: the transfer strip, the Size and
+/// Modified columns, and the pane footers. A size in the listing and the same
+/// size in the footer below it are then the same shape, and a column of them
+/// lines up digit under digit.
+///
+/// gpui matches a family name exactly and a miss loads nothing at all, so the
+/// name cannot simply be asserted: generic aliases like "monospace" are a
+/// fontconfig idea that never reaches the font database. The list is checked
+/// against what is installed and the first hit wins.
+pub fn numeric_font(cx: &App) -> Option<gpui::SharedString> {
+    static CHOSEN: std::sync::OnceLock<Option<gpui::SharedString>> = std::sync::OnceLock::new();
+    CHOSEN
+        .get_or_init(|| {
+            const PREFERRED: [&str; 8] = [
+                "DejaVu Sans Mono",
+                "Liberation Mono",
+                "Noto Sans Mono",
+                "JetBrains Mono",
+                "Source Code Pro",
+                "Fira Code",
+                "Hack",
+                "Ubuntu Mono",
+            ];
+            let installed = cx.text_system().all_font_names();
+            PREFERRED
+                .iter()
+                .find(|name| installed.iter().any(|have| have == *name))
+                .map(|name| gpui::SharedString::from(*name))
+        })
+        .clone()
+}

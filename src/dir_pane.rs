@@ -69,6 +69,12 @@ const HEADER_HEIGHT: f32 = 24.;
 /// Grab area between two column headers.
 const COL_HANDLE_WIDTH: f32 = 5.;
 const COL_MIN_WIDTH: f32 = 56.;
+/// Advance of one character in the numeric face at the rows' `text_sm`, and the
+/// `px_2` a cell carries on each side. Only the width test reads them.
+#[cfg(test)]
+const ROW_CHAR_W: f32 = 8.5;
+#[cfg(test)]
+const CELL_PADDING: f32 = 16.;
 const COL_MAX_WIDTH: f32 = 420.;
 /// The Name column flexes to fill, but never below this.
 const NAME_MIN_WIDTH: f32 = 100.;
@@ -344,10 +350,41 @@ impl Column {
         }
     }
 
+    /// Whether the column prints figures, and so is set in the numeric face.
+    ///
+    /// Kind is the odd one out: "Folder", "BIN", "Rust source" are words, and
+    /// words in a monospaced face are just words set badly.
+    fn is_numeric(self) -> bool {
+        match self {
+            Column::Size | Column::Modified => true,
+            Column::Kind => false,
+        }
+    }
+
+    /// Wide enough for the widest thing the column prints, at the row's text
+    /// size in the numeric face. Monospace is wider than the proportional face
+    /// it replaced, so the old 90 and 140 truncated a full timestamp and a
+    /// four-digit size the day the font changed. `widest` pins both.
     fn default_width(self) -> Pixels {
         match self {
-            Column::Size | Column::Kind => px(90.),
-            Column::Modified => px(140.),
+            Column::Size => px(100.),
+            Column::Kind => px(90.),
+            Column::Modified => px(156.),
+        }
+    }
+
+    /// The longest string this column ever holds, for the width test.
+    #[cfg(test)]
+    fn widest(self) -> &'static str {
+        match self {
+            // `format_size` drops to no decimal past four digits, so this is
+            // the most characters it can print.
+            Column::Size => "1023.0 MB",
+            // Not pinned: "Rust source" and the like come from the file's kind
+            // and are already elided when they do not fit.
+            Column::Kind => "",
+            // `format_time` is "%Y-%m-%d %H:%M", a fixed sixteen.
+            Column::Modified => "2026-08-02 13:40",
         }
     }
 
@@ -410,10 +447,22 @@ enum Motion {
     Bottom,
 }
 
-/// Marker type that `on_drag_move` dispatches on. Which column is being
-/// resized lives in `DirPane::resize`, not here.
+/// What `on_drag_move` dispatches on, and who started it.
+///
+/// The type alone is not enough. gpui routes a drag-move to every handler
+/// registered for the payload's *type*, so a resize in one pane is delivered to
+/// the identically-typed handlers in every other pane as well. Carrying the
+/// pane and the column means each handler can tell whether the drag is its own,
+/// which the pane's own `resize` anchor cannot: that is set on mouse down and
+/// never cleared, so a pane that was ever resized keeps an anchor from a drag
+/// that ended long ago. A second pane then answered someone else's drag with a
+/// start position hundreds of pixels away and drove its column straight into
+/// `COL_MIN_WIDTH`.
 #[derive(Clone, Copy)]
-struct ColumnResize;
+struct ColumnResize {
+    pane: gpui::EntityId,
+    column: Column,
+}
 
 /// Where a column resize started, captured once when the drag begins.
 #[derive(Clone, Copy)]
@@ -2068,12 +2117,21 @@ impl DirPane {
                     });
                 }),
             )
-            .on_drag(ColumnResize, |_, _, _, cx| cx.new(|_| EmptyDrag))
+            .on_drag(
+                ColumnResize {
+                    pane: cx.entity_id(),
+                    column,
+                },
+                |_, _, _, cx| cx.new(|_| EmptyDrag),
+            )
             .on_drag_move(cx.listener(
                 move |this, event: &DragMoveEvent<ColumnResize>, _window, cx| {
-                    // `on_drag_move` dispatches on the payload *type*, so every handle
-                    // sees every column drag. Without this guard, dragging one divider
-                    // resizes all three.
+                    // Whose drag this is, decided by the payload rather than by
+                    // any state this pane happens to be holding.
+                    let active = *event.drag(cx);
+                    if active.pane != cx.entity_id() || active.column != column {
+                        return;
+                    }
                     let Some(drag) = this.resize.filter(|drag| drag.column == column) else {
                         return;
                     };
@@ -2363,13 +2421,16 @@ impl DirPane {
         // Cells line up with the header by using the same widths and the same
         // handle-sized spacers where the dividers sit.
         let spacer = || div().w(px(COL_HANDLE_WIDTH)).flex_none();
-        let cell = move |width: Pixels, text: String| {
+        let cell = move |width: Pixels, text: String, numeric: Option<gpui::SharedString>| {
             div()
                 .w(width)
                 .flex_none()
                 .px_2()
                 .truncate()
                 .text_color(content)
+                // Digit under digit down the column, and the same shape as the
+                // footer totalling them below.
+                .when_some(numeric, |el, family| el.font_family(family))
                 .child(text)
         };
 
@@ -2378,8 +2439,14 @@ impl DirPane {
         // Resolved here with everything else the row needs, so nothing borrows
         // `self` past the end of this function.
         let folder_bytes = self.folder_bytes(ix);
-        let cells = Column::ALL
-            .map(|column| (self.widths.get(column), column.value(entry, folder_bytes)));
+        let numeric = crate::theming::numeric_font(cx);
+        let cells = Column::ALL.map(|column| {
+            (
+                self.widths.get(column),
+                column.value(entry, folder_bytes),
+                column.is_numeric().then(|| numeric.clone()).flatten(),
+            )
+        });
 
         // A search result is labelled by where it sits; everything else by its
         // own name.
@@ -2459,8 +2526,8 @@ impl DirPane {
 
         cells
             .into_iter()
-            .fold(row, |row, (width, text)| {
-                row.child(spacer()).child(cell(width, text))
+            .fold(row, |row, (width, text, numeric)| {
+                row.child(spacer()).child(cell(width, text, numeric))
             })
             .when(is_dir, |row| {
                 let target = path.clone();
@@ -2562,6 +2629,11 @@ impl DirPane {
             // reason: this is furniture. It says the same kind of thing every
             // time you look, and must not compete with the names above it.
             .text_color(colors.text_muted)
+            // The same face as the Size column it totals, so "259 MB" here and
+            // "259 MB" in a row above are the same width and the same shape.
+            .when_some(crate::theming::numeric_font(cx), |el, family| {
+                el.font_family(family)
+            })
             .child(
                 div().truncate().child(
                     // A search is the pane's loudest running work, and while one
@@ -2766,5 +2838,40 @@ impl Render for DirPane {
                     .with_priority(1),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_column_is_wide_enough_for_what_it_prints() {
+        // The numeric face is wider than the proportional one it replaced, and
+        // the failure is silent: a timestamp becomes "2026-08-02 13…" and looks
+        // like a design choice rather than a column two pixels short.
+        for column in Column::ALL {
+            let widest = column.widest();
+            if widest.is_empty() {
+                continue;
+            }
+            let needed = widest.chars().count() as f32 * ROW_CHAR_W + CELL_PADDING;
+            assert!(
+                needed <= f32::from(column.default_width()),
+                "{:?} needs {needed}px for {widest:?} but starts at {:?}",
+                column,
+                column.default_width()
+            );
+        }
+    }
+
+    #[test]
+    fn a_column_can_still_be_dragged_narrower_than_its_content() {
+        // Deliberate: the minimum is a floor on the handle, not a promise that
+        // text fits. Someone who does not care about the date should be able to
+        // reclaim the space.
+        for column in Column::ALL {
+            assert!(COL_MIN_WIDTH < f32::from(column.default_width()));
+        }
     }
 }
