@@ -1792,14 +1792,19 @@ impl DirPane {
     /// Navigation toolbar: back / forward / up / home buttons plus the path.
     fn render_toolbar(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let colors = cx.theme().colors();
-        // The inactive pane's chrome drops to the muted colour, as Zed dims the
+        // The inactive pane's path drops to the muted colour, as Zed dims the
         // tab and breadcrumb of a pane that is not the focused one.
         let content = if self.active {
             colors.text
         } else {
             colors.text_muted
         };
-        let muted = colors.text_muted;
+        // Back, forward, up and home say exactly one thing: whether there is
+        // anywhere to go. Dimming them with the pane as well would put two
+        // meanings in one colour, and a disabled Back would then look identical
+        // to a Back in a pane that simply is not focused.
+        let nav_on = colors.text;
+        let nav_off = colors.text_muted;
         let hover_bg = colors.element_hover;
         let searching = self.searching();
 
@@ -1816,7 +1821,7 @@ impl DirPane {
                 .items_center()
                 .justify_center()
                 .rounded_sm()
-                .child(Icon::from_path(icon, if enabled { content } else { muted }))
+                .child(Icon::from_path(icon, if enabled { nav_on } else { nav_off }))
                 .when(enabled, |el| {
                     el.cursor_pointer()
                         .hover(|s| s.bg(hover_bg))
