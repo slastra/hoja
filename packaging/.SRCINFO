@@ -1,8 +1,8 @@
-pkgbase = pane-git
+pkgbase = hoja-git
 	pkgdesc = GPU-accelerated file manager with splittable panes, built on GPUI
-	pkgver = r39.9c84f5e
+	pkgver = r42.bf2e6cc
 	pkgrel = 1
-	url = https://github.com/slastra/pane
+	url = https://github.com/slastra/hoja
 	arch = x86_64
 	license = GPL-3.0-or-later
 	makedepends = git
@@ -25,10 +25,10 @@ pkgbase = pane-git
 	optdepends = vulkan-radeon: Vulkan driver for AMD graphics
 	optdepends = nvidia-utils: Vulkan driver for NVIDIA graphics
 	optdepends = vulkan-intel: Vulkan driver for Intel graphics
-	provides = pane
-	conflicts = pane
+	provides = hoja
+	conflicts = hoja
 	options = !lto
-	source = git+https://github.com/slastra/pane.git
+	source = git+https://github.com/slastra/hoja.git
 	b2sums = SKIP
 
-pkgname = pane-git
+pkgname = hoja-git
