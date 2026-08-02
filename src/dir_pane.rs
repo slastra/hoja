@@ -145,6 +145,9 @@ enum BarMode {
     Search,
 }
 
+/// How much of the selection colour survives in a pane that is not active.
+const INACTIVE_SELECTION_ALPHA: f32 = 0.5;
+
 /// Rows being dragged, and where they came from so a drop back onto their own
 /// directory can be refused.
 ///
@@ -356,6 +359,12 @@ impl Render for EmptyDrag {
 
 pub struct DirPane {
     focus_handle: FocusHandle,
+    /// Whether this is the pane the keys act on.
+    ///
+    /// Told by the workspace rather than read from focus: a pane stays the
+    /// active one while the command palette holds the keyboard, and asking
+    /// `contains_focused` would dim every pane the moment a modal opened.
+    active: bool,
     dir: PathBuf,
     history: History,
     entries: Vec<DirEntry>,
@@ -423,6 +432,8 @@ impl DirPane {
     ) -> Self {
         let focus_handle = cx.focus_handle();
 
+        // New panes are made active by the workspace as it focuses them; the
+        // very first one starts active because it is.
         let subscriptions = vec![cx.on_focus_in(&focus_handle, window, |_, _, cx| {
             cx.emit(PaneEvent::Focus);
         })];
@@ -433,6 +444,7 @@ impl DirPane {
         let history = History::new(dir.clone());
         let mut this = Self {
             focus_handle,
+            active: true,
             dir,
             history,
             entries: Vec::new(),
@@ -460,6 +472,14 @@ impl DirPane {
         };
         this.reload(cx);
         this
+    }
+
+    /// Mark this pane active or not. The workspace owns which one it is.
+    pub fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.active != active {
+            self.active = active;
+            cx.notify();
+        }
     }
 
     pub fn dir(&self) -> &Path {
@@ -1754,7 +1774,13 @@ impl DirPane {
     /// Navigation toolbar: back / forward / up / home buttons plus the path.
     fn render_toolbar(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let colors = cx.theme().colors();
-        let content = colors.text;
+        // The inactive pane's chrome drops to the muted colour, as Zed dims the
+        // tab and breadcrumb of a pane that is not the focused one.
+        let content = if self.active {
+            colors.text
+        } else {
+            colors.text_muted
+        };
         let muted = colors.text_muted;
         let hover_bg = colors.element_hover;
         let searching = self.searching();
@@ -1892,7 +1918,11 @@ impl DirPane {
 
     fn render_header(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let colors = cx.theme().colors();
-        let content = colors.text;
+        let content = if self.active {
+            colors.text
+        } else {
+            colors.text_muted
+        };
         let hover_bg = colors.element_hover;
         let sort = self.view.sort;
 
@@ -2068,7 +2098,17 @@ impl DirPane {
             } else {
                 gpui::transparent_black()
             })
-            .when(selected, |this| this.bg(colors.element_selected))
+            .when(selected, |this| {
+                // Held at half strength in the pane that is not taking keys, so
+                // two panes with selections cannot be confused for each other.
+                // Alpha rather than a different colour: it stays the selection
+                // colour of whatever theme is loaded, only quieter.
+                let mut fill = colors.element_selected;
+                if !self.active {
+                    fill.a *= INACTIVE_SELECTION_ALPHA;
+                }
+                this.bg(fill)
+            })
             .when(!selected, |this| {
                 this.hover(|style| style.bg(colors.element_hover))
             })

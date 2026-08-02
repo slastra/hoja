@@ -312,7 +312,18 @@ impl Workspace {
     fn set_active_pane(&mut self, pane: &Entity<DirPane>, cx: &mut Context<Self>) {
         if &self.active_pane != pane {
             self.active_pane = pane.clone();
+            self.mark_active(cx);
             cx.notify();
+        }
+    }
+
+    /// Tell every pane whether it is the active one, so each can dim its own
+    /// chrome and selection. Cheap: a pane that already agrees does not notify.
+    fn mark_active(&self, cx: &mut Context<Self>) {
+        let active = self.active_pane.entity_id();
+        for pane in &self.panes {
+            let is_active = pane.entity_id() == active;
+            pane.update(cx, |pane, cx| pane.set_active(is_active, cx));
         }
     }
 
@@ -371,6 +382,7 @@ impl Workspace {
             && let Some(fallback) = self.panes.last().cloned()
         {
             self.active_pane = fallback.clone();
+            self.mark_active(cx);
             window.focus(&fallback.focus_handle(cx), cx);
         }
         #[cfg(debug_assertions)]
