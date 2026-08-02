@@ -14,6 +14,11 @@
 //! `settings.json`; toggling hidden files in the menu records the new value in
 //! state, so it survives a restart.
 //!
+//! Two hoja processes share `state.json`, so a save is a read-modify-write
+//! under a lock that publishes only the fields *this* instance changed — see
+//! `Dirty`. Writing the whole snapshot back let one window revert the other's
+//! settings, which is the ordinary two-window case rather than an exotic one.
+//!
 //! Where both files answer, the one written more recently wins — see `newer`.
 //! While hoja is running that is always the settings file, since it is watched
 //! and a save applies immediately. While hoja is closed it is whichever the
@@ -80,7 +85,7 @@ pub struct ViewDefaults {
     pub folders_first: Option<bool>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SortSetting {
     pub key: SortKeyName,
@@ -100,7 +105,7 @@ impl Default for SortSetting {
 /// Spelled out in the file rather than reusing the internal enums, so the
 /// on-disk names are a deliberate choice and renaming a variant cannot silently
 /// invalidate everyone's configuration.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SortKeyName {
     Name,
@@ -109,7 +114,7 @@ pub enum SortKeyName {
     Modified,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SortDirName {
     Ascending,
@@ -196,10 +201,32 @@ pub struct State {
     pub window: Option<WindowState>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct WindowState {
     pub width: f32,
     pub height: f32,
+}
+
+/// Which fields this instance has changed since it last wrote.
+///
+/// Nothing else can tell them apart. A `State` is a full snapshot, taken when
+/// hoja started, so writing all of it back publishes stale answers for every
+/// field the user never touched — and if another hoja changed one of those in
+/// the meantime, the write silently reverts it. Only the fields flagged here
+/// are this instance's to publish.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Dirty {
+    pub sort: bool,
+    pub show_hidden: bool,
+    pub folders_first: bool,
+    pub column_widths: bool,
+    pub window: bool,
+}
+
+impl Dirty {
+    pub fn any(&self) -> bool {
+        *self != Self::default()
+    }
 }
 
 impl State {
@@ -207,6 +234,10 @@ impl State {
         let Some(path) = state_file() else {
             return Self::default();
         };
+        Self::read(&path)
+    }
+
+    fn read(path: &Path) -> Self {
         let Ok(text) = std::fs::read_to_string(path) else {
             return Self::default();
         };
@@ -215,31 +246,97 @@ impl State {
         serde_json_lenient::from_str(&text).unwrap_or_default()
     }
 
+    /// Lay this instance's changed fields over a state read from disk.
+    fn overlay(&self, disk: &mut State, dirty: Dirty) {
+        if dirty.sort {
+            disk.sort = self.sort;
+        }
+        if dirty.show_hidden {
+            disk.show_hidden = self.show_hidden;
+        }
+        if dirty.folders_first {
+            disk.folders_first = self.folders_first;
+        }
+        if dirty.column_widths {
+            disk.column_widths = self.column_widths.clone();
+        }
+        if dirty.window {
+            disk.window = self.window;
+        }
+    }
+
     /// Write on a background thread. Called whenever a remembered value changes,
     /// which for a column drag is every frame, so the write is coalesced by the
     /// caller rather than throttled here.
-    pub fn save(&self, cx: &App) {
-        let Some(path) = state_file() else {
-            return;
-        };
-        let Ok(text) = serde_json_lenient::to_string_pretty(self) else {
-            return;
-        };
-        cx.background_spawn(async move { write_atomically(&path, &text) })
-            .detach();
+    pub fn save(&self, dirty: Dirty, cx: &App) {
+        let state = self.clone();
+        cx.background_spawn(async move { state.commit(dirty) }).detach();
     }
 
     /// The same write, on the calling thread.
     ///
-    /// Quitting drops the background executor along with everything else, so the
-    /// last write — the one carrying whatever was toggled in the final moments —
-    /// has to happen inline or not at all.
-    pub fn save_now(&self) {
-        let (Some(path), Ok(text)) = (state_file(), serde_json_lenient::to_string_pretty(self))
-        else {
+    /// Closing the window drops the background executor along with everything
+    /// else, so the last write — the one carrying whatever was toggled in the
+    /// final moments — has to happen inline or not at all.
+    pub fn save_now(&self, dirty: Dirty) {
+        self.commit(dirty);
+    }
+
+    /// Read what is on disk now, lay this instance's changes over it, write it
+    /// back — all while holding the lock, so a second hoja doing the same thing
+    /// cannot read between our read and our write.
+    fn commit(&self, dirty: Dirty) {
+        if let Some(path) = state_file() {
+            self.commit_at(&path, dirty);
+        }
+    }
+
+    /// Split out so tests can drive it against a temporary file rather than
+    /// reaching for `$XDG_STATE_HOME`, which is process-wide and would race the
+    /// other tests.
+    fn commit_at(&self, path: &Path, dirty: Dirty) {
+        if !dirty.any() {
+            return;
+        }
+        let Some(parent) = path.parent() else {
             return;
         };
-        write_atomically(&path, &text);
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+
+        let _lock = FileLock::acquire(&parent.join(".state.lock"));
+        let mut disk = Self::read(path);
+        self.overlay(&mut disk, dirty);
+        if let Ok(text) = serde_json_lenient::to_string_pretty(&disk) {
+            write_atomically(path, &text);
+        }
+    }
+}
+
+/// An advisory lock over the read-modify-write of the state file.
+///
+/// A separate file rather than `state.json` itself: the write finishes with a
+/// rename, which puts a *new* inode in place, so a lock held on the old one
+/// would guard nothing. Advisory locks only bind processes that ask for them,
+/// which here is every hoja and nothing else — the file is ours.
+///
+/// Failing to lock is not a reason to skip the save. The lock narrows a race
+/// measured in microseconds; losing a setting outright is worse than losing it
+/// to that race.
+struct FileLock(#[allow(dead_code)] std::fs::File);
+
+impl FileLock {
+    fn acquire(path: &Path) -> Option<Self> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)
+            .ok()?;
+        rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive).ok()?;
+        // Released when the file closes, which is when this is dropped.
+        Some(Self(file))
     }
 }
 
@@ -418,6 +515,114 @@ mod tests {
             matches!(view.sort.key, SortKey::Size),
             "the settings file has no sort to override it with"
         );
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hoja-state-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_save_publishes_only_what_this_instance_changed() {
+        let path = temp_dir("overlay").join("state.json");
+
+        // Another hoja got there first and set the sort.
+        let theirs = State {
+            sort: Some(SortSetting {
+                key: SortKey::Size.into(),
+                direction: SortDir::Descending.into(),
+            }),
+            ..State::default()
+        };
+        theirs.commit_at(&path, Dirty { sort: true, ..Dirty::default() });
+
+        // This one started before that, so its snapshot still says name-ascending
+        // — but it only ever toggled hidden files.
+        let ours = State {
+            sort: Some(SortSetting::default()),
+            show_hidden: Some(true),
+            ..State::default()
+        };
+        ours.commit_at(&path, Dirty { show_hidden: true, ..Dirty::default() });
+
+        let merged = State::read(&path);
+        assert_eq!(merged.show_hidden, Some(true), "our toggle landed");
+        assert!(
+            matches!(merged.sort.unwrap().key, SortKeyName::Size),
+            "and did not revert theirs"
+        );
+    }
+
+    #[test]
+    fn nothing_dirty_writes_nothing() {
+        let path = temp_dir("clean").join("state.json");
+        State { show_hidden: Some(true), ..State::default() }
+            .commit_at(&path, Dirty::default());
+        assert!(!path.exists(), "an untouched instance leaves the file alone");
+    }
+
+    #[test]
+    fn concurrent_saves_do_not_lose_each_other() {
+        // Each flock is taken on its own open file description, so threads
+        // contend for it exactly as separate processes do.
+        let path = temp_dir("race").join("state.json");
+        let writers: Vec<_> = (0..8)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let mut state = State::default();
+                    state.column_widths.insert(format!("col{i}"), i as f32);
+                    for _ in 0..20 {
+                        state.commit_at(&path, Dirty { column_widths: true, ..Dirty::default() });
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+
+        // column_widths is one field, so the last writer legitimately owns it;
+        // what must not happen is a torn or unparseable file.
+        let merged = State::read(&path);
+        assert_eq!(merged.column_widths.len(), 1, "got {:?}", merged.column_widths);
+    }
+
+    #[test]
+    fn interleaved_saves_of_different_fields_all_survive() {
+        let path = temp_dir("fields").join("state.json");
+        let sort = std::thread::spawn({
+            let path = path.clone();
+            move || {
+                let state = State {
+                    sort: Some(SortSetting {
+                        key: SortKey::Kind.into(),
+                        direction: SortDir::Ascending.into(),
+                    }),
+                    ..State::default()
+                };
+                for _ in 0..50 {
+                    state.commit_at(&path, Dirty { sort: true, ..Dirty::default() });
+                }
+            }
+        });
+        let hidden = std::thread::spawn({
+            let path = path.clone();
+            move || {
+                let state = State { show_hidden: Some(true), ..State::default() };
+                for _ in 0..50 {
+                    state.commit_at(&path, Dirty { show_hidden: true, ..Dirty::default() });
+                }
+            }
+        });
+        sort.join().unwrap();
+        hidden.join().unwrap();
+
+        let merged = State::read(&path);
+        assert!(matches!(merged.sort.unwrap().key, SortKeyName::Kind));
+        assert_eq!(merged.show_hidden, Some(true));
     }
 
     #[test]

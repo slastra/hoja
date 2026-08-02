@@ -139,6 +139,8 @@ pub struct Workspace {
     /// after startup — the panes own the live values.
     state: State,
     save_task: Option<Task<()>>,
+    /// Which remembered fields are this instance's to publish — see `Dirty`.
+    dirty: config::Dirty,
     /// Window-bounds and app-quit hooks; held so they stay registered.
     _lifecycle: Vec<Subscription>,
     settings_task: Option<Task<()>>,
@@ -181,6 +183,7 @@ impl Workspace {
             title: String::new(),
             state,
             save_task: None,
+            dirty: config::Dirty::default(),
             settings_task: None,
             poll_task: None,
             pending_conflicts: VecDeque::new(),
@@ -191,10 +194,14 @@ impl Workspace {
                 // move as well as resize; `remember_view` coalesces either way.
                 cx.observe_window_bounds(window, |this, window, cx| {
                     let size = window.viewport_size();
-                    this.state.window = Some(config::WindowState {
+                    let resized = config::WindowState {
                         width: size.width.into(),
                         height: size.height.into(),
-                    });
+                    };
+                    if this.state.window != Some(resized) {
+                        this.state.window = Some(resized);
+                        this.dirty.window = true;
+                    }
                     this.remember_view(cx);
                 }),
                 // The throttled write is a `Task` this entity owns, so closing
@@ -208,7 +215,7 @@ impl Workspace {
                 // app. A quit observer therefore runs when the workspace is
                 // already gone, and its callback — which needs `&mut self` —
                 // never fires at all. Measured: the toggle was still lost.
-                cx.on_release(|this, _| this.state.save_now()),
+                cx.on_release(|this, _| this.state.save_now(this.dirty)),
             ],
         };
         workspace.watch_settings(cx);
@@ -873,13 +880,28 @@ impl Workspace {
     pub fn remember_view(&mut self, cx: &mut Context<Self>) {
         let pane = self.active_pane.read(cx);
         let view = pane.view_settings();
-        self.state.sort = Some(config::SortSetting {
+        let sort = config::SortSetting {
             key: view.sort.key.into(),
             direction: view.sort.dir.into(),
-        });
+        };
+        let column_widths = pane.column_widths();
+
+        // Field by field, because a second hoja may own the ones this one never
+        // touched. Assigning all of them unconditionally and writing the lot is
+        // what let one window revert another's settings.
+        self.dirty.sort |= self.state.sort != Some(sort);
+        self.dirty.show_hidden |= self.state.show_hidden != Some(view.show_hidden);
+        self.dirty.folders_first |= self.state.folders_first != Some(view.folders_first);
+        self.dirty.column_widths |= self.state.column_widths != column_widths;
+
+        self.state.sort = Some(sort);
         self.state.show_hidden = Some(view.show_hidden);
         self.state.folders_first = Some(view.folders_first);
-        self.state.column_widths = pane.column_widths();
+        self.state.column_widths = column_widths;
+
+        if !self.dirty.any() {
+            return;
+        }
 
         // Throttle rather than debounce: `self.state` is already up to date, so
         // a write that is coming will carry the latest values. Rescheduling on
@@ -892,7 +914,11 @@ impl Workspace {
             cx.background_executor().timer(config::SAVE_DEBOUNCE).await;
             let _ = this.update(cx, |this, cx| {
                 this.save_task = None;
-                this.state.save(cx);
+                this.state.save(this.dirty, cx);
+                // Published: from here on these fields are whoever's who
+                // changes them next, so a later save that only carries a window
+                // resize will not drag them along with it.
+                this.dirty = config::Dirty::default();
             });
         }));
     }

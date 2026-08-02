@@ -128,6 +128,9 @@ other one, so neither can overwrite the other. When both have an answer, the
 more recent one applies: what you last toggled survives a restart, and editing
 the settings file takes effect over it.
 
+Two hoja windows share that file safely. Each one writes only the settings you
+changed in it, so a change made in one window is not undone by the other.
+
 ## Keys
 
 Keys work on the pane that has focus.

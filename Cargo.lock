@@ -3152,6 +3152,7 @@ dependencies = [
  "notify 8.2.0",
  "parking_lot",
  "rust-embed",
+ "rustix 1.1.4",
  "serde",
  "serde_json_lenient",
  "smallvec",
