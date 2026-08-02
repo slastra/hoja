@@ -154,6 +154,17 @@ pub fn read_dir(path: &Path, include_hidden: bool) -> anyhow::Result<Vec<DirEntr
 /// direction — flipping the grouping is nobody's idea of "sort by size,
 /// descending"; only the order *within* each group reverses.
 pub fn sort_entries(entries: &mut [DirEntry], sort: Sort, folders_first: bool) {
+    sort_entries_by(entries, sort, folders_first, |entry| entry.size);
+}
+
+/// The same, where some rows carry a size the entry itself does not — a
+/// directory's recursive total, which is measured after the listing was built.
+pub fn sort_entries_by(
+    entries: &mut [DirEntry],
+    sort: Sort,
+    folders_first: bool,
+    size_of: impl Fn(&DirEntry) -> Option<u64>,
+) {
     entries.sort_by(|a, b| {
         let group = if folders_first {
             b.is_dir.cmp(&a.is_dir)
@@ -163,7 +174,7 @@ pub fn sort_entries(entries: &mut [DirEntry], sort: Sort, folders_first: bool) {
         group.then_with(|| {
             let ordering = match sort.key {
                 SortKey::Name => natural_cmp(&a.name, &b.name),
-                SortKey::Size => a.size.unwrap_or(0).cmp(&b.size.unwrap_or(0)),
+                SortKey::Size => size_of(a).unwrap_or(0).cmp(&size_of(b).unwrap_or(0)),
                 // Compare the raw extension rather than `kind()`, which would allocate
                 // an uppercased String on every one of ~n log n comparisons.
                 SortKey::Kind => natural_cmp(extension_of(a), extension_of(b)),
@@ -457,44 +468,43 @@ pub struct Summary {
     pub trail: Vec<String>,
     /// Whether a size belongs on the line at all.
     pub sized: bool,
-    /// Bytes the listing already knew.
+    /// Bytes the file rows already knew.
     pub known: u64,
-    /// Directories still to be walked. Empty means the total is already final.
-    pub roots: Vec<PathBuf>,
+    /// Indices of the directory rows this covers, which are the rows whose size
+    /// has to be walked for. Empty means the total is already final.
+    ///
+    /// Indices rather than paths: the pane holds the entries, so it can map one
+    /// to a path when it starts a walk and back again when a cell asks what its
+    /// own row came to.
+    pub rows: Vec<usize>,
 }
 
 /// The idle line: what this directory holds.
 ///
-/// `complete` says whether `entries` is the whole of `dir` rather than the part
-/// of it on show, and it is load-bearing twice. Only a complete listing lets the
-/// rows' own sizes be summed instead of walked, and only a complete listing that
-/// holds no subdirectory *proves* the directory has none — with hidden files
-/// off, `.git` is a subdirectory that is not in the list, and in a source tree
-/// it is usually the big one.
-pub fn summarise_dir(dir: &Path, entries: &[DirEntry], complete: bool) -> Summary {
+/// It totals **exactly the rows it is describing**, so `11 items · 44.9 GB`
+/// means those eleven and toggling hidden files moves both numbers together.
+/// The alternative — walking the directory itself — makes the size cover
+/// entries the count beside it does not, and stops one walk from serving both
+/// this line and the Size column, which needs each row separately anyway.
+///
+/// A directory of only files needs no walk: their sizes came with the listing.
+pub fn summarise_dir(entries: &[DirEntry]) -> Summary {
     let items = match entries.len() {
         1 => "1 item".to_string(),
         n => format!("{} items", crate::notifications::count(n as u64)),
     };
-    // Nothing below this directory to find, so the rows are the whole answer
-    // and no thread is woken. A folder of photos, a downloads directory — the
-    // common case gets the instant number.
-    let flat = complete && !entries.iter().any(|entry| entry.is_dir);
 
     Summary {
         lead: vec![items],
         trail: Vec::new(),
         sized: true,
-        known: if flat {
-            entries.iter().filter_map(|entry| entry.size).sum()
-        } else {
-            0
-        },
-        roots: if flat {
-            Vec::new()
-        } else {
-            vec![dir.to_path_buf()]
-        },
+        known: entries.iter().filter_map(|entry| entry.size).sum(),
+        rows: entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.is_dir)
+            .map(|(ix, _)| ix)
+            .collect(),
     }
 }
 
@@ -524,11 +534,14 @@ pub fn summarise_selection(entries: &[DirEntry], selected: &BTreeSet<usize>) -> 
         }
     }
 
-    // The fast path is this loop finding no directory: `roots` stays empty,
-    // `known` is the whole total, and nothing is started.
-    for entry in rows() {
+    // The fast path is this loop finding no directory: `rows` stays empty,
+    // `known` is the whole total, and the pane has nothing to wait for.
+    for ix in selected.iter().copied() {
+        let Some(entry) = entries.get(ix) else {
+            continue;
+        };
         if entry.is_dir {
-            summary.roots.push(entry.path.clone());
+            summary.rows.push(ix);
         } else {
             summary.known += entry.size.unwrap_or(0);
         }
@@ -582,7 +595,7 @@ mod tests {
             row("c.bin", false, Some(4000)),
         ];
         let summary = summarise_selection(&entries, &BTreeSet::from([0, 2]));
-        assert!(summary.roots.is_empty(), "nothing to walk");
+        assert!(summary.rows.is_empty(), "nothing to walk");
         assert_eq!(summary.known, 5000);
         assert_eq!(compose(&summary, 0, true), "2 selected · 4.9 KB");
     }
@@ -591,7 +604,7 @@ mod tests {
     fn a_selected_folder_defers_to_the_walk() {
         let entries = vec![row("src", true, None), row("a.bin", false, Some(1000))];
         let summary = summarise_selection(&entries, &BTreeSet::from([0]));
-        assert_eq!(summary.roots, vec![PathBuf::from("/tmp/fixture/src")]);
+        assert_eq!(summary.rows, vec![0], "the folder's row");
         assert_eq!(summary.known, 0);
         assert_eq!(compose(&summary, 0, false), "src · folder · …");
         assert_eq!(compose(&summary, 4_300_000, false), "src · folder · 4.1 MB…");
@@ -607,7 +620,7 @@ mod tests {
         ];
         let summary = summarise_selection(&entries, &BTreeSet::from([0, 1, 2]));
         assert_eq!(summary.known, 1000, "the file only");
-        assert_eq!(summary.roots.len(), 2, "both folders");
+        assert_eq!(summary.rows, vec![0, 2], "both folders' rows");
         assert_eq!(compose(&summary, 9000, true), "3 selected · 9.8 KB");
     }
 
@@ -634,32 +647,75 @@ mod tests {
             row("a.bin", false, Some(1000)),
             row("b.bin", false, Some(2000)),
         ];
-        let summary = summarise_dir(Path::new("/tmp/fixture"), &entries, true);
-        assert!(summary.roots.is_empty(), "no subdirectories, so nothing to walk");
+        let summary = summarise_dir(&entries);
+        assert!(summary.rows.is_empty(), "no subdirectories, so nothing to walk");
         assert_eq!(compose(&summary, 0, true), "2 items · 2.9 KB");
     }
 
     #[test]
-    fn a_listing_with_hidden_files_off_cannot_prove_a_directory_is_flat() {
-        // The trap: `.git` is a subdirectory that is not in the list, and in a
-        // source tree it is usually the large one. Only a complete listing may
-        // take the no-walk shortcut.
-        let entries = vec![row("a.bin", false, Some(1000))];
-        let summary = summarise_dir(Path::new("/tmp/fixture"), &entries, false);
-        assert_eq!(
-            summary.roots,
-            vec![PathBuf::from("/tmp/fixture")],
-            "it must walk, however flat the visible rows look"
+    fn the_directory_line_totals_exactly_the_rows_it_describes() {
+        // The rule that lets one walk serve both this line and the Size column:
+        // the total is the sum of the rows, so `.git` being hidden takes it out
+        // of the size exactly as it takes it out of the count. Toggling hidden
+        // files moves both numbers together instead of only one.
+        let entries = vec![
+            row("a.bin", false, Some(1000)),
+            row("src", true, None),
+            row("docs", true, None),
+        ];
+        let summary = summarise_dir(&entries);
+        assert_eq!(summary.known, 1000, "the file rows, already known");
+        assert_eq!(summary.rows, vec![1, 2], "the folder rows, to be walked");
+        assert_eq!(summary.lead, vec!["3 items"]);
+        // The identity the merge rests on: what the footer prints is the file
+        // rows plus every folder row's own figure.
+        assert_eq!(compose(&summary, 5000 + 300, true), "3 items · 6.2 KB");
+    }
+
+    #[test]
+    fn sorting_by_size_can_be_told_a_size_the_entry_does_not_carry() {
+        // What the settle-triggered re-sort needs: folders order by their
+        // measured total, not by the zero their `size` field holds.
+        let mut entries = vec![
+            row("small", true, None),
+            row("large", true, None),
+            row("a.bin", false, Some(50)),
+        ];
+        let measured = |entry: &DirEntry| match entry.name.as_str() {
+            "small" => Some(10),
+            "large" => Some(9_000),
+            _ => entry.size,
+        };
+        sort_entries_by(
+            &mut entries,
+            Sort { key: SortKey::Size, dir: SortDir::Descending },
+            true,
+            measured,
         );
-        assert_eq!(summary.known, 0);
+        let order: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            order,
+            vec!["large", "small", "a.bin"],
+            "folders first, and within them by measured size"
+        );
+
+        // And the plain sort still sees folders as sizeless, so nothing that
+        // does not opt in changes behaviour.
+        sort_entries(
+            &mut entries,
+            Sort { key: SortKey::Size, dir: SortDir::Descending },
+            true,
+        );
+        let order: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(order, vec!["large", "small", "a.bin"], "tie broken by name");
     }
 
     #[test]
     fn item_counts_are_grouped_and_singular_where_they_should_be() {
-        let one = summarise_dir(Path::new("/x"), &[row("a", false, Some(1))], true);
+        let one = summarise_dir(&[row("a", false, Some(1))]);
         assert_eq!(one.lead, vec!["1 item"]);
         let many: Vec<DirEntry> = (0..1234).map(|i| row(&i.to_string(), false, Some(0))).collect();
-        let big = summarise_dir(Path::new("/x"), &many, true);
+        let big = summarise_dir(&many);
         assert_eq!(big.lead, vec!["1,234 items"]);
     }
 

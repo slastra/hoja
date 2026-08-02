@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -168,6 +168,18 @@ struct Footer {
     /// What this was resolved against. A defaulted footer is out of date by
     /// construction — no directory is the empty path.
     dir: PathBuf,
+    /// The listing the walk belongs to, and the rows it was given, ascending —
+    /// ascending because the column binary-searches it once per visible row.
+    listing: u64,
+    rows: Vec<usize>,
+    /// Folder sizes that are final, keyed by path rather than by row.
+    ///
+    /// By path because the one thing a settled walk earns is a re-sort, and
+    /// sorting moves every index the buckets were found under. A path survives
+    /// it; a row number does not.
+    settled: HashMap<PathBuf, u64>,
+    /// Whether the one re-sort a settled walk earns has happened yet.
+    resorted: bool,
     selection: u64,
     summary: fs::Summary,
     /// The line as it reads now. Held rather than rebuilt per frame, and
@@ -340,10 +352,18 @@ impl Column {
     }
 
     /// The cell text for one entry. Empty where the entry has no such value —
-    /// directories have no size, and unreadable metadata has no time.
-    fn value(self, entry: &DirEntry) -> String {
+    /// unreadable metadata has no time, and a folder has no size until the walk
+    /// behind the footer has finished counting it, which is what `folder_bytes`
+    /// supplies. Blank until then rather than a figure that climbs: one number
+    /// moving at the bottom of the pane reads as progress, a listing full of
+    /// them reads as churn.
+    fn value(self, entry: &DirEntry, folder_bytes: Option<u64>) -> String {
         match self {
-            Column::Size => entry.size.map(fs::format_size).unwrap_or_default(),
+            Column::Size => entry
+                .size
+                .or(folder_bytes)
+                .map(fs::format_size)
+                .unwrap_or_default(),
             Column::Kind => entry.kind(),
             Column::Modified => entry.modified.map(fs::format_time).unwrap_or_default(),
         }
@@ -477,6 +497,10 @@ pub struct DirPane {
     /// a line of text; under-counting leaves the footer describing a selection
     /// that has gone.
     selection_moved: u64,
+    /// Bumped whenever the rows themselves are replaced. Separate from
+    /// `selection_moved` because the walk belongs to the listing: moving the
+    /// selection must not restart it, and a re-listing must.
+    listing_moved: u64,
     footer: Footer,
     /// Type-ahead find: the last keystroke's time and the accumulated prefix.
     /// One value, so "no buffer" cannot disagree with "no timestamp".
@@ -529,6 +553,7 @@ impl DirPane {
             renaming: None,
             pending_select: Vec::new(),
             selection_moved: 0,
+            listing_moved: 0,
             footer: Footer::default(),
             type_ahead: None,
             _subscriptions: subscriptions,
@@ -1080,6 +1105,7 @@ impl DirPane {
                 match result {
                     Ok(entries) => {
                         this.entries = entries;
+                        this.listing_moved += 1;
                         this.error = None;
                     }
                     Err(err) => {
@@ -1365,6 +1391,7 @@ impl DirPane {
 
             let _ = this.update(cx, |this, cx| {
                 this.entries = entries;
+                this.listing_moved += 1;
                 // The rows moved, so re-find them by name rather than index.
                 this.renaming = None;
                 this.restore_selection();
@@ -1559,6 +1586,7 @@ impl DirPane {
                 // is as old as the search — showing it immediately keeps the
                 // pane from blanking, and the read behind it makes it true.
                 self.entries = previous.listing;
+                self.listing_moved += 1;
                 self.clear_cursor();
                 self.restore_selection();
                 self.reload(cx);
@@ -1577,6 +1605,7 @@ impl DirPane {
             None => std::mem::take(&mut self.entries),
         };
         self.entries.clear();
+        self.listing_moved += 1;
         self.clear_cursor();
         self.error = None;
 
@@ -1616,6 +1645,7 @@ impl DirPane {
                     let finished = handle.is_done();
                     if !batch.is_empty() {
                         this.entries.extend(batch);
+                        this.listing_moved += 1;
                         // Aim at the first hit as soon as there is one, so
                         // enter opens it without arrowing down first. Only
                         // while nothing is chosen — later batches must not
@@ -1671,8 +1701,7 @@ impl DirPane {
         }
     }
 
-    /// Bring the footer in line with what is on screen, starting or abandoning
-    /// the walk behind its total.
+    /// Bring the footer and the column in line with what is on screen.
     ///
     /// Called from `render`, which is the one place guaranteed to run after any
     /// of its inputs move — every path that changes the selection, replaces the
@@ -1684,65 +1713,157 @@ impl DirPane {
     /// of them. It must not notify: that would be asking for the frame it is
     /// already inside.
     fn sync_footer(&mut self, cx: &mut Context<Self>) {
-        if self.footer.selection == self.selection_moved && self.footer.dir == self.dir {
-            return;
+        // The walk belongs to the listing. Moving the selection re-reads the
+        // buckets but never restarts them, which is what makes selecting a
+        // folder free — the number is already there, or already coming.
+        let relisted = self.footer.listing != self.listing_moved || self.footer.dir != self.dir;
+        if relisted {
+            self.footer.listing = self.listing_moved;
+            self.footer.dir = self.dir.clone();
+            self.restart_walk(cx);
         }
-        self.footer.selection = self.selection_moved;
-        self.footer.dir = self.dir.clone();
-
-        let summary = if self.searching() || self.error.is_some() {
-            // A search says its own thing, and its rows come from directories
-            // this pane is not showing, so nothing here is true of them. An
-            // unreadable directory has already said what there is to say, in
-            // the body. Both leave `roots` empty, which stops the walk below.
-            fs::Summary::default()
-        } else if self.selected.is_empty() {
-            fs::summarise_dir(&self.dir, &self.entries, self.listing_is_complete())
-        } else {
-            fs::summarise_selection(&self.entries, &self.selected)
-        };
-
-        // A walk survives a re-listing of the same target, and only that.
-        //
-        // The watcher fires for every write into the directory on screen, so a
-        // download re-lists this pane twice a second for as long as it runs.
-        // Restarting the count each time would spin a core for the length of
-        // the download and never once finish. What the listing itself knows —
-        // the item count, the sizes of plain files — is rebuilt here and stays
-        // exact; only the recursive part goes stale.
-        let same_target = !summary.roots.is_empty() && summary.roots == self.footer.summary.roots;
-        self.footer.summary = summary;
-
-        if !same_target {
-            // Both go, and in either order: the handle stops the thread, the
-            // task stops the poll and any walk it had not started yet.
-            self.footer.walk = None;
-            self.footer.poll = None;
-            if !self.footer.summary.roots.is_empty() {
-                self.footer.poll = Some(Self::spawn_measure_poll(cx));
-            }
+        if relisted || self.footer.selection != self.selection_moved {
+            self.footer.selection = self.selection_moved;
+            self.footer.summary = self.summarise();
+            self.footer.text = self.footer_text();
         }
-        self.footer.text = self.footer_text();
     }
 
-    /// Whether `entries` is everything in `dir` rather than the part of it on
-    /// show — the condition for trusting the rows' own sizes instead of walking.
-    fn listing_is_complete(&self) -> bool {
-        self.view.show_hidden
-            && !self.searching()
-            && self.error.is_none()
-            // Mid-navigation the rows still belong to the previous directory.
-            && self.dir == self.loaded_dir
+    /// Abandon any walk and start one for the rows now on screen.
+    fn restart_walk(&mut self, cx: &mut Context<Self>) {
+        // Both go, and in either order: the handle stops the threads, the task
+        // stops the poll and any walk the debounce had not let it start.
+        self.footer.walk = None;
+        self.footer.poll = None;
+        self.footer.resorted = false;
+        self.footer.settled.clear();
+
+        // A search's rows come from directories this pane is not showing, and an
+        // unreadable one has already said so in the body. Neither is worth a
+        // walk.
+        self.footer.rows = if self.searching() || self.error.is_some() {
+            Vec::new()
+        } else {
+            self.entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.is_dir)
+                .map(|(ix, _)| ix)
+                .collect()
+        };
+        if !self.footer.rows.is_empty() {
+            self.footer.poll = Some(Self::spawn_measure_poll(cx));
+        }
+    }
+
+    fn summarise(&self) -> fs::Summary {
+        if self.searching() || self.error.is_some() {
+            fs::Summary::default()
+        } else if self.selected.is_empty() {
+            fs::summarise_dir(&self.entries)
+        } else {
+            fs::summarise_selection(&self.entries, &self.selected)
+        }
+    }
+
+    /// What the walk has counted for one row, and whether that figure is final.
+    ///
+    /// Binary search rather than a scan: the column asks once per visible row
+    /// per frame, and a directory of five thousand folders would otherwise make
+    /// that quadratic.
+    fn bucket(&self, entry_ix: usize) -> Option<(u64, bool)> {
+        let entry = self.entries.get(entry_ix)?;
+        // A figure that is already final, and immune to the re-sort below.
+        if let Some(bytes) = self.footer.settled.get(&entry.path) {
+            return Some((*bytes, true));
+        }
+        let walk = self.footer.walk.as_ref()?;
+        let root = self.footer.rows.binary_search(&entry_ix).ok()?;
+        Some((walk.bytes(root), walk.settled(root)))
+    }
+
+    /// Move whatever the walk has finished into the path-keyed map.
+    fn harvest_settled(&mut self) {
+        let Some(walk) = self.footer.walk.as_ref() else {
+            return;
+        };
+        let finished: Vec<(PathBuf, u64)> = self
+            .footer
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(root, _)| walk.settled(*root))
+            .filter_map(|(root, ix)| {
+                Some((self.entries.get(*ix)?.path.clone(), walk.bytes(root)))
+            })
+            .collect();
+        for (path, bytes) in finished {
+            self.footer.settled.insert(path, bytes);
+        }
+    }
+
+    /// The one re-sort a settled walk earns.
+    ///
+    /// Only when the Size column is the sort key — by name, kind or date a
+    /// folder gaining a size changes nothing, so most of the time the listing
+    /// never moves at all. Once per listing, guarded, so a settled walk cannot
+    /// reorder the rows twice.
+    ///
+    /// Not through `apply_sort`, which scrolls to the top and closes an open
+    /// rename. This keeps the selection and lets `restore_selection` scroll
+    /// back to it, so the view follows what you had rather than jumping away.
+    fn resort_for_sizes(&mut self, cx: &mut Context<Self>) {
+        if self.footer.resorted
+            || self.view.sort.key != SortKey::Size
+            || self.footer.settled.is_empty()
+        {
+            return;
+        }
+        self.footer.resorted = true;
+
+        self.pending_select = self.selected_paths();
+        let sizes = std::mem::take(&mut self.footer.settled);
+        let mut entries = std::mem::take(&mut self.entries);
+        fs::sort_entries_by(
+            &mut entries,
+            self.view.sort,
+            self.view.folders_first,
+            |entry| entry.size.or_else(|| sizes.get(&entry.path).copied()),
+        );
+        self.entries = entries;
+        self.footer.settled = sizes;
+        // Deliberately not `listing_moved`: the rows are the same rows in a
+        // different order, and bumping it would throw away the finished walk
+        // and start it again.
+        self.restore_selection();
+        cx.notify();
+    }
+
+    /// A folder's size for the Size column — only once it is final, so a cell
+    /// never shows a number that is still climbing.
+    fn folder_bytes(&self, entry_ix: usize) -> Option<u64> {
+        let (bytes, settled) = self.bucket(entry_ix)?;
+        settled.then_some(bytes)
     }
 
     /// The line, against whatever the walk has counted so far.
+    ///
+    /// The footer *does* climb, unlike the column: one number moving at the
+    /// bottom of the pane reads as progress, where a listing full of them reads
+    /// as churn.
     fn footer_text(&self) -> String {
-        let (walked, settled) = match self.footer.walk.as_ref() {
-            Some(walk) => (walk.bytes(), walk.is_done()),
-            // No walk: either the listing held the whole answer, or the
-            // debounce has not elapsed and nothing has been counted yet.
-            None => (0, self.footer.summary.roots.is_empty()),
-        };
+        let mut walked = 0;
+        let mut settled = true;
+        for row in &self.footer.summary.rows {
+            match self.bucket(*row) {
+                Some((bytes, done)) => {
+                    walked += bytes;
+                    settled &= done;
+                }
+                // The debounce has not elapsed, so there is no walk yet.
+                None => settled = false,
+            }
+        }
         fs::compose(&self.footer.summary, walked, settled)
     }
 
@@ -1759,11 +1880,19 @@ impl DirPane {
             cx.background_executor().timer(MEASURE_DEBOUNCE).await;
 
             let started = this.update(cx, |this, cx| {
-                let roots = this.footer.summary.roots.clone();
-                if roots.is_empty() {
+                // Read out of the pane when the timer fires, not captured when
+                // it was set: the rows may have been replaced in the meantime.
+                let paths: Vec<PathBuf> = this
+                    .footer
+                    .rows
+                    .iter()
+                    .filter_map(|ix| this.entries.get(*ix))
+                    .map(|entry| entry.path.clone())
+                    .collect();
+                if paths.is_empty() {
                     return false;
                 }
-                this.footer.walk = Some(crate::measure::spawn(roots));
+                this.footer.walk = Some(crate::measure::spawn(paths));
                 this.footer.text = this.footer_text();
                 cx.notify();
                 true
@@ -1780,11 +1909,19 @@ impl DirPane {
                     };
                     let settled = walk.is_done();
                     let text = this.footer_text();
-                    // Repaint only when the line reads differently. The total
-                    // moves continuously; the three digits printed of it do not.
-                    if this.footer.text != text {
+                    // A cell that has just settled changes the column even when
+                    // the footer's own digits have not moved, so the frame is
+                    // asked for on either.
+                    let moved = this.footer.text != text;
+                    if moved {
                         this.footer.text = text;
+                    }
+                    if moved || settled {
                         cx.notify();
+                    }
+                    this.harvest_settled();
+                    if settled {
+                        this.resort_for_sizes(cx);
                     }
                     !settled
                 });
@@ -2256,7 +2393,11 @@ impl DirPane {
 
         // Resolved before the element is built: `use<>` forbids capturing `self`,
         // and this keeps the cells in lockstep with the header.
-        let cells = Column::ALL.map(|column| (self.widths.get(column), column.value(entry)));
+        // Resolved here with everything else the row needs, so nothing borrows
+        // `self` past the end of this function.
+        let folder_bytes = self.folder_bytes(ix);
+        let cells = Column::ALL
+            .map(|column| (self.widths.get(column), column.value(entry, folder_bytes)));
 
         // A search result is labelled by where it sits; everything else by its
         // own name.

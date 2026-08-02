@@ -14,29 +14,59 @@
 //!
 //! Shaped after `crate::search`, which is the house pattern for a cancellable
 //! background walk: a named thread, an `AtomicBool` the walk checks, and a
-//! `Drop` that sets it. Atomics rather than that module's channel, because a
-//! footer wants one running total rather than a stream of items.
+//! `Drop` that sets it. Atomics rather than that module's channel, because the
+//! readers want running totals rather than a stream of items.
+//!
+//! A total *per root*, not one between them. One walk then serves both the
+//! pane's footer, which sums them, and the Size column, which shows each
+//! separately — the same bytes read once, attributed rather than merely added.
 
 use std::collections::HashSet;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Threads in the walking pool. See the module comment for the measurements.
 const WORKERS: usize = 4;
 
-/// A running total. Dropping it stops the walk.
+/// One root's tally.
+struct Root {
+    bytes: AtomicU64,
+    /// Directories still to be read below this root, starting at one for the
+    /// root itself. Zero means every byte under it has been counted.
+    ///
+    /// rayon's `Scope` says when *everything* finishes and never when a subtree
+    /// does, but a shallow folder is settled long before a walk of twenty-five
+    /// of them — and a column cell must not sit blank waiting on its
+    /// neighbours. So the roots count their own outstanding work.
+    pending: AtomicUsize,
+}
+
+/// Running totals, one per root. Dropping it stops the walk.
 pub struct Measure {
-    bytes: Arc<AtomicU64>,
+    roots: Arc<Vec<Root>>,
     done: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
 }
 
 impl Measure {
-    /// Bytes counted so far. Climbs until `is_done`.
-    pub fn bytes(&self) -> u64 {
-        self.bytes.load(Ordering::Relaxed)
+    /// Bytes counted under one root so far. Climbs until `settled`.
+    pub fn bytes(&self, ix: usize) -> u64 {
+        self.roots
+            .get(ix)
+            .map_or(0, |root| root.bytes.load(Ordering::Relaxed))
+    }
+
+    /// Whether this root is finished, and its figure therefore final.
+    ///
+    /// `Acquire` against the `Release` in `leave`: seeing zero here has to mean
+    /// seeing every byte written under it, or a cell would settle on a total
+    /// still in flight.
+    pub fn settled(&self, ix: usize) -> bool {
+        self.roots
+            .get(ix)
+            .is_some_and(|root| root.pending.load(Ordering::Acquire) == 0)
     }
 
     pub fn is_done(&self) -> bool {
@@ -55,7 +85,7 @@ impl Drop for Measure {
 
 /// Everything the workers share.
 struct Walk {
-    bytes: Arc<AtomicU64>,
+    roots: Arc<Vec<Root>>,
     cancel: Arc<AtomicBool>,
     /// `(dev, ino)` of files with more than one link, so a tree that hardlinks
     /// into a store — pnpm's `node_modules` is 83% such files — is not counted
@@ -68,13 +98,23 @@ struct Walk {
 ///
 /// Roots are expected to be directories; a plain file among them is counted and
 /// not descended into, so a caller need not sort them first.
-pub fn spawn(roots: Vec<PathBuf>) -> Measure {
-    let bytes = Arc::new(AtomicU64::new(0));
+pub fn spawn(paths: Vec<PathBuf>) -> Measure {
+    let roots: Arc<Vec<Root>> = Arc::new(
+        paths
+            .iter()
+            .map(|_| Root {
+                bytes: AtomicU64::new(0),
+                // One for the root's own directory, released when it has been
+                // read and its children handed on.
+                pending: AtomicUsize::new(1),
+            })
+            .collect(),
+    );
     let done = Arc::new(AtomicBool::new(false));
     let cancel = Arc::new(AtomicBool::new(false));
 
     let handle = Measure {
-        bytes: bytes.clone(),
+        roots: roots.clone(),
         done: done.clone(),
         cancel: cancel.clone(),
     };
@@ -85,7 +125,7 @@ pub fn spawn(roots: Vec<PathBuf>) -> Measure {
         .name("hoja-measure".into())
         .spawn(move || {
             let walk = Walk {
-                bytes,
+                roots,
                 cancel,
                 linked: Mutex::new(HashSet::new()),
             };
@@ -97,13 +137,13 @@ pub fn spawn(roots: Vec<PathBuf>) -> Measure {
             // pins one `'scope` lifetime, and `walk` then fails to outlive it.
             match pool() {
                 Some(pool) => pool.scope(|scope| {
-                    for root in &roots {
-                        enter(scope, root.clone(), &walk);
+                    for (ix, path) in paths.iter().enumerate() {
+                        enter(scope, path.clone(), &walk, ix);
                     }
                 }),
                 None => rayon::scope(|scope| {
-                    for root in &roots {
-                        enter(scope, root.clone(), &walk);
+                    for (ix, path) in paths.iter().enumerate() {
+                        enter(scope, path.clone(), &walk, ix);
                     }
                 }),
             }
@@ -130,30 +170,41 @@ fn pool() -> Option<&'static rayon::ThreadPool> {
 }
 
 /// Count one root, whatever it turns out to be.
-fn enter<'a>(scope: &rayon::Scope<'a>, path: PathBuf, walk: &'a Walk) {
+fn enter<'a>(scope: &rayon::Scope<'a>, path: PathBuf, walk: &'a Walk, ix: usize) {
     let Ok(meta) = std::fs::symlink_metadata(&path) else {
+        walk.leave(ix);
         return;
     };
     if meta.is_dir() {
-        descend(scope, path, walk);
-    } else if meta.is_file() {
-        count(&meta, walk);
+        // `descend` releases the root's own count on the way out.
+        descend(scope, path, walk, ix);
+    } else {
+        if meta.is_file() {
+            count(&meta, walk, ix);
+        }
+        walk.leave(ix);
     }
 }
 
 /// Read one directory, counting its files and handing its subdirectories to the
 /// pool. Recursion happens through `scope.spawn`, so depth costs stack on the
 /// worker rather than on any one thread.
-fn descend<'a>(scope: &rayon::Scope<'a>, dir: PathBuf, walk: &'a Walk) {
+fn descend<'a>(scope: &rayon::Scope<'a>, dir: PathBuf, walk: &'a Walk, ix: usize) {
     // Once per directory, not once per file: a directory is the unit of work,
     // and an atomic load for each of 1.5 million files is not free.
     if walk.cancel.load(Ordering::Relaxed) {
+        // Released on the cancelled path too, so the counts unwind with the
+        // threads. That does leave the root reading as settled on a partial
+        // figure — which nothing can observe, because the only way to cancel is
+        // to drop the handle, and the reader has therefore already let go.
+        walk.leave(ix);
         return;
     }
     let Ok(reader) = std::fs::read_dir(&dir) else {
         // An unreadable subtree contributes nothing rather than failing the
         // whole total. The footer is a convenience; a permission error deeper
         // in the tree is not worth refusing to answer over.
+        walk.leave(ix);
         return;
     };
 
@@ -170,18 +221,34 @@ fn descend<'a>(scope: &rayon::Scope<'a>, dir: PathBuf, walk: &'a Walk) {
         }
         if file_type.is_dir() {
             let path = entry.path();
-            scope.spawn(move |scope| descend(scope, path, walk));
+            // Claimed *before* the spawn, never after: the other order lets the
+            // count reach zero while work is still being handed out, and the
+            // root would announce itself settled mid-walk.
+            walk.roots[ix].pending.fetch_add(1, Ordering::Relaxed);
+            scope.spawn(move |scope| descend(scope, path, walk, ix));
         } else if file_type.is_file() {
             // `DirEntry::metadata` does not traverse a symlink, and this is not
             // one anyway.
             if let Ok(meta) = entry.metadata() {
-                count(&meta, walk);
+                count(&meta, walk, ix);
             }
         }
     }
+    walk.leave(ix);
 }
 
-fn count(meta: &std::fs::Metadata, walk: &Walk) {
+impl Walk {
+    /// One directory's worth of work is finished under `ix`.
+    ///
+    /// `Release` so that a reader seeing the count fall to zero also sees every
+    /// byte written under that root — the pairing with `Measure::settled`'s
+    /// `Acquire`.
+    fn leave(&self, ix: usize) {
+        self.roots[ix].pending.fetch_sub(1, Ordering::Release);
+    }
+}
+
+fn count(meta: &std::fs::Metadata, walk: &Walk, ix: usize) {
     if meta.nlink() > 1 {
         let key = (meta.dev(), meta.ino());
         let mut linked = match walk.linked.lock() {
@@ -193,7 +260,7 @@ fn count(meta: &std::fs::Metadata, walk: &Walk) {
             return;
         }
     }
-    walk.bytes.fetch_add(meta.len(), Ordering::Relaxed);
+    walk.roots[ix].bytes.fetch_add(meta.len(), Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -225,16 +292,62 @@ mod tests {
         let root = fixture("total");
         let measure = spawn(vec![root.clone()]);
         settle(&measure);
-        assert_eq!(measure.bytes(), 7000);
+        assert_eq!(measure.bytes(0), 7000);
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn several_roots_add_up() {
+    fn each_root_is_totalled_separately() {
+        // The property the Size column rests on: one walk, one figure per root.
         let root = fixture("roots");
-        let measure = spawn(vec![root.join("a/deep"), root.join("top.bin")]);
+        let measure = spawn(vec![
+            root.join("a/deep"),
+            root.join("a"),
+            root.join("top.bin"),
+        ]);
         settle(&measure);
-        assert_eq!(measure.bytes(), 5000, "the deep tree plus the loose file");
+        assert_eq!(measure.bytes(0), 4000, "the deep tree alone");
+        assert_eq!(measure.bytes(1), 6000, "which is inside this one");
+        assert_eq!(measure.bytes(2), 1000, "and a loose file is its own root");
+        let summed: u64 = (0..3).map(|ix| measure.bytes(ix)).sum();
+        assert_eq!(summed, 11000, "summed, overlaps and all");
+        assert_eq!(measure.bytes(99), 0, "an index past the end is not a panic");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_small_root_settles_while_a_large_one_is_still_running() {
+        // The reason roots count their own outstanding work rather than waiting
+        // on the walk: a column cell must not sit blank because of a neighbour.
+        let root = std::env::temp_dir()
+            .join(format!("hoja-measure-{}-uneven", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("small")).unwrap();
+        std::fs::write(root.join("small/one.bin"), vec![0u8; 100]).unwrap();
+        for d in 0..30 {
+            let dir = root.join(format!("big/d{d}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            for f in 0..150 {
+                std::fs::write(dir.join(format!("f{f}")), vec![0u8; 64]).unwrap();
+            }
+        }
+
+        let measure = spawn(vec![root.join("small"), root.join("big")]);
+        // Poll for the small one settling before the whole walk does. If it
+        // only ever settled with everything else this would time out.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            assert!(Instant::now() < deadline, "small root never settled");
+            if measure.settled(0) {
+                break;
+            }
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        assert_eq!(measure.bytes(0), 100, "and its figure is final when it says so");
+
+        settle(&measure);
+        assert!(measure.settled(1));
+        assert_eq!(measure.bytes(1), 30 * 150 * 64);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -247,7 +360,7 @@ mod tests {
 
         let measure = spawn(vec![root.clone()]);
         settle(&measure);
-        assert_eq!(measure.bytes(), 7000, "counted once, and the walk ended");
+        assert_eq!(measure.bytes(0), 7000, "counted once, and the walk ended");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -260,7 +373,7 @@ mod tests {
 
         let measure = spawn(vec![root.clone()]);
         settle(&measure);
-        assert_eq!(measure.bytes(), 7000, "the extra links add nothing");
+        assert_eq!(measure.bytes(0), 7000, "the extra links add nothing");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -304,7 +417,7 @@ mod tests {
         settle(&measure);
         // Running as root would read it anyway, so accept either — the point of
         // the test is that the walk finishes and reports rather than giving up.
-        let bytes = measure.bytes();
+        let bytes = measure.bytes(0);
         assert!(bytes == 7000 || bytes == 15000, "got {bytes}");
 
         let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755));

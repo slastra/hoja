@@ -22,12 +22,17 @@ for important data.
   second. The list stays smooth when you scroll.
 - **Navigation.** Each pane has its own history. Use the back, forward, up, and
   home buttons. Click the path, then type a new path.
+- **Folder sizes.** The Size column shows a real, recursive size for folders,
+  not a blank. hoja walks the tree to find one — in parallel, in the
+  background — and each folder's cell fills in when its own subtree is counted,
+  so no number ever climbs in the listing. Sorting by size reorders once, when
+  every folder is final.
 - **Pane footer.** Each pane says what it is holding: `14 items · 1.2 GB` for
   the folder, `Cargo.toml · 2.8 KB · 2026-08-02 07:50` for one file,
-  `3 selected · 259 MB` for several. Folder sizes are real, so hoja walks the
-  tree to find them — in parallel, in the background, and the number climbs
-  with a trailing `…` until it is final. Selecting only files needs no walk at
-  all. A running search reports here too, in the pane doing the searching.
+  `3 selected · 259 MB` for several. It totals exactly the rows above it, so it
+  is the sum of the Size column. The one walk serves both, which is why
+  selecting a folder costs nothing — its size is already there. A running
+  search reports here too, in the pane doing the searching.
 - **The active pane.** The pane your keys act on keeps the full text colour.
   In the others the names, the icons, and the path go quiet, and the selection
   holds at half strength — so two panes with selections cannot be mistaken for
