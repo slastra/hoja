@@ -97,6 +97,9 @@ for important data.
 
 ### How it looks
 
+- **Modified.** The column says how long ago, not what o'clock: `just now`,
+  `3 hours ago`, `2 months ago`. Select a single file and the pane footer
+  gives the exact stamp.
 - **Git status.** In a git repository, the colour of a file name shows its
   status: added, modified, deleted, renamed, or in conflict. A folder shows
   the status of the files in it. Ignored files are dim. hoja asks `git`

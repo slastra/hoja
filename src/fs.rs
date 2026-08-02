@@ -464,10 +464,64 @@ pub fn format_rate(bytes_per_second: u64) -> String {
     format!("{value:.0} {}", UNITS[unit])
 }
 
-/// Local-time timestamp for the Modified column.
+/// Local-time timestamp, for the pane footer's single-file line.
 pub fn format_time(time: SystemTime) -> String {
     let local: chrono::DateTime<chrono::Local> = time.into();
     local.format("%Y-%m-%d %H:%M").to_string()
+}
+
+/// How long ago, for the Modified column.
+///
+/// "3 hours ago" answers the question the column is usually asked, which is
+/// whether a file is the one just written, rather than what o'clock it was
+/// written at. The exact stamp is still one selection away: the pane footer
+/// prints it in full for a single file.
+///
+/// Coarse on purpose, and one unit only. A listing is scanned, not read, and
+/// "2 days 4 hours ago" takes longer to take in than "2 days ago" while
+/// answering the same question.
+///
+/// `now` is a parameter so the buckets can be tested without waiting for a
+/// clock. A stamp in the future is a broken timestamp, from clock skew or an
+/// archive that carried one in, and it reads as "just now": there is no honest
+/// answer, and this is the one that does not draw the eye.
+pub fn format_time_ago(time: SystemTime, now: SystemTime) -> String {
+    let Ok(elapsed) = now.duration_since(time) else {
+        return "just now".to_string();
+    };
+    let secs = elapsed.as_secs();
+
+    // Calendar months and years are uneven, so past a month this counts in
+    // average ones. The reading is "about five months", and a column that said
+    // "5 months ago" for one file and "4 months ago" for another written the
+    // same week would be claiming a precision it does not have.
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    const WEEK: u64 = 7 * DAY;
+    const MONTH: u64 = 2_629_746; // mean Gregorian month
+    // Not twelve of those. A mean year is a few hours longer than 365 days, so
+    // a file written exactly a year ago fell one bucket short and read
+    // "11 months ago", which is the one reading a year old file must not have.
+    const YEAR: u64 = 365 * DAY;
+
+    let plural = |n: u64, unit: &str| {
+        if n == 1 {
+            format!("1 {unit} ago")
+        } else {
+            format!("{n} {unit}s ago")
+        }
+    };
+
+    match secs {
+        s if s < MINUTE => "just now".to_string(),
+        s if s < HOUR => plural(s / MINUTE, "minute"),
+        s if s < DAY => plural(s / HOUR, "hour"),
+        s if s < WEEK => plural(s / DAY, "day"),
+        s if s < MONTH => plural(s / WEEK, "week"),
+        s if s < YEAR => plural(s / MONTH, "month"),
+        s => plural(s / YEAR, "year"),
+    }
 }
 
 /// The selected rows, and a number that changes whenever they do.
@@ -1183,5 +1237,59 @@ mod bench {
             println!("{key:?}: {:?}", start.elapsed());
         }
         entries.clear();
+    }
+}
+
+#[cfg(test)]
+mod time_ago_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn ago(secs: u64) -> String {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000_000_000);
+        format_time_ago(now - Duration::from_secs(secs), now)
+    }
+
+    #[test]
+    fn the_first_minute_is_just_now() {
+        assert_eq!(ago(0), "just now");
+        assert_eq!(ago(59), "just now");
+    }
+
+    #[test]
+    fn each_unit_takes_over_where_the_last_one_ends() {
+        assert_eq!(ago(60), "1 minute ago");
+        assert_eq!(ago(60 * 60 - 1), "59 minutes ago");
+        assert_eq!(ago(60 * 60), "1 hour ago");
+        assert_eq!(ago(24 * 3600 - 1), "23 hours ago");
+        assert_eq!(ago(24 * 3600), "1 day ago");
+        assert_eq!(ago(7 * 86400 - 1), "6 days ago");
+        assert_eq!(ago(7 * 86400), "1 week ago");
+        assert_eq!(ago(365 * 86400), "1 year ago");
+    }
+
+    #[test]
+    fn one_of_something_is_not_one_somethings() {
+        assert_eq!(ago(60), "1 minute ago");
+        assert_eq!(ago(120), "2 minutes ago");
+    }
+
+    #[test]
+    fn a_stamp_from_the_future_does_not_panic_or_shout() {
+        // `duration_since` errors rather than going negative, and a file dated
+        // ahead of the clock is a broken timestamp rather than an event.
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000_000_000);
+        assert_eq!(format_time_ago(now + Duration::from_secs(86400), now), "just now");
+    }
+
+    #[test]
+    fn the_longest_reading_is_the_one_the_column_is_sized_for() {
+        // `Column::widest` pins the Modified column against this.
+        let longest = (0..40u64)
+            .map(|weeks| ago(weeks * 7 * 86400 + 59 * 60))
+            .chain((0..60).map(|m| ago(m * 60)))
+            .max_by_key(String::len)
+            .unwrap();
+        assert_eq!(longest.chars().count(), 14, "{longest:?}");
     }
 }

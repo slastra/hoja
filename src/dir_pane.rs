@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use file_icons::FileIcons;
 use gpui::AnimationExt as _;
@@ -78,10 +78,17 @@ const COUNTING_BAR_HEIGHT: f32 = 4.;
 const COUNTING_PERIOD: Duration = Duration::from_millis(1600);
 const COUNTING_ALPHA_LOW: f32 = 0.10;
 const COUNTING_ALPHA_HIGH: f32 = 0.32;
-/// Advance of one character in the numeric face at the rows' `text_sm`, and the
-/// `px_2` a cell carries on each side. Only the width test reads them.
+/// Advance of one character at the rows' `text_sm`, and the `px_2` a cell
+/// carries on each side. Only the width test reads them.
+///
+/// Two figures because the columns are no longer all in one face: the numeric
+/// one is monospaced and every character is exactly this wide, while the
+/// proportional one varies and this is an upper bound for the lowercase and
+/// digits the columns actually hold.
 #[cfg(test)]
 const ROW_CHAR_W: f32 = 8.5;
+#[cfg(test)]
+const PROPORTIONAL_CHAR_W: f32 = 7.6;
 #[cfg(test)]
 const CELL_PADDING: f32 = 16.;
 const COL_MAX_WIDTH: f32 = 420.;
@@ -167,6 +174,10 @@ enum BarMode {
 /// point: a held arrow key replaces this timer thirty times a second and starts
 /// nothing at all, and the walk begins once, on the row you stopped on. The same
 /// interval the search field settles for, for the same reason.
+/// Half the finest bucket `fs::format_time_ago` prints, so nothing on screen is
+/// ever more than that behind.
+const CLOCK_TICK: Duration = Duration::from_secs(30);
+
 const MEASURE_DEBOUNCE: Duration = Duration::from_millis(120);
 
 /// How often the footer reads the running total. A size is a magnitude, not a
@@ -382,13 +393,10 @@ impl Column {
 
     /// Whether the column prints figures, and so is set in the numeric face.
     ///
-    /// Kind is the odd one out: "Folder", "BIN", "Rust source" are words, and
-    /// words in a monospaced face are just words set badly.
+    /// Size alone. Kind and Modified are both words now: "Folder", "BIN",
+    /// "3 hours ago". Words in a monospaced face are just words set badly.
     fn is_numeric(self) -> bool {
-        match self {
-            Column::Size | Column::Modified => true,
-            Column::Kind => false,
-        }
+        matches!(self, Column::Size)
     }
 
     /// Wide enough for the widest thing the column prints, at the row's text
@@ -399,7 +407,7 @@ impl Column {
         match self {
             Column::Size => px(100.),
             Column::Kind => px(90.),
-            Column::Modified => px(156.),
+            Column::Modified => px(132.),
         }
     }
 
@@ -413,8 +421,8 @@ impl Column {
             // Not pinned: "Rust source" and the like come from the file's kind
             // and are already elided when they do not fit.
             Column::Kind => "",
-            // `format_time` is "%Y-%m-%d %H:%M", a fixed sixteen.
-            Column::Modified => "2026-08-02 13:40",
+            // The longest `format_time_ago` prints, pinned by its own test.
+            Column::Modified => "59 minutes ago",
         }
     }
 
@@ -424,7 +432,7 @@ impl Column {
     /// supplies. Blank until then rather than a figure that climbs: one number
     /// moving at the bottom of the pane reads as progress, a listing full of
     /// them reads as churn.
-    fn value(self, entry: &DirEntry, folder_bytes: Option<u64>) -> String {
+    fn value(self, entry: &DirEntry, folder_bytes: Option<u64>, now: SystemTime) -> String {
         match self {
             Column::Size => entry
                 .size
@@ -432,7 +440,13 @@ impl Column {
                 .map(fs::format_size)
                 .unwrap_or_default(),
             Column::Kind => entry.kind(),
-            Column::Modified => entry.modified.map(fs::format_time).unwrap_or_default(),
+            // Read once per frame and passed down, rather than a clock call per
+            // row: the answer must be the same for every row in a listing, or
+            // two files written in the same second can disagree.
+            Column::Modified => entry
+                .modified
+                .map(|at| fs::format_time_ago(at, now))
+                .unwrap_or_default(),
         }
     }
 }
@@ -555,6 +569,9 @@ pub struct DirPane {
     load_task: Option<Task<()>>,
     /// Separate from `load_task` so a header click cannot cancel a pending read.
     sort_task: Option<Task<()>>,
+    /// Repaints the listing so the Modified column stays true. Dropped with the
+    /// pane, which stops it.
+    _clock: Task<()>,
     context_menu: Option<(Point<Pixels>, Entity<FileMenu>)>,
     /// The address bar doubles as the search field, so both live in one slot.
     path_editor: Option<(BarMode, Entity<PathEditor>)>,
@@ -621,6 +638,7 @@ impl DirPane {
             error: None,
             load_task: None,
             sort_task: None,
+            _clock: Self::spawn_clock(cx),
             context_menu: None,
             path_editor: None,
             search: None,
@@ -633,6 +651,27 @@ impl DirPane {
         };
         this.reload(cx);
         this
+    }
+
+    /// Keep the Modified column honest.
+    ///
+    /// "3 hours ago" is a statement about when it was rendered, and gpui repaints
+    /// on interaction, so a pane left alone would hold whatever it said when you
+    /// last touched it. A file written a moment before you walked away would
+    /// still read "just now" an hour later.
+    ///
+    /// The interval is half the finest bucket, so the worst reading on screen is
+    /// half a minute behind. It costs one repaint every thirty seconds for as
+    /// long as the pane exists, which is the price of a column that says "ago".
+    fn spawn_clock(cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(CLOCK_TICK).await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    return;
+                }
+            }
+        })
     }
 
     /// Mark this pane active or not. The workspace owns which one it is.
@@ -2556,10 +2595,11 @@ impl DirPane {
         let folder_bytes = self.folder_bytes(ix);
         let numeric = crate::theming::numeric_font(cx);
         let counting = self.counting_size(ix);
+        let now = SystemTime::now();
         let cells = Column::ALL.map(|column| {
             (
                 self.widths.get(column),
-                column.value(entry, folder_bytes),
+                column.value(entry, folder_bytes, now),
                 column.is_numeric().then(|| numeric.clone()).flatten(),
                 counting && column == Column::Size,
                 column.aligns_right(),
@@ -2974,7 +3014,12 @@ mod tests {
             if widest.is_empty() {
                 continue;
             }
-            let needed = widest.chars().count() as f32 * ROW_CHAR_W + CELL_PADDING;
+            let advance = if column.is_numeric() {
+                ROW_CHAR_W
+            } else {
+                PROPORTIONAL_CHAR_W
+            };
+            let needed = widest.chars().count() as f32 * advance + CELL_PADDING;
             assert!(
                 needed <= f32::from(column.default_width()),
                 "{:?} needs {needed}px for {widest:?} but starts at {:?}",
