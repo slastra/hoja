@@ -108,6 +108,17 @@ fn drop_allowed(dragged: &dyn std::any::Any, target: &Path, cx: &App) -> bool {
     false
 }
 
+/// An open rename editor, anchored by name rather than by row.
+///
+/// A re-listing renumbers every row, so an index alone cannot survive one —
+/// which is why a background copy finishing, or a delete in another pane, used
+/// to close the editor out from under whoever was typing.
+struct Renaming {
+    name: String,
+    ix: usize,
+    editor: Entity<PathEditor>,
+}
+
 /// A search in flight, and the listing it is standing in for.
 struct ActiveSearch {
     query: String,
@@ -344,7 +355,7 @@ pub struct DirPane {
     /// have meant finding them all again.
     search: Option<ActiveSearch>,
     /// Inline rename: the row index and its editor.
-    renaming: Option<(usize, Entity<PathEditor>)>,
+    renaming: Option<Renaming>,
     /// Names to re-select once the listing is rebuilt. Every path that
     /// replaces `entries` snapshots the current selection into this, so
     /// sorting, refreshing, or a job finishing elsewhere does not silently
@@ -919,7 +930,14 @@ impl DirPane {
                         this.error = Some(err.to_string());
                     }
                 }
-                this.renaming = None;
+                // Same directory: find the renamed row again. A navigation is
+                // different — the same name elsewhere is a different file — so
+                // the rename ends with the directory it belonged to.
+                if this.dir == this.loaded_dir {
+                    this.reanchor_rename();
+                } else {
+                    this.renaming = None;
+                }
                 this.loaded_dir = this.dir.clone();
                 this.restore_selection();
                 // Without this the mutation lands but nothing repaints.
@@ -1038,13 +1056,7 @@ impl DirPane {
                 cx.background_executor().timer(WATCH_INTERVAL).await;
                 while rx.try_recv().is_ok() {}
 
-                let alive = this.update(cx, |this, cx| {
-                    // Re-listing under an open rename editor would rebuild the
-                    // rows the editor is anchored to.
-                    if !this.has_inline_editor() {
-                        this.reload(cx);
-                    }
-                });
+                let alive = this.update(cx, |this, cx| this.reload(cx));
                 if alive.is_err() {
                     break;
                 }
@@ -1236,13 +1248,14 @@ impl DirPane {
             return;
         };
         let name = entry.name.clone();
+        let entry_name = name.clone();
         let selection = fs::stem_range(&name);
         let editor =
             cx.new(|cx| PathEditor::new_with_selection(name, selection, window, cx));
 
         cx.subscribe_in(&editor, window, |this, editor, event, window, cx| match event {
             PathEditorEvent::Committed(text) => {
-                let Some((ix, _)) = this.renaming.clone() else {
+                let Some(ix) = this.renaming.as_ref().map(|r| r.ix) else {
                     return;
                 };
                 match this.commit_rename(ix, text) {
@@ -1278,7 +1291,11 @@ impl DirPane {
                 window.focus(&editor_focus, cx);
             });
         });
-        self.renaming = Some((ix, editor));
+        self.renaming = Some(Renaming {
+            name: entry_name,
+            ix,
+            editor,
+        });
         cx.notify();
     }
 
@@ -1448,6 +1465,22 @@ impl DirPane {
         self.selected.clear();
         self.anchor_ix = None;
         self.cursor_ix = None;
+    }
+
+    /// Point an open rename at the row its entry now occupies, or end it if the
+    /// entry is gone — renamed or deleted by something else while it was open.
+    fn reanchor_rename(&mut self) {
+        let Some(name) = self.renaming.as_ref().map(|r| r.name.clone()) else {
+            return;
+        };
+        match self.entries.iter().position(|entry| entry.name == name) {
+            Some(ix) => {
+                if let Some(renaming) = self.renaming.as_mut() {
+                    renaming.ix = ix;
+                }
+            }
+            None => self.renaming = None,
+        }
     }
 
     /// Whether a search is running or has results on screen.
@@ -1827,8 +1860,8 @@ impl DirPane {
         let rename_editor = self
             .renaming
             .as_ref()
-            .filter(|(renaming_ix, _)| *renaming_ix == ix)
-            .map(|(_, editor)| editor.clone());
+            .filter(|renaming| renaming.ix == ix)
+            .map(|renaming| renaming.editor.clone());
         let selected = self.selected.contains(&ix);
         // The lead row is where ctrl-arrow has moved to and what ctrl-space
         // acts on. It is usually also selected, so it needs its own mark.
