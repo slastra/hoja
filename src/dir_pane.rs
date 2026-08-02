@@ -148,6 +148,24 @@ enum BarMode {
 /// How much of the selection colour survives in a pane that is not active.
 const INACTIVE_SELECTION_ALPHA: f32 = 0.5;
 
+/// How much of the listing's colour survives there.
+///
+/// Higher than the selection's: a selection band only has to be noticed, but a
+/// file name still has to be read.
+const INACTIVE_CONTENT_ALPHA: f32 = 0.6;
+
+/// The same colour, quieter, for a pane the keys are not acting on.
+///
+/// Alpha rather than substituting `text_muted`, so a name coloured by its git
+/// status keeps its hue — dimming the listing should not cost the listing its
+/// information.
+fn quieted(mut color: gpui::Hsla, active: bool) -> gpui::Hsla {
+    if !active {
+        color.a *= INACTIVE_CONTENT_ALPHA;
+    }
+    color
+}
+
 /// Rows being dragged, and where they came from so a drop back onto their own
 /// directory can be refused.
 ///
@@ -1918,11 +1936,10 @@ impl DirPane {
 
     fn render_header(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let colors = cx.theme().colors();
-        let content = if self.active {
-            colors.text
-        } else {
-            colors.text_muted
-        };
+        // Always muted, in both panes. Column labels are furniture: they say the
+        // same thing every time you look, so they do not need to compete with
+        // the names underneath them for attention.
+        let content = colors.text_muted;
         let hover_bg = colors.element_hover;
         let sort = self.view.sort;
 
@@ -2007,8 +2024,8 @@ impl DirPane {
         // name means untracked, and nothing else in the row says so. The
         // secondary columns and the icon stay neutral so the exception reads as
         // a signal instead of as theming.
-        let content = colors.text;
-        let name_color = self
+        let base = colors.text;
+        let name_base = self
             .git
             .get(&entry.name)
             .map(|status| match status {
@@ -2022,9 +2039,15 @@ impl DirPane {
                 // leaves a file name too dim to read. Ignored is a
                 // de-emphasis, not a hue.
                 GitStatus::Ignored => colors.text_muted,
-                GitStatus::Unmodified => content,
+                GitStatus::Unmodified => base,
             })
-            .unwrap_or(content);
+            .unwrap_or(base);
+
+        // Icons and the secondary columns follow `content`; names carry their
+        // own colour. Both quiet down together when this is not the pane the
+        // keys are acting on.
+        let content = quieted(base, self.active);
+        let name_color = quieted(name_base, self.active);
 
         // Resolution order handles the messy cases: full filename against stems and
         // suffixes (`eslint.config.js`), repeated `split_once('.')` (`auth.module.js`),

@@ -23,8 +23,9 @@ for important data.
 - **Navigation.** Each pane has its own history. Use the back, forward, up, and
   home buttons. Click the path, then type a new path.
 - **The active pane.** The pane your keys act on keeps the full text colour.
-  The others drop to the muted colour and hold their selection at half
-  strength, so two panes with selections cannot be mistaken for each other.
+  In the others the names, the icons, and the path go quiet, and the selection
+  holds at half strength — so two panes with selections cannot be mistaken for
+  each other. A name coloured by git status keeps its colour, only fainter.
 - **View settings.** Each pane has a menu at the right end of the toolbar.
   It controls hidden files, folder grouping, and the sort order. hoja does
   not show hidden files by default.
