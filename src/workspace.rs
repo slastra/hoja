@@ -979,7 +979,10 @@ impl Workspace {
         let muted = colors.text_muted;
         let error_color = cx.theme().status().error;
         let bar_bg = colors.element_background;
-        let bar_fill = colors.border_selected;
+        // border_selected against element_background is two muted darks in most
+        // themes — the bar was drawn correctly and simply could not be seen.
+        let bar_fill = colors.text_accent;
+        let bar_done = cx.theme().status().success;
 
         let rows: Vec<_> = self
             .jobs
@@ -1024,15 +1027,15 @@ impl Workspace {
                     ),
                 };
 
+                let is_done = job.done.is_some();
                 let fraction = if walk_complete && bytes_total > 0 {
                     (bytes_done as f32 / bytes_total as f32).clamp(0., 1.)
-                } else if job.done.is_some() {
+                } else if is_done {
                     1.
                 } else {
                     0. // indeterminate until the walk finishes; no backwards bars
                 };
 
-                let is_done = job.done.is_some();
                 div()
                     .flex()
                     .flex_row()
@@ -1052,10 +1055,22 @@ impl Workspace {
                     .child(
                         div()
                             .flex_1()
-                            .h(px(4.))
+                            .h(px(6.))
                             .rounded_sm()
                             .bg(bar_bg)
-                            .child(div().h_full().rounded_sm().bg(bar_fill).w(relative(fraction))),
+                            .child(
+                                div()
+                                    .h_full()
+                                    .rounded_sm()
+                                    .bg(if job.errors > 0 {
+                                        error_color
+                                    } else if is_done {
+                                        bar_done
+                                    } else {
+                                        bar_fill
+                                    })
+                                    .w(relative(fraction)),
+                            ),
                     )
                     .child(
                         div()
