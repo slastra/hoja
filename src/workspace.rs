@@ -110,6 +110,71 @@ struct JobView {
     /// When the transfer started, so a job short enough to have been watched
     /// does not raise a notification about it — see `notifications::NOTIFY_AFTER`.
     started: std::time::Instant,
+    /// Smoothed bytes per second, and the sample it was folded from.
+    rate: Option<f64>,
+    last_sample: (std::time::Instant, u64),
+}
+
+/// Weight of the newest sample in the rate estimate.
+///
+/// A 120ms window over a tree of small files is violently bursty — one large
+/// file lands and the instantaneous figure jumps by an order of magnitude — and
+/// a number that jitters like that is worse than no number. Low enough to
+/// settle within a couple of seconds, high enough to follow a real change of
+/// speed when the transfer crosses onto slower media.
+const RATE_SMOOTHING: f64 = 0.25;
+
+/// Fold one interval's worth of bytes into the running rate estimate.
+///
+/// Returns the previous estimate unchanged for an interval too short to divide
+/// by, which keeps a fast poll from turning a small numerator into a wild rate.
+fn fold_rate(previous: Option<f64>, bytes: u64, secs: f64) -> Option<f64> {
+    if secs < 0.05 {
+        return previous;
+    }
+    let instant = bytes as f64 / secs;
+    Some(match previous {
+        Some(previous) => previous * (1. - RATE_SMOOTHING) + instant * RATE_SMOOTHING,
+        None => instant,
+    })
+}
+
+/// The right-hand text of a job row: what is done, and — once there is anything
+/// worth saying — how fast and how much longer.
+fn transfer_status(done: u64, total: u64, walk_complete: bool, rate: Option<f64>) -> String {
+    let mut status = format!(
+        "{} / {}",
+        fs::format_size(done),
+        if walk_complete {
+            fs::format_size(total)
+        } else {
+            "…".to_string()
+        }
+    );
+    // Rate as soon as there is one; time remaining only once the scan has
+    // settled a denominator to subtract from. A rate near zero means a stall,
+    // and dividing by it would promise infinity — say nothing instead.
+    if let Some(rate) = rate.filter(|r| *r > 1.) {
+        status.push_str(&format!(" · {}/s", fs::format_size(rate as u64)));
+        if walk_complete && total > done {
+            let left = (total - done) as f64 / rate;
+            status.push_str(&format!(" · {} left", fs::format_remaining(left)));
+        }
+    }
+    status
+}
+
+impl JobView {
+    /// Fold the current byte count into the rate estimate.
+    fn sample(&mut self, now: std::time::Instant, bytes: u64) {
+        let (then, before) = self.last_sample;
+        let secs = now.duration_since(then).as_secs_f64();
+        let folded = fold_rate(self.rate, bytes.saturating_sub(before), secs);
+        if secs >= 0.05 {
+            self.last_sample = (now, bytes);
+        }
+        self.rate = folded;
+    }
 }
 
 /// Owns the pane tree and the notion of which pane is active.
@@ -421,6 +486,8 @@ impl Workspace {
                     errors: 0,
                     last_error: None,
                     started: std::time::Instant::now(),
+                    rate: None,
+                    last_sample: (std::time::Instant::now(), 0),
                 });
                 self.ensure_polling(window, cx);
                 cx.notify();
@@ -461,8 +528,17 @@ impl Workspace {
         let mut finished_jobs: Vec<JobId> = Vec::new();
         let mut announce: Vec<(String, PathBuf, std::time::Duration, JobSummary)> = Vec::new();
 
+        let now = std::time::Instant::now();
         for job in &mut self.jobs {
             let job_id = job.handle.id();
+            if job.done.is_none() {
+                let bytes = job
+                    .handle
+                    .progress()
+                    .bytes_done
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                job.sample(now, bytes);
+            }
             while let Some(event) = job.handle.try_recv_event() {
                 match event {
                     JobEvent::Conflict { dest, reply, .. } => {
@@ -1067,15 +1143,7 @@ impl Workspace {
                     (None, Phase::Scanning) => format!("scanning… {files_total} files"),
                     (None, Phase::Flushing) => "flushing to device…".to_string(),
                     (None, Phase::AwaitingConflict) => "waiting for answer…".to_string(),
-                    _ => format!(
-                        "{} / {}",
-                        fs::format_size(bytes_done),
-                        if walk_complete {
-                            fs::format_size(bytes_total)
-                        } else {
-                            "…".to_string()
-                        }
-                    ),
+                    _ => transfer_status(bytes_done, bytes_total, walk_complete, job.rate),
                 };
 
                 let is_done = job.done.is_some();
@@ -1126,7 +1194,7 @@ impl Workspace {
                     .child(
                         div()
                             .flex_none()
-                            .max_w(px(320.))
+                            .max_w(px(460.))
                             .truncate()
                             .text_color(if job.errors > 0 { error_color } else { muted })
                             .child(status),
@@ -1367,5 +1435,57 @@ impl Render for Workspace {
                         .child(dialog),
                 )
             })
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_says_only_what_it_knows() {
+        // Mid-scan: no denominator yet, so no time remaining either.
+        assert_eq!(transfer_status(1_200_000, 0, false, None), "1.1 MB / …");
+        assert_eq!(
+            transfer_status(1_200_000, 0, false, Some(50_000_000.)),
+            "1.1 MB / … · 47.7 MB/s"
+        );
+        // Scan finished: everything.
+        assert_eq!(
+            transfer_status(100_000_000, 500_000_000, true, Some(50_000_000.)),
+            "95.4 MB / 477 MB · 47.7 MB/s · 8s left"
+        );
+        // A stalled transfer must not promise an infinite wait.
+        assert_eq!(
+            transfer_status(100, 500_000_000, true, Some(0.)),
+            "100 B / 477 MB"
+        );
+        // Nothing left to do is not "0s left" forever.
+        assert_eq!(
+            transfer_status(500, 500, true, Some(1000.)),
+            "500 B / 500 B · 1000 B/s"
+        );
+    }
+
+    #[test]
+    fn the_rate_estimate_smooths_rather_than_jumps() {
+        // First sample is taken as-is; there is nothing to average with.
+        let first = fold_rate(None, 1000, 1.0).unwrap();
+        assert!((first - 1000.).abs() < 1e-6);
+
+        // A tenfold burst must not drag the estimate tenfold in one step.
+        let after = fold_rate(Some(1000.), 10_000, 1.0).unwrap();
+        assert!(after > 1000. && after < 4000., "got {after}");
+
+        // Sustained, it converges on the new speed.
+        let mut rate = Some(1000.);
+        for _ in 0..40 {
+            rate = fold_rate(rate, 10_000, 1.0);
+        }
+        assert!((rate.unwrap() - 10_000.).abs() < 100., "got {rate:?}");
+
+        // An interval too short to divide by leaves the estimate alone.
+        assert_eq!(fold_rate(Some(1234.), 5, 0.001), Some(1234.));
     }
 }

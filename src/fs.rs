@@ -393,6 +393,22 @@ pub fn stem_range(name: &str) -> std::ops::Range<usize> {
 }
 
 /// Human-readable size for the listing's right-hand column.
+/// "45s", "2m 15s", "1h 20m" — how long is left, at a glance.
+///
+/// Coarser the further out it is, because a remaining hour is not known to the
+/// second and printing it that way would claim otherwise.
+pub fn format_remaining(seconds: f64) -> String {
+    if !seconds.is_finite() || seconds < 0. {
+        return "—".to_string();
+    }
+    let s = seconds.round() as u64;
+    match s {
+        0..=59 => format!("{s}s"),
+        60..=3599 => format!("{}m {}s", s / 60, s % 60),
+        _ => format!("{}h {}m", s / 3600, (s % 3600) / 60),
+    }
+}
+
 pub fn format_size(bytes: u64) -> String {
     const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
     if bytes < 1024 {
@@ -419,6 +435,20 @@ pub fn format_time(time: SystemTime) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn remaining_time_gets_coarser_the_further_out_it_is() {
+        use super::format_remaining;
+        assert_eq!(format_remaining(0.), "0s");
+        assert_eq!(format_remaining(45.4), "45s");
+        assert_eq!(format_remaining(59.6), "1m 0s");
+        assert_eq!(format_remaining(135.), "2m 15s");
+        assert_eq!(format_remaining(3600.), "1h 0m");
+        assert_eq!(format_remaining(4800.), "1h 20m");
+        // A rate of zero divides to infinity; that is not a duration.
+        assert_eq!(format_remaining(f64::INFINITY), "—");
+        assert_eq!(format_remaining(f64::NAN), "—");
+    }
+
     #[test]
     fn filtering_names() {
         use super::matches_filter;
