@@ -365,6 +365,21 @@ impl Column {
         }
     }
 
+    /// Whether the column's content is held to its right edge.
+    ///
+    /// Size only, because it is the only column where the digits carry the
+    /// meaning: right-aligned, magnitude reads down the column rather than one
+    /// row at a time. It aligns the unit, not the decimal point, so a "400 B"
+    /// among kilobytes still sits one character right of its neighbours; true
+    /// decimal alignment would mean splitting the cell into a right-aligned
+    /// number and a left-aligned unit, as the transfer strip does.
+    ///
+    /// Modified gains nothing from it, since a timestamp is a fixed sixteen
+    /// characters and its two edges are the same edge. Kind is words.
+    fn aligns_right(self) -> bool {
+        matches!(self, Column::Size)
+    }
+
     /// Whether the column prints figures, and so is set in the numeric face.
     ///
     /// Kind is the odd one out: "Folder", "BIN", "Rust source" are words, and
@@ -2365,7 +2380,7 @@ impl DirPane {
         // Clickable header cell. The resize handles are siblings, not ancestors, so
         // dragging a divider never lands a click on the cell beside it. `width` is
         // `None` for the flexible Name column.
-        let head = |key: SortKey, label: &'static str, width: Option<Pixels>| {
+        let head = |key: SortKey, label: &'static str, width: Option<Pixels>, right: bool| {
             let indicator = (sort.key == key).then_some(match sort.dir {
                 SortDir::Ascending => "icons/file_icons/chevron_up.svg",
                 SortDir::Descending => "icons/file_icons/chevron_down.svg",
@@ -2381,6 +2396,9 @@ impl DirPane {
                 .gap_1()
                 .cursor_pointer()
                 .hover(|style| style.bg(hover_bg))
+                // Held to the same edge as the figures under it. The sort
+                // chevron follows the label, so it sits outermost.
+                .when(right, |this| this.justify_end())
                 .map(|this| match width {
                     Some(w) => this.w(w).flex_none(),
                     None => this.flex_1().min_w(px(NAME_MIN_WIDTH)),
@@ -2403,7 +2421,7 @@ impl DirPane {
             .border_color(colors.border)
             .text_xs()
             .text_color(content)
-            .child(head(SortKey::Name, "Name", None));
+            .child(head(SortKey::Name, "Name", None, false));
 
         Column::ALL.into_iter().fold(header, |header, column| {
             header
@@ -2412,6 +2430,7 @@ impl DirPane {
                     column.sort_key(),
                     column.label(),
                     Some(self.widths.get(column)),
+                    column.aligns_right(),
                 ))
         })
     }
@@ -2484,13 +2503,15 @@ impl DirPane {
         let cell = move |width: Pixels,
                           text: String,
                           numeric: Option<gpui::SharedString>,
-                          counting: bool| {
+                          counting: bool,
+                          right: bool| {
             let body = div()
                 .w(width)
                 .flex_none()
                 .px_2()
                 .truncate()
                 .text_color(content)
+                .when(right, |el| el.text_right())
                 // Digit under digit down the column, and the same shape as the
                 // footer totalling them below.
                 .when_some(numeric, |el, family| el.font_family(family));
@@ -2502,7 +2523,13 @@ impl DirPane {
             // as churn. It breathes instead: enough to say the row is waiting
             // on something, not enough to pull the eye down a column of them.
             // gpui holds it still for anyone who has asked for reduced motion.
-            body.child(
+            // The bar is an element rather than text, so it takes the cell's
+            // alignment from a flex rule rather than from `text_right`.
+            body.flex()
+                .flex_row()
+                .items_center()
+                .when(right, |el| el.justify_end())
+                .child(
                 div()
                     .w(px(COUNTING_BAR_WIDTH))
                     .h(px(COUNTING_BAR_HEIGHT))
@@ -2518,8 +2545,8 @@ impl DirPane {
                             )),
                         |bar, delta| bar.opacity(delta),
                     ),
-            )
-            .into_any_element()
+                )
+                .into_any_element()
         };
 
         // Resolved before the element is built: `use<>` forbids capturing `self`,
@@ -2535,6 +2562,7 @@ impl DirPane {
                 column.value(entry, folder_bytes),
                 column.is_numeric().then(|| numeric.clone()).flatten(),
                 counting && column == Column::Size,
+                column.aligns_right(),
             )
         });
 
@@ -2616,8 +2644,9 @@ impl DirPane {
 
         cells
             .into_iter()
-            .fold(row, |row, (width, text, numeric, counting)| {
-                row.child(spacer()).child(cell(width, text, numeric, counting))
+            .fold(row, |row, (width, text, numeric, counting, right)| {
+                row.child(spacer())
+                    .child(cell(width, text, numeric, counting, right))
             })
             .when(is_dir, |row| {
                 let target = path.clone();
