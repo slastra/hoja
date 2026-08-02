@@ -278,7 +278,9 @@ through the virtual keyboard and pointer protocols, and the X11 one through
 `xdotool`, both scoped to a display that is not the one you are looking at.
 
 Prefer the sway harness, which exercises the Wayland backend hoja actually
-ships on; it needs `sway`, `grim`, `wtype` and `wlrctl`. The X11 one needs only
+ships on; it needs `sway`, `grim`, `wtype` and `wlrctl`. Nested, its window
+presents to the host as class `wlroots`, so float it at a fixed size or a tiling
+compositor will stretch it and move the rows a test clicks. The X11 one needs only
 `Xvfb`, `xdotool` and ImageMagick, but tests gpui's X11 backend instead — so it
 cannot say anything about drag and drop, the clipboard, or window state.
 

@@ -14,6 +14,16 @@
 # Nested rather than headless, so the sway window sits on your desktop and the
 # test can be watched. Set HOJA_TEST_HEADLESS=1 to run it invisibly instead.
 #
+# Nested, the window presents to the host as class `wlroots`, and a tiling host
+# will stretch it to whatever slot it lands in — which moves every row the test
+# clicks. Float it at a fixed size. Under Hyprland:
+#
+#   hl.window_rule({ name = "nested-wlroots", match = { class = "^(wlroots)$" },
+#                    float = true, size = "1400 900", center = true })
+#
+# Without a rule the harness still runs; it reads the real geometry back rather
+# than assuming, so only the stability of the coordinates suffers.
+#
 # The point of sway here is that all three tools scope to the nested compositor
 # rather than to whatever the real session has focused:
 #
