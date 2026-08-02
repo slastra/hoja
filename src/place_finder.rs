@@ -206,9 +206,10 @@ impl Render for PlaceFinder {
             }),
         )
         .track_scroll(&self.picker.scroll)
+        .h(picker::list_height(&self.picker, ROW_HEIGHT))
         .into_any_element();
 
-        picker::shell(&self.picker, ROW_HEIGHT, "No matching places", list, cx)
+        picker::shell(&self.picker, "No matching places", list, cx)
             .track_focus(&self.focus_handle)
             .key_context(picker::KEY_CONTEXT)
             .on_action(cx.listener(Self::select_next))

@@ -13,7 +13,7 @@
 
 use fuzzy_nucleo::{Case, LengthPenalty, StringMatch, StringMatchCandidate, match_strings};
 use gpui::{
-    AnyElement, App, Div, Entity, HighlightStyle, SharedString, StyledText, TextStyle,
+    AnyElement, App, Div, Entity, HighlightStyle, Pixels, SharedString, StyledText, TextStyle,
     UniformListScrollHandle, Window, actions, div, prelude::*, px,
 };
 use theme::ActiveTheme;
@@ -79,13 +79,22 @@ impl PickerState {
     }
 }
 
+/// The height a list of these matches must be given.
+///
+/// It has to go on the `uniform_list` itself, never on a container around it.
+/// The list virtualizes, so it builds however many rows fit *its own* height; a
+/// definite height on a parent tells it nothing. A list with no height of its
+/// own therefore draws no rows at all while the parent still reserves the
+/// space, which reads as an empty modal rather than as a layout mistake.
+pub fn list_height(state: &PickerState, row_height: f32) -> Pixels {
+    px(row_height * (state.matches.len() as f32).min(MAX_VISIBLE_ROWS))
+}
+
 /// The modal: query field on top, rows or an empty message below.
 ///
-/// `row_height` is the caller's, because a command row and a place row are
-/// different heights, and the list must be sized from it.
+/// The list arrives already sized, via `list_height` — see why there.
 pub fn shell(
     state: &PickerState,
-    row_height: f32,
     empty_message: &'static str,
     list: AnyElement,
     cx: &App,
@@ -124,11 +133,7 @@ pub fn shell(
                     .child(empty_message),
             )
         })
-        .when(count > 0, |el| {
-            // uniform_list virtualizes, so it needs a definite height rather
-            // than a maximum: given only a max it renders nothing.
-            el.child(div().h(px(row_height * (count as f32).min(MAX_VISIBLE_ROWS))).child(list))
-        })
+        .when(count > 0, |el| el.child(list))
 }
 
 /// A row's chrome. The caller fills in what the row says.
