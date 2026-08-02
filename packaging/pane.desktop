@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=pane
+GenericName=File Manager
+Comment=Browse files in splittable panes
+Exec=pane %u
+Icon=pane
+Terminal=false
+Categories=System;FileTools;FileManager;
+MimeType=inode/directory;
+Keywords=file;manager;browser;explorer;folder;
+StartupNotify=true
+# The Wayland app id, so the compositor matches the window to this entry.
+StartupWMClass=pane

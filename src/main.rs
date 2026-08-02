@@ -58,7 +58,13 @@ fn parse_args() -> Args {
         match arg.as_str() {
             "--theme" => theme = args.next(),
             "--list-themes" => list_themes = true,
-            other => dir = Some(PathBuf::from(other)),
+            // A desktop launcher hands a file manager `file:///…` rather than
+            // a path, so accept both.
+            other => {
+                dir = Some(
+                    clipboard::uri_to_path(other).unwrap_or_else(|| PathBuf::from(other)),
+                )
+            }
         }
     }
 
