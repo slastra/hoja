@@ -139,6 +139,8 @@ pub struct Workspace {
     /// after startup — the panes own the live values.
     state: State,
     save_task: Option<Task<()>>,
+    /// Window-bounds and app-quit hooks; held so they stay registered.
+    _lifecycle: Vec<Subscription>,
     settings_task: Option<Task<()>>,
     poll_task: Option<Task<()>>,
     /// Conflicts wait here while one dialog is up; one worker blocks per job,
@@ -156,7 +158,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let view = config::initial_view(&settings, &state);
+        let view = config::initial_view(&settings, &state, config::newer());
         let widths = state.column_widths.clone();
         let pane = cx.new(|cx| {
             let mut pane = DirPane::new(start_dir, view, window, cx);
@@ -183,6 +185,31 @@ impl Workspace {
             poll_task: None,
             pending_conflicts: VecDeque::new(),
             conflict_dialog: None,
+            _lifecycle: vec![
+                // `state.window` was read at startup and never written, so the
+                // size was promised and never remembered. The observer fires on
+                // move as well as resize; `remember_view` coalesces either way.
+                cx.observe_window_bounds(window, |this, window, cx| {
+                    let size = window.viewport_size();
+                    this.state.window = Some(config::WindowState {
+                        width: size.width.into(),
+                        height: size.height.into(),
+                    });
+                    this.remember_view(cx);
+                }),
+                // The throttled write is a `Task` this entity owns, so closing
+                // the window drops it — cancelling the timer before it ever
+                // fires. Anything toggled inside the last SAVE_DEBOUNCE window
+                // went with it. Write inline here instead; there is no executor
+                // left to defer to.
+                //
+                // Release, not `on_app_quit`: closing the last window drops the
+                // window, which releases this entity, and only *then* quits the
+                // app. A quit observer therefore runs when the workspace is
+                // already gone, and its callback — which needs `&mut self` —
+                // never fires at all. Measured: the toggle was still lost.
+                cx.on_release(|this, _| this.state.save_now()),
+            ],
         };
         workspace.watch_settings(cx);
         workspace
@@ -637,13 +664,13 @@ impl Workspace {
     fn select_in_panes(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         for pane in &self.panes {
             let pane_dir = pane.read(cx).dir().to_path_buf();
-            let names: Vec<String> = paths
+            let landed: Vec<PathBuf> = paths
                 .iter()
                 .filter(|p| p.parent() == Some(pane_dir.as_path()))
-                .map(|p| file_label(p))
+                .cloned()
                 .collect();
-            if !names.is_empty() {
-                pane.update(cx, |pane, _| pane.select_on_next_load(names));
+            if !landed.is_empty() {
+                pane.update(cx, |pane, _| pane.select_on_next_load(landed));
             }
         }
     }
@@ -658,6 +685,16 @@ impl Workspace {
         if matches!(self.modal, Some(Modal::Palette(_))) {
             self.close_modal(window, cx);
             return;
+        }
+
+        // Any *other* modal — the place finder — still holds focus here, and
+        // `available_actions` resolves against whatever is focused rather than
+        // against the handle it is passed. Opening the palette over the finder
+        // therefore enumerated the finder's dispatch path, and every pane
+        // command was missing from the list. Closing it first hands focus back
+        // to the pane.
+        if self.modal.is_some() {
+            self.close_modal(window, cx);
         }
 
         // Captured before the palette takes focus: the action list, the key
@@ -815,9 +852,13 @@ impl Workspace {
             eprintln!("[hoja] theme {name:?} not available: {err}");
         }
 
-        // The edit is the newest answer, so it beats what was remembered — pass
-        // an empty state rather than the stored one.
-        let view = config::initial_view(&settings, &State::default());
+        // The file was just written, so it is the newest answer and wins where
+        // it has one. Where it has none — a file that only sets a theme — what
+        // was remembered still stands, which is why the real state goes in here
+        // and not an empty one. Passing `State::default()` reset every pane to
+        // the compiled defaults on any settings edit, and then wrote the reset
+        // out through `remember_view` below.
+        let view = config::initial_view(&settings, &self.state, config::Winner::Settings);
         for pane in &self.panes {
             pane.update(cx, |pane, cx| pane.set_view_settings(view, cx));
         }

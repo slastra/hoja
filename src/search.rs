@@ -105,15 +105,18 @@ pub fn spawn(root: PathBuf, query: String, show_hidden: bool) -> Search {
                         // handful of hits need size and time — asking for
                         // metadata up front cost 8.9s over 2.5M entries against
                         // 1.7s for this.
-                        let is_dir = entry
-                            .file_type()
-                            .map(|t| {
-                                t.is_dir()
-                                    || (t.is_symlink()
-                                        && entry.path().metadata().is_ok_and(|m| m.is_dir()))
-                            })
-                            .unwrap_or(false);
-                        if is_dir {
+                        //
+                        // A symlink is never followed, which is what `find`,
+                        // `fd`, and `rg` all do by default and for the same
+                        // reason: a link that points at an ancestor makes the
+                        // walk a cycle, and this walk has no visited set to
+                        // catch one. `~/.wine/dosdevices/z: -> /` ships that
+                        // cycle into a great many home directories, and
+                        // searching one used to spin a core and grow the queue
+                        // until the process was killed. The link itself still
+                        // matches and is still listed; only descending into it
+                        // is refused.
+                        if entry.file_type().is_ok_and(|t| t.is_dir()) {
                             queue.push_back(entry.path());
                         }
                         if !fs::matches_filter(&name, &query) {
@@ -194,6 +197,30 @@ mod tests {
         std::fs::write(root.join("a/unrelated.md"), "x").unwrap();
         std::fs::write(root.join(".hidden/secret-note.txt"), "x").unwrap();
         root
+    }
+
+    #[test]
+    fn a_symlink_cycle_terminates() {
+        // `~/.wine/dosdevices/z: -> /` is the one that ships with wine, but any
+        // link pointing at an ancestor does it. Following one makes the walk
+        // endless; this asserts it finishes, and that the link is still listed
+        // as a result even though it is not descended into.
+        let root = fixture("cycle");
+        std::os::unix::fs::symlink(&root, root.join("a/note-loop")).unwrap();
+
+        let found = wait(&spawn(root.clone(), "note".into(), false));
+        assert!(
+            found.contains(&"a/note-loop".to_string()),
+            "the link is a match in its own right: {found:?}"
+        );
+        assert!(
+            !found.iter().any(|hit| hit.contains("note-loop/")),
+            "but nothing below it was walked: {found:?}"
+        );
+        assert!(
+            found.len() < 10,
+            "and the walk terminated rather than cycling: {found:?}"
+        );
     }
 
     #[test]

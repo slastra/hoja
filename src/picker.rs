@@ -60,6 +60,24 @@ impl PickerState {
         self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
     }
 
+    /// Re-run the match, but leave the highlight on the entry it is already on.
+    ///
+    /// For a list that grows *underneath* the user rather than one they
+    /// retyped: the place finder splices in volumes when a slow `lsblk`
+    /// returns, and a plain `rematch` would send the highlight back to the top
+    /// — moving it out from under an enter the user is in the middle of
+    /// pressing.
+    pub fn rematch_keeping_selection(&mut self, query: &str) {
+        let held = self.matches.get(self.selected).map(|m| m.candidate_id);
+        self.rematch(query);
+        if let Some(ix) = held.and_then(|id| {
+            self.matches.iter().position(|m| m.candidate_id == id)
+        }) {
+            self.selected = ix;
+            self.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
+        }
+    }
+
     /// Wrapping: a picker list is short, and holding a key down should come
     /// back around rather than stick at the end.
     pub fn move_selection(&mut self, delta: isize) {

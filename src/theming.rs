@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -70,9 +71,33 @@ pub fn load_user_themes(cx: &mut App) {
 
 /// Switch the active theme by name. This is Zed's `reload_theme` in two lines — a global
 /// swap plus a blunt full repaint, rather than per-view observation.
+/// The theme that is actually on screen.
+///
+/// The watcher below needs to know this, and it cannot be told once: a theme
+/// chosen through `settings.json` arrives long after the watcher is armed. A
+/// watcher holding the *startup* name re-applies that name on every theme-file
+/// change, so editing any theme file snapped the window back to whatever hoja
+/// started with.
+static ACTIVE: Mutex<Option<String>> = Mutex::new(None);
+
+fn set_active(name: &str) {
+    let mut active = ACTIVE.lock().unwrap_or_else(|err| err.into_inner());
+    *active = Some(name.to_string());
+}
+
+fn active() -> Option<String> {
+    ACTIVE
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone()
+}
+
 pub fn apply(name: &str, cx: &mut App) -> Result<()> {
     let theme = ThemeRegistry::global(cx).get(name)?;
     GlobalTheme::update_theme(cx, theme);
+    // Recorded only once it resolved, so a bad name in settings.json leaves the
+    // working theme in place rather than pointing the watcher at nothing.
+    set_active(name);
     cx.refresh_windows();
     Ok(())
 }
@@ -85,10 +110,11 @@ pub fn list_names(cx: &mut App) -> Vec<String> {
         .collect()
 }
 
-/// Watch the user theme directory and re-apply `active` whenever a file changes.
+/// Watch the user theme directory and re-apply the current theme whenever a
+/// file in it changes.
 ///
 /// Only colour themes are watched, matching Zed — icon themes have no equivalent.
-pub fn watch_user_themes(active: String, cx: &mut App) {
+pub fn watch_user_themes(cx: &mut App) {
     let dir = themes_dir();
     if std::fs::create_dir_all(&dir).is_err() {
         return;
@@ -132,9 +158,12 @@ pub fn watch_user_themes(active: String, cx: &mut App) {
                 .await;
             crate::config::drain_changes(&rx);
 
-            let active = active.clone();
             cx.update(|cx| {
                 load_user_themes(cx);
+                // Read now, not when the watcher was armed.
+                let Some(active) = active() else {
+                    return;
+                };
                 if let Err(err) = apply(&active, cx) {
                     eprintln!("[hoja] theme reload failed: {err}");
                 }

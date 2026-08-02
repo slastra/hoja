@@ -102,7 +102,7 @@ impl PlaceFinder {
                         .map(|(ix, place)| candidate((base + ix, place))),
                 );
                 this.places.extend(volumes);
-                this.rematch(cx);
+                this.rematch_keeping_selection(cx);
             });
         })
         .detach();
@@ -115,6 +115,13 @@ impl PlaceFinder {
     fn rematch(&mut self, cx: &mut Context<Self>) {
         let query = self.picker.query.read(cx).text().to_string();
         self.picker.rematch(query.trim());
+        cx.notify();
+    }
+
+    /// The same, for the volumes arriving late — see `rematch_keeping_selection`.
+    fn rematch_keeping_selection(&mut self, cx: &mut Context<Self>) {
+        let query = self.picker.query.read(cx).text().to_string();
+        self.picker.rematch_keeping_selection(query.trim());
         cx.notify();
     }
 

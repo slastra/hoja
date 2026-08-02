@@ -109,12 +109,14 @@ fn main() {
 
         // --theme beats $HOJA_THEME beats settings.json. Whichever wins, its
         // themes/ directory is watched so an edit applies without a restart.
-        if let Some(name) = args.theme.clone().or_else(|| settings.theme.clone()) {
-            match theming::apply(&name, cx) {
-                Ok(()) => theming::watch_user_themes(name, cx),
-                Err(err) => eprintln!("[hoja] theme {name:?} not available: {err}"),
-            }
+        if let Some(name) = args.theme.clone().or_else(|| settings.theme.clone())
+            && let Err(err) = theming::apply(&name, cx)
+        {
+            eprintln!("[hoja] theme {name:?} not available: {err}");
         }
+        // Armed unconditionally: it re-applies whatever theme is current, so it
+        // is useful even when the default one is in force.
+        theming::watch_user_themes(cx);
 
         // All bindings are scoped to the "DirPane" key context, which each pane declares
         // via `.key_context(...)` on a div that also calls `.track_focus(...)`. Both are

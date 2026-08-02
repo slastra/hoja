@@ -12,11 +12,16 @@
 //!
 //! Settings seed, state remembers. A new install takes its defaults from
 //! `settings.json`; toggling hidden files in the menu records the new value in
-//! state, so it survives a restart. Editing `settings.json` wins, because the
-//! file is watched and a change applies over whatever was remembered — the
-//! hand-written answer is always the one that takes effect last.
+//! state, so it survives a restart.
+//!
+//! Where both files answer, the one written more recently wins — see `newer`.
+//! While hoja is running that is always the settings file, since it is watched
+//! and a save applies immediately. While hoja is closed it is whichever the
+//! user actually edited last, which is the point: state cannot be allowed to
+//! win unconditionally, or one column drag would make the `view` block of
+//! `settings.json` inert forever.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui::{App, prelude::*};
@@ -220,23 +225,94 @@ impl State {
         let Ok(text) = serde_json_lenient::to_string_pretty(self) else {
             return;
         };
-        cx.background_spawn(async move {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(path, text);
-        })
-        .detach();
+        cx.background_spawn(async move { write_atomically(&path, &text) })
+            .detach();
+    }
+
+    /// The same write, on the calling thread.
+    ///
+    /// Quitting drops the background executor along with everything else, so the
+    /// last write — the one carrying whatever was toggled in the final moments —
+    /// has to happen inline or not at all.
+    pub fn save_now(&self) {
+        let (Some(path), Ok(text)) = (state_file(), serde_json_lenient::to_string_pretty(self))
+        else {
+            return;
+        };
+        write_atomically(&path, &text);
     }
 }
 
-/// The view a new pane starts with: what you configured, overridden by what you
-/// last toggled.
-pub fn initial_view(settings: &Settings, state: &State) -> ViewSettings {
+/// Write through a temporary file in the same directory, then rename over the
+/// target.
+///
+/// `fs::write` truncates first, so a crash or a kill between the truncation and
+/// the write leaves an empty or half-written file — and `State::load` treats a
+/// file it cannot parse as absent, so the failure is silent and everything
+/// remembered is gone. `rename` within one directory is atomic, so a reader
+/// sees either the old file or the new one.
+fn write_atomically(path: &Path, text: &str) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    // The pid keeps two hoja processes from writing the same temporary file and
+    // renaming each other's half-written contents into place.
+    let temp = parent.join(format!(".state.json.{}", std::process::id()));
+    if std::fs::write(&temp, text).is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return;
+    }
+    if std::fs::rename(&temp, path).is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+}
+
+/// Which file's answer wins where both files have one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Winner {
+    Settings,
+    State,
+}
+
+fn pick<T>(state: Option<T>, settings: Option<T>, winner: Winner) -> Option<T> {
+    match winner {
+        Winner::State => state.or(settings),
+        Winner::Settings => settings.or(state),
+    }
+}
+
+/// Whichever file was written more recently.
+///
+/// State cannot simply win, which is what it used to do: `remember_view` writes
+/// all three view fields at once, and a single column drag reaches it — so
+/// after one drag, state has a concrete answer for everything and the `view`
+/// block of `settings.json` is inert forever. Editing that file with hoja
+/// closed would then do nothing at all, silently.
+///
+/// Modification time is the honest tiebreak, and it is the one the README
+/// documents: the more recent answer applies. A missing file loses; two files
+/// that are missing or unreadable leave state ahead, which is the startup case
+/// where nothing has been configured.
+pub fn newer() -> Winner {
+    let mtime = |path: Option<PathBuf>| {
+        path.and_then(|path| std::fs::metadata(path).ok())
+            .and_then(|meta| meta.modified().ok())
+    };
+    match (mtime(settings_file()), mtime(state_file())) {
+        (Some(settings), Some(state)) if settings > state => Winner::Settings,
+        (Some(_), None) => Winner::Settings,
+        _ => Winner::State,
+    }
+}
+
+/// The view a new pane starts with, from the two files and whichever of them
+/// answered last.
+pub fn initial_view(settings: &Settings, state: &State, winner: Winner) -> ViewSettings {
     let default = ViewSettings::default();
-    let sort = state
-        .sort
-        .or(settings.view.sort)
+    let sort = pick(state.sort, settings.view.sort, winner)
         .map(|s| Sort {
             key: s.key.into(),
             dir: s.direction.into(),
@@ -245,13 +321,9 @@ pub fn initial_view(settings: &Settings, state: &State) -> ViewSettings {
 
     ViewSettings {
         sort,
-        show_hidden: state
-            .show_hidden
-            .or(settings.view.show_hidden)
+        show_hidden: pick(state.show_hidden, settings.view.show_hidden, winner)
             .unwrap_or(default.show_hidden),
-        folders_first: state
-            .folders_first
-            .or(settings.view.folders_first)
+        folders_first: pick(state.folders_first, settings.view.folders_first, winner)
             .unwrap_or(default.folders_first),
     }
 }
@@ -296,7 +368,7 @@ mod tests {
         assert_eq!(settings.theme.as_deref(), Some("Rosé Pine"));
         assert!(settings.view.show_hidden.is_none(), "unset stays unset");
 
-        let view = initial_view(&settings, &State::default());
+        let view = initial_view(&settings, &State::default(), Winner::State);
         assert_eq!(view, ViewSettings::default(), "and falls back to the default");
     }
 
@@ -323,9 +395,29 @@ mod tests {
             ..State::default()
         };
 
-        let view = initial_view(&settings, &state);
+        let view = initial_view(&settings, &state, Winner::State);
         assert!(view.show_hidden, "the toggle you last flipped wins");
         assert!(!view.folders_first, "what you never toggled stays configured");
+
+        // The other way round: the settings file is the newer of the two, so
+        // what it says beats what was remembered — and where it says nothing,
+        // the remembered value still stands.
+        let view = initial_view(&settings, &state, Winner::Settings);
+        assert!(!view.show_hidden, "an edit made while hoja was closed applies");
+        assert!(!view.folders_first);
+
+        let state = State {
+            sort: Some(SortSetting {
+                key: SortKey::Size.into(),
+                direction: SortDir::Descending.into(),
+            }),
+            ..State::default()
+        };
+        let view = initial_view(&settings, &state, Winner::Settings);
+        assert!(
+            matches!(view.sort.key, SortKey::Size),
+            "the settings file has no sort to override it with"
+        );
     }
 
     #[test]
