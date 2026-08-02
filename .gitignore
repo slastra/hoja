@@ -1,7 +1,11 @@
 /target
 
-# makepkg works in place: it clones the source into src/, stages the package
-# under pkg/, and leaves the built tarballs beside the PKGBUILD.
+# makepkg works in place: it caches a bare clone of the source under the
+# package's own name, checks it out into src/, stages the package under pkg/,
+# and leaves the built tarballs beside the PKGBUILD. It also rewrites pkgver=
+# in the PKGBUILD after running pkgver() — that one has to be reverted by hand,
+# since the file itself is tracked.
+/packaging/hoja/
 /packaging/src/
 /packaging/pkg/
 /packaging/*.pkg.tar.zst
