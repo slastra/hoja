@@ -4,6 +4,7 @@ mod config;
 mod command_palette;
 mod conflict_dialog;
 mod dir_pane;
+mod failure_report;
 mod file_menu;
 mod history;
 mod fs;
@@ -212,6 +213,11 @@ fn main() {
             KeyBinding::new("enter", conflict_dialog::Confirm, Some("dialog")),
             // Context-menu navigation, scoped to the "menu" key context.
             KeyBinding::new("escape", MenuCancel, Some("menu")),
+            KeyBinding::new(
+                "escape",
+                failure_report::Dismiss,
+                Some(failure_report::KEY_CONTEXT),
+            ),
             KeyBinding::new("enter", MenuConfirm, Some("menu")),
             KeyBinding::new("down", SelectNext, Some("menu")),
             KeyBinding::new("up", SelectPrevious, Some("menu")),

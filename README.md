@@ -71,6 +71,10 @@ for important data.
   got, how fast it is going, and how much longer it has: `365 MB / 680 MB ·
   82 MB/s · 4s left`. hoja counts the files before it starts copying, so the
   bar is true from the first file rather than jumping at the end.
+- **What failed, and why.** A transfer that could not copy everything keeps its
+  row on the strip with a warning icon and a count. Click the icon for the list:
+  every file that failed, what went wrong with it, and the directory they were
+  all under.
 - **Notifications.** A transfer that runs for more than a few seconds tells
   your desktop when it finishes, and a failed one tells you whatever its
   length. hoja uses the freedesktop notification service, so the notification

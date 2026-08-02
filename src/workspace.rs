@@ -17,6 +17,8 @@ use crate::command_palette::{self, CommandPalette};
 use crate::place_finder::{self, PlaceEvent, PlaceFinder};
 use crate::conflict_dialog::ConflictDialog;
 use crate::dir_pane::{DirPane, PaneEvent};
+use crate::failure_report::{Failure, FailureReport};
+use crate::icon::Icon;
 use crate::config::{self, Settings, State};
 use crate::notifications;
 use crate::fs::ViewSettings;
@@ -80,6 +82,7 @@ const JOB_POLL_INTERVAL: Duration = Duration::from_millis(120);
 enum Modal {
     Palette(Entity<CommandPalette>),
     Places(Entity<PlaceFinder>),
+    Failures(Entity<FailureReport>),
 }
 
 impl Modal {
@@ -87,9 +90,19 @@ impl Modal {
         match self {
             Modal::Palette(palette) => palette.clone().into_any_element(),
             Modal::Places(finder) => finder.clone().into_any_element(),
+            Modal::Failures(report) => report.clone().into_any_element(),
         }
     }
 }
+
+/// How many failures a job keeps for the report.
+///
+/// One per file, and a job can fail on every file it touches: copying a source
+/// tree onto exFAT produced 2,619, one for each symlink the filesystem cannot
+/// represent. Past a screenful the list stops answering "which files?" and
+/// starts answering "what went wrong?", which the first thousand answer just as
+/// well. The count above the list stays exact.
+const MAX_RETAINED_FAILURES: usize = 1000;
 
 struct PendingConflict {
     job: JobId,
@@ -105,8 +118,10 @@ struct JobView {
     /// Source parent dirs, refreshed after moves.
     src_parents: Vec<PathBuf>,
     done: Option<Outcome>,
+    /// How many files failed, which is `failures.len()` until the cap.
     errors: usize,
-    last_error: Option<String>,
+    /// What failed, for the report the warning icon opens.
+    failures: Vec<Failure>,
     /// When the transfer started, so a job short enough to have been watched
     /// does not raise a notification about it — see `notifications::NOTIFY_AFTER`.
     started: std::time::Instant,
@@ -563,7 +578,7 @@ impl Workspace {
                     src_parents,
                     done: None,
                     errors: 0,
-                    last_error: None,
+                    failures: Vec::new(),
                     started: std::time::Instant::now(),
                     rate: None,
                     last_sample: (std::time::Instant::now(), 0),
@@ -629,16 +644,31 @@ impl Workspace {
                     }
                     JobEvent::FileError { path, error } => {
                         job.errors += 1;
-                        job.last_error = Some(format!("{}: {error}", path.display()));
+                        if job.failures.len() < MAX_RETAINED_FAILURES {
+                            job.failures.push(Failure {
+                                path,
+                                reason: error.to_string(),
+                            });
+                        }
                     }
                     JobEvent::Warning { .. } => {}
                     JobEvent::Done(summary) => {
                         job.done = Some(summary.outcome);
                         finished_jobs.push(job_id);
+                        // The summary is the authoritative list — it holds
+                        // failures raised before the strip started polling, and
+                        // the walk's own, which arrive as no `FileError` at
+                        // all. Rebuilding from it cannot double-count.
                         job.errors = summary.errors.len();
-                        if let Some((path, error)) = summary.errors.first() {
-                            job.last_error = Some(format!("{}: {error}", path.display()));
-                        }
+                        job.failures = summary
+                            .errors
+                            .iter()
+                            .take(MAX_RETAINED_FAILURES)
+                            .map(|(path, error)| Failure {
+                                path: path.clone(),
+                                reason: error.to_string(),
+                            })
+                            .collect();
                         finished_dirs.push(job.dest_dir.clone());
                         finished_dirs.extend(job.src_parents.iter().cloned());
                         announce.push((
@@ -1129,6 +1159,31 @@ impl Workspace {
         }));
     }
 
+    /// The warning icon on a job row: everything that job could not transfer.
+    fn show_failures(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(job) = self.jobs.get(ix) else { return };
+        // Copied rather than borrowed by index: the row underneath can be
+        // dismissed while the report is open, and a still-running job keeps
+        // collecting. Either would move the ground under a live index.
+        let (label, failures, total) = (
+            job.handle.label().to_string(),
+            job.failures.clone(),
+            job.errors,
+        );
+
+        let report = cx.new(|cx| FailureReport::new(label, failures, total, cx));
+        cx.subscribe_in(&report, window, |this, _, _: &DismissEvent, window, cx| {
+            this.close_modal(window, cx)
+        })
+        .detach();
+
+        // Nothing inside takes text, so the modal holds focus itself — without
+        // this escape would go to the pane behind it.
+        window.focus(&report.focus_handle(cx), cx);
+        self.modal = Some(Modal::Failures(report));
+        cx.notify();
+    }
+
     fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.modal = None;
         window.focus(&self.active_pane.focus_handle(cx), cx);
@@ -1212,8 +1267,11 @@ impl Workspace {
 
                 let status = match (job.done, phase) {
                     (Some(Outcome::Cancelled), _) => Err("cancelled".to_string()),
+                    // Which files failed is the icon's job; the row has room
+                    // for how many.
+                    (Some(_), _) if job.errors == 1 => Err("1 failed".to_string()),
                     (Some(_), _) if job.errors > 0 => {
-                        Err(job.last_error.clone().unwrap_or_else(|| "errors".into()))
+                        Err(format!("{} failed", notifications::count(job.errors as u64)))
                     }
                     (Some(_), _) => Err("done".to_string()),
                     // The count climbs while it runs, which is the useful part:
@@ -1342,6 +1400,25 @@ impl Workspace {
                                 .child(value(LEFT_VALUE_W, m.left.value))
                                 .child(unit(LEFT_UNIT_W, m.left.unit)),
                         }
+                    })
+                    // Only once something has failed, so the row is otherwise
+                    // exactly as wide as it was.
+                    .when(job.errors > 0, |el| {
+                        el.child(
+                            div()
+                                .id(("job-errors", ix))
+                                .flex_none()
+                                .px_1()
+                                .cursor_pointer()
+                                .hover(|s| s.bg(colors.element_hover))
+                                .child(Icon::from_path(
+                                    "icons/file_icons/warning.svg",
+                                    error_color,
+                                ))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.show_failures(ix, window, cx)
+                                })),
+                        )
                     })
                     .child(
                         div()
