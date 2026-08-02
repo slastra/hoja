@@ -196,7 +196,7 @@ pub fn spawn_job(spec: JobSpec) -> std::io::Result<JobHandle> {
     let (events_tx, events_rx) = mpsc::channel();
 
     let thread = std::thread::Builder::new()
-        .name(format!("pane-transfer-{}", id.0))
+        .name(format!("hoja-transfer-{}", id.0))
         .spawn({
             let progress = progress.clone();
             let cancel = cancel.clone();
