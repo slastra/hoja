@@ -49,6 +49,9 @@ pub enum Phase {
     AwaitingConflict = 2,
     Flushing = 3,
     Finished = 4,
+    /// Counting the tree, before a byte is copied. Appended rather than
+    /// inserted: the value crosses to the UI as a raw u8.
+    Scanning = 5,
 }
 
 impl Phase {
@@ -58,13 +61,16 @@ impl Phase {
             1 => Phase::Transferring,
             2 => Phase::AwaitingConflict,
             3 => Phase::Flushing,
+            5 => Phase::Scanning,
             _ => Phase::Finished,
         }
     }
 }
 
-/// All-atomic; safe to sample from any thread at any cadence. Totals GROW during
-/// the walk (one-walk rule) — `walk_complete` tells the UI when the denominator
+/// All-atomic; safe to sample from any thread at any cadence. Totals are settled
+/// by the scan before the transfer starts, except where the scan is skipped (see
+/// `should_scan`), in which case they grow as the walk finds things —
+/// `walk_complete` tells the UI when the denominator
 /// is final, so it can render an indeterminate bar before that.
 #[derive(Debug, Default)]
 pub struct Progress {
@@ -243,6 +249,9 @@ struct Worker {
     files_copied: u64,
     files_skipped: u64,
     dest_mount: Option<MountKey>,
+    /// The scan ran and finished, so the totals are final and the transfer must
+    /// not add to them again.
+    scanned: bool,
 }
 
 impl Worker {
@@ -268,45 +277,117 @@ impl Worker {
             files_copied: 0,
             files_skipped: 0,
             dest_mount: None,
+            scanned: false,
         }
     }
 
-    fn run(&mut self) {
-        self.progress.set_phase(Phase::Transferring);
-        self.dest_mount = sys::mount_key(&self.spec.dest_dir).ok();
-
-        // If every top-level source is a plain file, totals are exact upfront.
-        let mut all_plain = true;
-        for src in &self.spec.sources.clone() {
-            match std::fs::symlink_metadata(src) {
-                Ok(m) if m.is_file() => {
-                    self.progress.files_total.fetch_add(1, Ordering::Relaxed);
-                    self.progress
-                        .bytes_total
-                        .fetch_add(m.len(), Ordering::Relaxed);
-                }
-                Ok(_) => all_plain = false,
-                Err(_) => all_plain = false,
-            }
+    /// Whether to count the tree before transferring it.
+    ///
+    /// Worth it whenever bytes will actually be copied: the walk costs about a
+    /// second and a half for 86,000 files against a copy of the same tree that
+    /// costs minutes, and it buys a real denominator — without it the progress
+    /// label reads `1.2 MB / …` for the entire job and the bar never leaves
+    /// zero, because the walk only completes when the copy does.
+    ///
+    /// Not worth it for a move that stays on one mount: `process_dir` renames
+    /// the whole subtree in a single call, so scanning would be the only slow
+    /// part of an instant operation. The mount check is one statx per source.
+    fn should_scan(&self) -> bool {
+        if self.spec.op != Operation::Move {
+            return true;
         }
-        if all_plain {
-            self.progress.walk_complete.store(true, Ordering::Relaxed);
+        let Some(dest_mount) = self.dest_mount else {
+            return true;
+        };
+        !self
+            .spec
+            .sources
+            .iter()
+            .all(|src| sys::mount_key(src).is_ok_and(|key| key == dest_mount))
+    }
+
+    /// Count what the transfer is about to do. Must agree with what the
+    /// transfer then reports as done, or the bar cannot reach the end.
+    ///
+    /// Errors are swallowed rather than queued: this is a counting pass, and
+    /// the transfer that follows will hit the same path and report it properly.
+    /// A miscount is not worth a duplicate error.
+    fn scan(&mut self, src: &Path) -> Step {
+        if self.check_pause_cancel() {
+            return Step::Cancelled;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(src) else {
+            return Step::Ok;
+        };
+
+        // symlink_metadata, not metadata: a symlink is recreated, never read, so
+        // it is one file and no bytes. Following it here would add its target's
+        // size to a total that the transfer never counts towards done — and
+        // node_modules is full of them, so the bar would stop short every time.
+        if meta.file_type().is_symlink() {
+            self.progress.files_total.fetch_add(1, Ordering::Relaxed);
+            return Step::Ok;
         }
 
-        let mut cancelled = false;
-        for src in self.spec.sources.clone() {
-            let Some(name) = src.file_name() else {
-                self.queue_error(&src, Stage::Walk, std::io::Error::other("no file name"));
-                continue;
+        if meta.is_dir() {
+            let Ok(entries) = std::fs::read_dir(src) else {
+                return Step::Ok;
             };
-            let dest = self.spec.dest_dir.join(name);
-            match self.process_item(&src, &dest, all_plain) {
-                Step::Ok => {}
-                Step::Cancelled => {
+            for entry in entries.filter_map(Result::ok) {
+                if matches!(self.scan(&entry.path()), Step::Cancelled) {
+                    return Step::Cancelled;
+                }
+            }
+            return Step::Ok;
+        }
+
+        if meta.is_file() {
+            self.progress.files_total.fetch_add(1, Ordering::Relaxed);
+            self.progress
+                .bytes_total
+                .fetch_add(meta.len(), Ordering::Relaxed);
+        }
+        // Special files are neither counted nor copied; the transfer refuses them.
+        Step::Ok
+    }
+
+    fn run(&mut self) {
+        self.dest_mount = sys::mount_key(&self.spec.dest_dir).ok();
+        let mut cancelled = false;
+
+        if self.should_scan() {
+            self.progress.set_phase(Phase::Scanning);
+            for src in self.spec.sources.clone() {
+                if matches!(self.scan(&src), Step::Cancelled) {
                     cancelled = true;
                     break;
                 }
-                Step::Fatal => break,
+            }
+            // Only claim the totals are settled if the scan actually finished.
+            self.scanned = !cancelled;
+            if self.scanned {
+                // The denominator is final here, which is the whole point: the
+                // UI can draw a real bar from the first copied byte.
+                self.progress.walk_complete.store(true, Ordering::Relaxed);
+            }
+        }
+
+        if !cancelled {
+            self.progress.set_phase(Phase::Transferring);
+            for src in self.spec.sources.clone() {
+                let Some(name) = src.file_name() else {
+                    self.queue_error(&src, Stage::Walk, std::io::Error::other("no file name"));
+                    continue;
+                };
+                let dest = self.spec.dest_dir.join(name);
+                match self.process_item(&src, &dest, self.scanned) {
+                    Step::Ok => {}
+                    Step::Cancelled => {
+                        cancelled = true;
+                        break;
+                    }
+                    Step::Fatal => break,
+                }
             }
         }
         self.progress.walk_complete.store(true, Ordering::Relaxed);
@@ -392,7 +473,7 @@ impl Worker {
             return self.process_dir(src, dest, &src_meta);
         }
         if src_meta.is_file() {
-            if !counted {
+            if !counted && !self.scanned {
                 self.progress.files_total.fetch_add(1, Ordering::Relaxed);
                 self.progress
                     .bytes_total
@@ -420,7 +501,7 @@ impl Worker {
     }
 
     fn transfer_symlink(&mut self, src: &Path, dest: &Path, counted: bool) -> Step {
-        if !counted {
+        if !counted && !self.scanned {
             self.progress.files_total.fetch_add(1, Ordering::Relaxed);
         }
         let dest = match self.resolve_dest(src, dest) {
@@ -464,7 +545,9 @@ impl Worker {
             match sys::rename_no_replace(src, dest) {
                 Ok(()) => {
                     self.stats.renames += 1;
-                    self.progress.files_total.fetch_add(1, Ordering::Relaxed);
+                    if !self.scanned {
+                        self.progress.files_total.fetch_add(1, Ordering::Relaxed);
+                    }
                     self.progress.files_done.fetch_add(1, Ordering::Relaxed);
                     self.files_copied += 1;
                     return Step::Ok;
@@ -501,14 +584,17 @@ impl Worker {
                 return self.continue_or_fatal();
             }
         };
-        for entry in &entries {
-            if let Ok(m) = entry.metadata()
-                && m.is_file() {
+        if !self.scanned {
+            for entry in &entries {
+                if let Ok(m) = entry.metadata()
+                    && m.is_file()
+                {
                     self.progress.files_total.fetch_add(1, Ordering::Relaxed);
                     self.progress
                         .bytes_total
                         .fetch_add(m.len(), Ordering::Relaxed);
                 }
+            }
         }
 
         let mut child_failed = false;

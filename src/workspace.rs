@@ -993,6 +993,9 @@ impl Workspace {
                 let bytes_total = progress
                     .bytes_total
                     .load(std::sync::atomic::Ordering::Relaxed);
+                let files_total = progress
+                    .files_total
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 let walk_complete = progress
                     .walk_complete
                     .load(std::sync::atomic::Ordering::Relaxed);
@@ -1005,6 +1008,9 @@ impl Workspace {
                         job.last_error.clone().unwrap_or_else(|| "errors".into())
                     }
                     (Some(_), _) => "done".to_string(),
+                    // The count climbs while it runs, which is the useful part:
+                    // it says up front that this is 86,000 files, not 20.
+                    (None, Phase::Scanning) => format!("scanning… {files_total} files"),
                     (None, Phase::Flushing) => "flushing to device…".to_string(),
                     (None, Phase::AwaitingConflict) => "waiting for answer…".to_string(),
                     _ => format!(

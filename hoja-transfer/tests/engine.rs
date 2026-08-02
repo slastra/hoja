@@ -35,6 +35,114 @@ unsafe extern "C" {
     fn libc_geteuid() -> u32;
 }
 
+// ---- Totals ---------------------------------------------------------------
+
+#[test]
+fn a_directory_copy_knows_its_total_before_it_starts() {
+    // The whole point of the scan. Without it `walk_complete` only flips once
+    // the copy is over, so the UI shows "1.2 MB / …" for the entire job and the
+    // progress bar sits at zero — which is exactly what a 14 GB tree looked
+    // like.
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let tree = src_dir.path().join("tree");
+    std::fs::create_dir_all(tree.join("nested")).unwrap();
+    write_file(&tree, "a.bin", &vec![b'x'; 1000]);
+    write_file(&tree.join("nested"), "b.bin", &vec![b'y'; 2000]);
+
+    // Pre-create the collision the transfer will stop on.
+    std::fs::create_dir(dst_dir.path().join("tree")).unwrap();
+    write_file(&dst_dir.path().join("tree"), "a.bin", b"old");
+
+    let handle = spawn_job(copy_spec(vec![tree], dst_dir.path())).unwrap();
+    let progress = handle.progress().clone();
+
+    use std::sync::atomic::Ordering;
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (_, summary) = drain(&handle, {
+        let progress = progress.clone();
+        let seen = seen.clone();
+        move || {
+            // Mid-transfer: the denominator must already be final. Asserting
+            // after the job would prove nothing, since the totals are complete
+            // by then either way.
+            assert!(
+                progress.walk_complete.load(Ordering::Relaxed),
+                "the total is not known yet, so the bar cannot move"
+            );
+            seen.store(progress.bytes_total.load(Ordering::Relaxed), Ordering::Relaxed);
+            ConflictDecision::Apply {
+                choice: ConflictChoice::Overwrite,
+                apply_to_all: true,
+            }
+        }
+    });
+    assert_eq!(summary.outcome, Outcome::Completed);
+    assert_eq!(seen.load(Ordering::Relaxed), 3000, "total, while still copying");
+    assert_eq!(progress.files_total.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        progress.bytes_done.load(Ordering::Relaxed),
+        3000,
+        "the bar has to be able to reach the end"
+    );
+}
+
+#[test]
+fn a_symlink_does_not_inflate_the_byte_total() {
+    // The scan counts a link as one file and no bytes, because that is what the
+    // transfer does with it. Following it instead would add the target's size to
+    // a total nothing ever counts towards — and node_modules is mostly symlinks
+    // into .bin, so the bar would always stop short.
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let tree = src_dir.path().join("tree");
+    std::fs::create_dir(&tree).unwrap();
+    let target = write_file(&tree, "real.bin", &vec![b'z'; 5000]);
+    std::os::unix::fs::symlink(&target, tree.join("link.bin")).unwrap();
+
+    let handle = spawn_job(copy_spec(vec![tree], dst_dir.path())).unwrap();
+    let progress = handle.progress().clone();
+    let (_, summary) = drain(&handle, never_conflict);
+    assert_eq!(summary.outcome, Outcome::Completed);
+
+    use std::sync::atomic::Ordering;
+    assert_eq!(progress.files_total.load(Ordering::Relaxed), 2, "file + link");
+    assert_eq!(
+        progress.bytes_total.load(Ordering::Relaxed),
+        5000,
+        "the link contributes no bytes"
+    );
+    assert_eq!(
+        progress.bytes_done.load(Ordering::Relaxed),
+        5000,
+        "and done still reaches total"
+    );
+}
+
+#[test]
+fn a_same_mount_move_is_not_scanned_first() {
+    // A subtree rename is one syscall however big the tree, so scanning it would
+    // be the only slow part of an instant operation.
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let tree = src_dir.path().join("tree");
+    std::fs::create_dir_all(tree.join("nested")).unwrap();
+    write_file(&tree.join("nested"), "a.bin", &vec![b'x'; 1000]);
+
+    let handle = spawn_job(move_spec(vec![tree], dst_dir.path())).unwrap();
+    let progress = handle.progress().clone();
+    let (_, summary) = drain(&handle, never_conflict);
+
+    assert_eq!(summary.outcome, Outcome::Completed);
+    assert_eq!(summary.stats.renames, 1, "one call moved the subtree");
+    use std::sync::atomic::Ordering;
+    assert_eq!(
+        progress.bytes_total.load(Ordering::Relaxed),
+        0,
+        "nothing was counted, because nothing was read"
+    );
+}
+
 // ---- Tier 0 ---------------------------------------------------------------
 
 #[test]
