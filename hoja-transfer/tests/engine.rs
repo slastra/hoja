@@ -755,3 +755,40 @@ fn a_directory_cannot_be_moved_into_itself() {
     std::fs::create_dir(&sibling).unwrap();
     assert!(spawn_job(copy_spec(vec![tree], &sibling)).is_ok());
 }
+
+// ---- Name limits ----------------------------------------------------------
+
+#[test]
+fn a_name_that_only_just_fits_still_copies() {
+    // The partial file wraps the destination name in a prefix and a uniquifier,
+    // which is around 26 bytes. A source name near NAME_MAX therefore fit the
+    // filesystem perfectly well and still failed to copy, with ENAMETOOLONG
+    // raised against a path the user never asked for. `cp` copies it fine.
+    let src = ext4_dir();
+    let dest = ext4_dir();
+    let long = "n".repeat(250);
+    write_file(src.path(), &long, b"payload");
+    // A second file, alphabetically after it, proves the job carries on.
+    write_file(src.path(), "zzz.txt", b"after");
+
+    let handle = spawn_job(copy_spec(
+        vec![src.path().join(&long), src.path().join("zzz.txt")],
+        dest.path(),
+    ))
+    .unwrap();
+    let (_, summary) = drain(&handle, never_conflict);
+
+    assert_eq!(summary.outcome, Outcome::Completed);
+    assert!(
+        summary.errors.is_empty(),
+        "a 250-byte name is under NAME_MAX: {:?}",
+        summary.errors
+    );
+    assert_eq!(
+        std::fs::read(dest.path().join(&long)).unwrap(),
+        b"payload",
+        "the long-named file"
+    );
+    assert_eq!(std::fs::read(dest.path().join("zzz.txt")).unwrap(), b"after");
+    no_partials_under(dest.path());
+}

@@ -138,8 +138,23 @@ pub fn rename_no_replace(old: &Path, new: &Path) -> std::io::Result<()> {
 
 static PARTIAL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Longest single path component the filesystems we write to will accept: 255
+/// bytes on ext4, btrfs and xfs, and 255 UTF-16 code units on exFAT and NTFS.
+/// A UTF-8 string never encodes to more UTF-16 units than it has bytes, so a
+/// byte budget satisfies both.
+const NAME_MAX: usize = 255;
+
+const PARTIAL_PREFIX: &str = ".hoja-partial-";
+
 /// In-progress destination name: hidden, uniquified, same directory as the final
 /// destination so the finishing `rename` cannot cross a filesystem.
+///
+/// The wrapping costs about 26 bytes, which used to be enough to push a name
+/// that fitted the filesystem past `NAME_MAX` — so a file `cp` copies without
+/// complaint failed here with ENAMETOOLONG, against a path the user never named.
+/// The source name is in here only to make a partial file legible while it is
+/// being written; the prefix and the uniquifier are what it needs to be correct.
+/// So the name is what gives way.
 pub fn partial_path(final_dest: &Path) -> PathBuf {
     let name = final_dest
         .file_name()
@@ -150,13 +165,28 @@ pub fn partial_path(final_dest: &Path) -> PathBuf {
     // a real syscall — and this runs for every file copied.
     static PID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let pid = PID.get_or_init(std::process::id);
-    let unique = format!(".hoja-partial-{name}.{pid}-{nonce}");
-    final_dest.with_file_name(unique)
+    let tail = format!(".{pid}-{nonce}");
+    // Truncating cannot collide two partials: the nonce alone is unique.
+    let budget = NAME_MAX.saturating_sub(PARTIAL_PREFIX.len() + tail.len());
+    let name = truncate_on_char_boundary(&name, budget);
+    final_dest.with_file_name(format!("{PARTIAL_PREFIX}{name}{tail}"))
+}
+
+/// Longest prefix of `s` within `budget` bytes that does not split a character.
+fn truncate_on_char_boundary(s: &str, budget: usize) -> &str {
+    if s.len() <= budget {
+        return s;
+    }
+    let mut end = budget;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 /// Listing-side filter for the app: partial files should not appear in panes.
 pub fn is_partial_name(name: &str) -> bool {
-    name.starts_with(".hoja-partial-")
+    name.starts_with(PARTIAL_PREFIX)
 }
 
 /// Byte index where a file name's extension begins, or `name.len()` when it
@@ -193,6 +223,47 @@ pub fn keep_both_name(dest: &Path, attempt: u32) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_partial_name_stays_within_the_filesystem_limit() {
+        // The name that fits is the whole point: the source name here is legal
+        // everywhere, and before the budget the partial built from it was not.
+        let dest = std::path::PathBuf::from("/dest").join("n".repeat(255));
+        let partial = super::partial_path(&dest);
+        let name = partial.file_name().unwrap().to_str().unwrap();
+        assert!(
+            name.len() <= super::NAME_MAX,
+            "{} bytes is over NAME_MAX",
+            name.len()
+        );
+        assert!(super::is_partial_name(name));
+    }
+
+    #[test]
+    fn a_short_name_is_left_whole() {
+        let partial = super::partial_path(std::path::Path::new("/dest/report.pdf"));
+        let name = partial.file_name().unwrap().to_str().unwrap();
+        assert!(name.contains("report.pdf"), "{name}");
+    }
+
+    #[test]
+    fn truncation_does_not_split_a_character() {
+        // Every char is 3 bytes, so a budget landing mid-character has to step
+        // back — cutting one in half would make the name invalid UTF-8 and
+        // `to_str` below would fail.
+        let dest = std::path::PathBuf::from("/dest").join("日".repeat(120));
+        let partial = super::partial_path(&dest);
+        let name = partial.file_name().unwrap().to_str().unwrap();
+        assert!(name.len() <= super::NAME_MAX);
+    }
+
+    #[test]
+    fn two_partials_for_one_destination_never_collide() {
+        // Truncation throws away the distinguishing tail of a long name; the
+        // nonce is what has to carry uniqueness after that.
+        let dest = std::path::PathBuf::from("/dest").join("n".repeat(255));
+        assert_ne!(super::partial_path(&dest), super::partial_path(&dest));
+    }
+
     use super::*;
 
     #[test]
