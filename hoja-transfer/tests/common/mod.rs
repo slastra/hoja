@@ -2,8 +2,8 @@
 //!
 //! Filesystem boundaries on the dev machine this suite is tuned for:
 //! - `CARGO_TARGET_TMPDIR` lives under `target/` on the root filesystem (ext4
-//!   here) — reflink attempts fail there, exercising the fallback ladder.
-//! - `std::env::temp_dir()` is tmpfs — crossing into it exercises both the
+//!   here): reflink attempts fail there, exercising the fallback ladder.
+//! - `std::env::temp_dir()` is tmpfs: crossing into it exercises both the
 //!   rename EXDEV path and the cross-fs-type `copy_file_range` fallback.
 
 use std::path::{Path, PathBuf};

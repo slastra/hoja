@@ -41,7 +41,7 @@ unsafe extern "C" {
 fn a_directory_copy_knows_its_total_before_it_starts() {
     // The whole point of the scan. Without it `walk_complete` only flips once
     // the copy is over, so the UI shows "1.2 MB / …" for the entire job and the
-    // progress bar sits at zero — which is exactly what a 14 GB tree looked
+    // progress bar sits at zero, which is exactly what a 14 GB tree looked
     // like.
     let src_dir = ext4_dir();
     let dst_dir = ext4_dir();
@@ -91,7 +91,7 @@ fn a_directory_copy_knows_its_total_before_it_starts() {
 fn a_symlink_does_not_inflate_the_byte_total() {
     // The scan counts a link as one file and no bytes, because that is what the
     // transfer does with it. Following it instead would add the target's size to
-    // a total nothing ever counts towards — and node_modules is mostly symlinks
+    // a total nothing ever counts towards, and node_modules is mostly symlinks
     // into .bin, so the bar would always stop short.
     let src_dir = ext4_dir();
     let dst_dir = ext4_dir();

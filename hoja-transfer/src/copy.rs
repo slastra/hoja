@@ -86,7 +86,7 @@ pub fn copy_contents(
         // whole remainder as data via the EINVAL/ENOTSUP fallback below.
         let data_start = match rustix::fs::seek(src, rustix::fs::SeekFrom::Data(offset)) {
             Ok(pos) => pos,
-            Err(Errno::NXIO) => break, // nothing but hole to EOF — already truncated
+            Err(Errno::NXIO) => break, // nothing but hole to EOF: already truncated
             Err(Errno::INVAL) | Err(Errno::OPNOTSUPP) => {
                 if offset >= len {
                     break;
@@ -206,8 +206,8 @@ fn copy_extent(
 
         // Grown to fit, never pre-sized to the maximum. This buffer belongs to
         // the job, not to the file, because this is the path every
-        // cross-filesystem copy takes — to a USB drive, a network mount, tmpfs
-        // — and it used to allocate a fresh 4MB here for each one. Copying
+        // cross-filesystem copy takes (to a USB drive, a network mount, tmpfs),
+        // and it used to allocate a fresh 4MB here for each one. Copying
         // 66,000 files with a median size of 901 bytes asked for 265GB of
         // buffer to move 0.7GB of data, one mmap and munmap at a time.
         if buf.len() < want {

@@ -2,7 +2,7 @@
 //!
 //! A walk, not an index. `plocate` is installed on this machine and is the
 //! obvious shortcut, but its database is rebuilt nightly, so nothing made today
-//! is in it — measured: no file of this project appears, because the project is
+//! is in it. Measured: no file of this project appears, because the project is
 //! a day old, and "where did I just save that" is the search people actually
 //! run. `PRUNEPATHS` also excludes /media and /mnt and `PRUNEFS` excludes
 //! sshfs, nfs and cifs, so a removable drive would never be found at all.
@@ -18,7 +18,7 @@ use std::sync::mpsc::{Receiver, channel};
 
 use crate::fs::{self, DirEntry};
 
-/// Stop before a runaway query — a single letter under a home directory matches
+/// Stop before a runaway query, a single letter under a home directory matches
 /// hundreds of thousands of files, and neither the list nor the memory is worth
 /// spending on results nobody will scroll to.
 pub const RESULT_CAP: usize = 2000;
@@ -60,7 +60,7 @@ impl Drop for Search {
 
 /// Walk `root` for names matching `query`, breadth-first, streaming batches.
 ///
-/// Breadth-first so shallow matches — nearly always the wanted ones — arrive
+/// Breadth-first so shallow matches, nearly always the wanted ones, arrive
 /// before the walker disappears into a deep build directory.
 pub fn spawn(root: PathBuf, query: String, show_hidden: bool) -> Search {
     let (tx, results) = channel();
@@ -102,7 +102,7 @@ pub fn spawn(root: PathBuf, query: String, show_hidden: bool) -> Search {
                         // `file_type` comes from the readdir record on Linux;
                         // `metadata` is a statx per entry. Only the recursion
                         // decision is needed for the whole tree, and only the
-                        // handful of hits need size and time — asking for
+                        // handful of hits need size and time: asking for
                         // metadata up front cost 8.9s over 2.5M entries against
                         // 1.7s for this.
                         //
@@ -127,7 +127,7 @@ pub fn spawn(root: PathBuf, query: String, show_hidden: bool) -> Search {
                         // Show where it is, not just what it is called: a bare
                         // name is ambiguous once results span the tree. This is
                         // a label, so it goes beside the name rather than over
-                        // it — rename and git colouring key on `name`.
+                        // it: rename and git colouring key on `name`.
                         item.relative = Some(
                             item.path
                                 .strip_prefix(&root)

@@ -8,7 +8,7 @@ use rustix::fs::{AtFlags, StatxFlags};
 /// Identity of the filesystem a path lives on, used as the key of the
 /// attempt-failure cache. Prefer the statx mount ID (distinguishes bind mounts);
 /// fall back to `st_dev` where the kernel doesn't report one. The two are never
-/// compared against each other — the enum keeps them in separate namespaces.
+/// compared against each other, the enum keeps them in separate namespaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MountKey {
     MountId(u64),
@@ -53,7 +53,7 @@ pub fn same_filesystem(a: &Path, b: &Path) -> bool {
 /// `/sys/block/<dev>/removable` alone is wrong: it reflects the SCSI RMB bit
 /// ("medium ejectable from the drive", floppy semantics), and USB enclosures
 /// commonly report 0. The reliable signal is a hotplug bus (usb/mmc/firewire)
-/// anywhere in the device's sysfs ancestry — the same walk util-linux does for
+/// anywhere in the device's sysfs ancestry, the same walk util-linux does for
 /// its HOTPLUG column. Mount location under /run/media|/media|/mnt is OR'd in as
 /// a heuristic. Bias is deliberately toward false positives: a wasted syncfs is
 /// free, a false negative loses data on yank.
@@ -150,7 +150,7 @@ const PARTIAL_PREFIX: &str = ".hoja-partial-";
 /// destination so the finishing `rename` cannot cross a filesystem.
 ///
 /// The wrapping costs about 26 bytes, which used to be enough to push a name
-/// that fitted the filesystem past `NAME_MAX` — so a file `cp` copies without
+/// that fitted the filesystem past `NAME_MAX`, so a file `cp` copies without
 /// complaint failed here with ENAMETOOLONG, against a path the user never named.
 /// The source name is in here only to make a partial file legible while it is
 /// being written; the prefix and the uniquifier are what it needs to be correct.
@@ -162,7 +162,7 @@ pub fn partial_path(final_dest: &Path) -> PathBuf {
         .unwrap_or_else(|| "unnamed".to_string());
     let nonce = PARTIAL_COUNTER.fetch_add(1, Ordering::Relaxed);
     // Cached: glibc dropped its getpid cache in 2.25, so `std::process::id()` is
-    // a real syscall — and this runs for every file copied.
+    // a real syscall, and this runs for every file copied.
     static PID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let pid = PID.get_or_init(std::process::id);
     let tail = format!(".{pid}-{nonce}");
@@ -194,7 +194,7 @@ pub fn is_partial_name(name: &str) -> bool {
 ///
 /// The split is at the *first* dot, so `foo.tar.gz` stems to `foo`. Leading
 /// dots belong to the stem, so `.bashrc` stems to the whole name. Both the
-/// rename pre-selection and the ` (copy)` insertion point derive from this —
+/// rename pre-selection and the ` (copy)` insertion point derive from this,
 /// they must agree, so there is one definition.
 pub fn stem_end(name: &str) -> usize {
     let leading_dots = name.len() - name.trim_start_matches('.').len();
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn truncation_does_not_split_a_character() {
         // Every char is 3 bytes, so a budget landing mid-character has to step
-        // back — cutting one in half would make the name invalid UTF-8 and
+        // back: cutting one in half would make the name invalid UTF-8 and
         // `to_str` below would fail.
         let dest = std::path::PathBuf::from("/dest").join("日".repeat(120));
         let partial = super::partial_path(&dest);

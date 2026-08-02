@@ -1,4 +1,4 @@
-//! Minimal context menu built from gpui primitives — no `ui` crate.
+//! Minimal context menu built from gpui primitives: no `ui` crate.
 //!
 //! Mechanics follow Zed's `RightClickMenu`/`ContextMenu` skeleton: the owner
 //! stores `(position, Entity<FileMenu>)`, renders it through
@@ -7,7 +7,7 @@
 //! inherited from Zed:
 //!
 //! - Focusing a deferred element requires a **double-nested**
-//!   `window.on_next_frame` — the deferred subtree isn't in the dispatch tree
+//!   `window.on_next_frame`, the deferred subtree isn't in the dispatch tree
 //!   until after the deferred callback runs.
 //! - An item handler must **refocus the originating pane** before dispatching
 //!   its action, or the action dispatches at the menu's focus node where no
@@ -89,7 +89,7 @@ pub struct FileMenu {
 impl FileMenu {
     pub fn new(items: Vec<MenuItem>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        // Focus loss dismisses — this covers alt-tab, pane clicks that somehow
+        // Focus loss dismisses, this covers alt-tab, pane clicks that somehow
         // miss `on_mouse_down_out`, and keyboard focus moves.
         let _blur_subscription =
             cx.on_blur(&focus_handle, window, |_, _, cx| cx.emit(DismissEvent));

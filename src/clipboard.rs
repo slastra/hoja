@@ -66,7 +66,7 @@ fn spawn_wl_copy(args: &[&str], payload: String) {
 /// Read another app's file clipboard, if one is offered.
 ///
 /// Blocking (runs wl-paste); call from the background executor, not the UI
-/// thread — a slow clipboard owner stalls the read.
+/// thread, a slow clipboard owner stalls the read.
 pub fn read_external() -> Option<ClipboardSet> {
     if let Some(blob) = wl_paste("x-special/gnome-copied-files") {
         let mut lines = blob.lines();

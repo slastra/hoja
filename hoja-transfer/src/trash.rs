@@ -1,6 +1,6 @@
 //! Deletion via the freedesktop.org Trash specification, version 1.0.
 //!
-//! pane exposes no trash *feature* — no browser, no restore list, no empty
+//! pane exposes no trash *feature*: no browser, no restore list, no empty
 //! command. It uses the trash *directory* purely as the staging area that makes
 //! delete undoable, because a file that has been unlinked cannot be brought
 //! back. Following the spec instead of inventing a private staging directory
@@ -22,8 +22,8 @@
 //!   in a volume trash. Getting this backwards breaks restore in every other
 //!   trash UI.
 //! - `DeletionDate=` is local time, `YYYY-MM-DDThh:mm:ss`, with no zone suffix.
-//! - Name collisions get a counter before the extension — `dup.txt` becomes
-//!   `dup.2.txt` — not our ` (copy)` suffix.
+//! - Name collisions get a counter before the extension: `dup.txt` becomes
+//!   `dup.2.txt`, not our ` (copy)` suffix.
 
 use std::io;
 use std::os::unix::fs::MetadataExt;
@@ -107,7 +107,7 @@ fn home_trash() -> io::Result<PathBuf> {
     Ok(trash)
 }
 
-/// Deepest ancestor of `path` still on the same filesystem — the volume root.
+/// Deepest ancestor of `path` still on the same filesystem, the volume root.
 fn top_dir(path: &Path) -> io::Result<PathBuf> {
     let dev = device_of(path)?;
     let mut top = path
@@ -129,7 +129,7 @@ fn top_dir(path: &Path) -> io::Result<PathBuf> {
 /// The checks on `.Trash` are not optional: it is a directory any user may be
 /// invited into, so without the sticky bit another user could replace entries
 /// underneath us, and a symlink there could redirect deletions off the volume
-/// entirely — which would also silently reintroduce a cross-filesystem copy.
+/// entirely, which would also silently reintroduce a cross-filesystem copy.
 fn volume_trash(top: &Path) -> io::Result<PathBuf> {
     let uid = rustix::process::getuid().as_raw();
 

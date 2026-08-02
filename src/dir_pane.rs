@@ -74,7 +74,7 @@ const COL_MAX_WIDTH: f32 = 420.;
 const NAME_MIN_WIDTH: f32 = 100.;
 
 /// Emitted upward to the workspace. The workspace turns `Focus` into "this is now the
-/// active pane" — clicking a pane focuses it, and activation follows from that rather
+/// active pane": clicking a pane focuses it, and activation follows from that rather
 /// than from separate click plumbing.
 pub enum PaneEvent {
     Focus,
@@ -98,7 +98,7 @@ pub enum PaneEvent {
 ///
 /// `can_drop` runs before the drop and also gates the highlight, so refusing
 /// here means an illegal target never lights up. Note that a refusal *consumes*
-/// the drop rather than passing it to the element behind — which is what we
+/// the drop rather than passing it to the element behind, which is what we
 /// want, but is not a fall-through.
 fn drop_allowed(dragged: &dyn std::any::Any, target: &Path) -> bool {
     if let Some(dragged) = dragged.downcast_ref::<DraggedPaths>() {
@@ -112,12 +112,12 @@ fn drop_allowed(dragged: &dyn std::any::Any, target: &Path) -> bool {
 
 /// An open rename editor, anchored by name rather than by row.
 ///
-/// A re-listing renumbers every row, so an index alone cannot survive one —
+/// A re-listing renumbers every row, so an index alone cannot survive one,
 /// which is why a background copy finishing, or a delete in another pane, used
 /// to close the editor out from under whoever was typing.
 struct Renaming {
-    /// The full path, not the name. In search results a name is not unique —
-    /// three `README.md` under one root are three different files — so a
+    /// The full path, not the name. In search results a name is not unique,
+    /// three `README.md` under one root are three different files, so a
     /// re-listing that re-finds the row by name can move the open editor onto a
     /// file the user never touched, and enter then renames that one.
     path: PathBuf,
@@ -155,7 +155,7 @@ enum BarMode {
 const MEASURE_DEBOUNCE: Duration = Duration::from_millis(120);
 
 /// How often the footer reads the running total. A size is a magnitude, not a
-/// counter — it has to look alive, not be exact to the byte.
+/// counter, it has to look alive, not be exact to the byte.
 const MEASURE_POLL: Duration = Duration::from_millis(100);
 
 /// The line at the bottom of the pane, and the walk behind its total.
@@ -166,9 +166,9 @@ const MEASURE_POLL: Duration = Duration::from_millis(100);
 #[derive(Default)]
 struct Footer {
     /// What this was resolved against. A defaulted footer is out of date by
-    /// construction — no directory is the empty path.
+    /// construction: no directory is the empty path.
     dir: PathBuf,
-    /// The listing the walk belongs to, and the rows it was given, ascending —
+    /// The listing the walk belongs to, and the rows it was given, ascending:
     /// ascending because the column binary-searches it once per visible row.
     listing: u64,
     rows: Vec<usize>,
@@ -206,7 +206,7 @@ const INACTIVE_CONTENT_ALPHA: f32 = 0.6;
 /// The same colour, quieter, for a pane the keys are not acting on.
 ///
 /// Alpha rather than substituting `text_muted`, so a name coloured by its git
-/// status keeps its hue — dimming the listing should not cost the listing its
+/// status keeps its hue: dimming the listing should not cost the listing its
 /// information.
 fn quieted(mut color: gpui::Hsla, active: bool) -> gpui::Hsla {
     if !active {
@@ -219,7 +219,7 @@ fn quieted(mut color: gpui::Hsla, active: bool) -> gpui::Hsla {
 /// directory can be refused.
 ///
 /// What the drag carries is settled *once*, when the drag starts, and carried
-/// from there — neither gathered per frame nor looked up again at the end. Both
+/// from there: neither gathered per frame nor looked up again at the end. Both
 /// of the other timings are wrong, and each was a bug:
 ///
 /// - Gathering it eagerly, at render time, cost 3.9ms a frame with 100k rows
@@ -228,7 +228,7 @@ fn quieted(mut color: gpui::Hsla, active: bool) -> gpui::Hsla {
 ///   is not necessarily the one being dragged: a paste landing mid-drag
 ///   re-selects what it wrote, so the drop moved files nobody dragged. Worse,
 ///   the drop handler is a listener on the pane being dropped into, which
-///   leases it — so reading the source pane there panicked outright whenever
+///   leases it, so reading the source pane there panicked outright whenever
 ///   the two were the same pane, which is to say on every same-pane drop.
 #[derive(Clone)]
 pub struct DraggedPaths {
@@ -250,7 +250,7 @@ impl DraggedPaths {
     /// (`div.rs:2844` renders from `listener.value` and `div.rs:2860` moves
     /// that same `Arc` into `active_drag`). So filling the cell there is what
     /// makes every later reader agree, and it happens while dispatching a mouse
-    /// move — no entity is leased.
+    /// move: no entity is leased.
     fn resolve(&self, cx: &App) {
         self.resolved.get_or_init(|| {
             if self.whole_selection {
@@ -300,8 +300,8 @@ impl Render for DragPreview {
 /// and the rename editor, and has no divider of its own, so it is built directly
 /// rather than driven from this table.
 ///
-/// Everything about a column lives here — its order, label, sort key, starting
-/// width, and the text it shows — so a new column is one variant, one entry in
+/// Everything about a column lives here, its order, label, sort key, starting
+/// width, and the text it shows, so a new column is one variant, one entry in
 /// `ALL`, and one arm in each method. The header, the rows, and the resize
 /// handles all follow.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -351,7 +351,7 @@ impl Column {
         }
     }
 
-    /// The cell text for one entry. Empty where the entry has no such value —
+    /// The cell text for one entry. Empty where the entry has no such value:
     /// unreadable metadata has no time, and a folder has no size until the walk
     /// behind the footer has finished counting it, which is what `folder_bytes`
     /// supplies. Blank until then rather than a figure that climbs: one number
@@ -373,7 +373,7 @@ impl Column {
 /// Per-column widths, positional so the set can grow without new fields.
 ///
 /// Indexed by discriminant, not by position in `ALL`, so `ALL` must hold every
-/// variant exactly once — otherwise a column indexes a width that belongs to
+/// variant exactly once: otherwise a column indexes a width that belongs to
 /// another, or runs off the end.
 #[derive(Clone, Copy, Debug)]
 struct ColumnWidths([Pixels; Column::ALL.len()]);
@@ -450,7 +450,7 @@ pub struct DirPane {
     anchor_ix: Option<usize>,
     /// The lead row: what Rename, Open, and the context menu act on, and what
     /// the arrow keys move. Equal to `anchor_ix` except while a range is being
-    /// extended — shift-down then shift-up has to *shrink* the range, which is
+    /// extended: shift-down then shift-up has to *shrink* the range, which is
     /// only possible with the two ends tracked separately.
     cursor_ix: Option<usize>,
     scroll: UniformListScrollHandle,
@@ -464,7 +464,7 @@ pub struct DirPane {
     git_task: Option<Task<()>>,
     /// The directory the change watcher is armed on, paired with its task, so
     /// re-listing the same directory does not tear down and rebuild the inotify
-    /// watch — and so a watcher that failed to arm cannot be recorded as armed.
+    /// watch, and so a watcher that failed to arm cannot be recorded as armed.
     watch: Option<(PathBuf, Task<()>)>,
     view: ViewSettings,
     /// The directory `entries` was built from. Differs from `dir` while a load
@@ -655,7 +655,7 @@ impl DirPane {
     ///
     /// Deleting the row under the cursor and landing on nothing loses your
     /// place in a long listing, so the selection walks forward to the next
-    /// survivor — or back to the previous one when the removed items were at
+    /// survivor, or back to the previous one when the removed items were at
     /// the end. The listing still holds the departing entries at this point,
     /// which is what makes "next" meaningful.
     pub fn select_after_removal(&mut self, removed: &[PathBuf], cx: &mut Context<Self>) {
@@ -703,7 +703,7 @@ impl DirPane {
             items.push(MenuItem::action("Open", dispatch(Box::new(OpenSelected))));
 
             // MIME detection reads the head of the file, so it can block for as
-            // long as the filesystem wants to take — unacceptable on a network
+            // long as the filesystem wants to take: unacceptable on a network
             // mount. The menu opens without this section and grows it in.
             let anchor_entry = self.cursor_ix.and_then(|ix| self.entries.get(ix));
             if let Some(entry) = anchor_entry.filter(|e| !e.is_dir) {
@@ -927,7 +927,7 @@ impl DirPane {
     /// Rows a page key moves, from the last layout.
     ///
     /// One row short of a screenful, so a page keeps a line of context and you
-    /// can tell where you came from — the convention in every list and editor.
+    /// can tell where you came from, the convention in every list and editor.
     /// The size is unknown only before the first layout, which cannot happen
     /// before there is a window to press a key in.
     fn rows_per_page(&self) -> usize {
@@ -976,7 +976,7 @@ impl DirPane {
 
     /// Move the lead and leave the selection alone, so a row can be added to a
     /// scattered selection without disturbing what is already in it. Pointless
-    /// without the lead ring drawn in `render_row` — otherwise the next
+    /// without the lead ring drawn in `render_row`: otherwise the next
     /// `ToggleSelection` is a blind guess.
     fn focus_cursor(&mut self, motion: Motion, cx: &mut Context<Self>) {
         let Some(ix) = self.destination(motion) else {
@@ -1018,10 +1018,10 @@ impl DirPane {
     /// Read the current directory on a background thread, then apply on the UI thread.
     ///
     /// Assigning to `self.load_task` drops any previous task, which cancels a read that
-    /// is still running — so hammering navigation cannot land stale entries.
+    /// is still running, so hammering navigation cannot land stale entries.
     /// Re-list without disturbing anything a re-listing cannot change.
     ///
-    /// A view-setting change — hidden files, folder grouping — rebuilds the
+    /// A view-setting change (hidden files, folder grouping) rebuilds the
     /// rows but cannot alter a file's git status, and re-asking costs two
     /// process spawns and a work-tree walk. It also blanks `self.git` first, so
     /// every name would flash back to its default colour and back again.
@@ -1037,7 +1037,7 @@ impl DirPane {
     /// is in the middle of.
     ///
     /// `reload_inner` drops any running search, because a fresh listing has to
-    /// replace the results on screen — fine when you asked for it, wrong when a
+    /// replace the results on screen: fine when you asked for it, wrong when a
     /// background write in the directory did. Downloading a file into the
     /// folder you are searching should not close the search.
     ///
@@ -1096,7 +1096,7 @@ impl DirPane {
                         // A directory that has gone away is not a state to sit
                         // in: the pane would show a message with no way out but
                         // typing a path. Fall back to the nearest ancestor that
-                        // still exists — the parent of a deleted folder, or the
+                        // still exists, the parent of a deleted folder, or the
                         // mount point's parent when a volume is unplugged.
                         //
                         // Only when it is *gone*. A directory that exists but
@@ -1122,7 +1122,7 @@ impl DirPane {
                     }
                 }
                 // Same directory: find the renamed row again. A navigation is
-                // different — the same name elsewhere is a different file — so
+                // different, the same name elsewhere is a different file, so
                 // the rename ends with the directory it belonged to.
                 if this.dir == this.loaded_dir {
                     this.reanchor_rename();
@@ -1171,7 +1171,7 @@ impl DirPane {
             }
             // From another application. gpui accepts external offers with
             // DndAction::Copy hardcoded, so the source has been told this is a
-            // copy — moving would delete data it still believes it owns. The
+            // copy: moving would delete data it still believes it owns. The
             // same translation also wipes the modifiers, so there is nothing to
             // read even if we wanted to offer a choice.
             None => Operation::Copy,
@@ -1246,8 +1246,8 @@ impl DirPane {
 
     /// Ask git about this directory off the UI thread.
     ///
-    /// `git status` spawns a process and walks the work tree — 142ms in a 17k
-    /// file repository — so the listing never waits for it. The names colour in
+    /// `git status` spawns a process and walks the work tree: 142ms in a 17k
+    /// file repository, so the listing never waits for it. The names colour in
     /// when the answer arrives. Assigning the task drops any previous one, so a
     /// fast sequence of navigations cannot land a stale answer on the wrong
     /// directory.
@@ -1273,7 +1273,7 @@ impl DirPane {
     /// the first survivor into view. Entries that disappeared are dropped.
     fn restore_selection(&mut self) {
         // A set, not the Vec: this runs once per entry, so a linear scan makes
-        // restoring a large selection quadratic — measured at 11 seconds for
+        // restoring a large selection quadratic: measured at 11 seconds for
         // 100k rows selected, on the foreground executor.
         let wanted: std::collections::HashSet<PathBuf> =
             std::mem::take(&mut self.pending_select).into_iter().collect();
@@ -1393,7 +1393,7 @@ impl DirPane {
         self.load_dir_only(dir, cx);
     }
 
-    /// Change directory without touching history — the back/forward path.
+    /// Change directory without touching history, the back/forward path.
     fn load_dir_only(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
         self.dir = dir;
         self.reload(cx);
@@ -1566,7 +1566,7 @@ impl DirPane {
             if let Some(previous) = previous {
                 // Put the saved listing back for the frame, then re-read it.
                 // The watcher stands down while a search runs, so this listing
-                // is as old as the search — showing it immediately keeps the
+                // is as old as the search: showing it immediately keeps the
                 // pane from blanking, and the read behind it makes it true.
                 self.entries = previous.listing;
                 self.listing_moved += 1;
@@ -1631,7 +1631,7 @@ impl DirPane {
                         this.listing_moved += 1;
                         // Aim at the first hit as soon as there is one, so
                         // enter opens it without arrowing down first. Only
-                        // while nothing is chosen — later batches must not
+                        // while nothing is chosen: later batches must not
                         // yank the selection off what you picked.
                         if this.cursor_ix.is_none() && !this.entries.is_empty() {
                             this.selected.only(0);
@@ -1668,7 +1668,7 @@ impl DirPane {
     }
 
     /// Point an open rename at the row its entry now occupies, or end it if the
-    /// entry is gone — renamed or deleted by something else while it was open.
+    /// entry is gone: renamed or deleted by something else while it was open.
     fn reanchor_rename(&mut self) {
         let Some(path) = self.renaming.as_ref().map(|r| r.path.clone()) else {
             return;
@@ -1686,7 +1686,7 @@ impl DirPane {
     /// Bring the footer and the column in line with what is on screen.
     ///
     /// Called from `render`, which is the one place guaranteed to run after any
-    /// of its inputs move — every path that changes the selection, replaces the
+    /// of its inputs move: every path that changes the selection, replaces the
     /// rows, or changes directory already notifies. A call at each of the eight
     /// selection sites instead is the arrangement that goes stale the first time
     /// a ninth is added.
@@ -1697,7 +1697,7 @@ impl DirPane {
     fn sync_footer(&mut self, cx: &mut Context<Self>) {
         // The walk belongs to the listing. Moving the selection re-reads the
         // buckets but never restarts them, which is what makes selecting a
-        // folder free — the number is already there, or already coming.
+        // folder free, the number is already there, or already coming.
         let relisted = self.footer.listing != self.listing_moved || self.footer.dir != self.dir;
         if relisted {
             self.footer.listing = self.listing_moved;
@@ -1786,7 +1786,7 @@ impl DirPane {
 
     /// The one re-sort a settled walk earns.
     ///
-    /// Only when the Size column is the sort key — by name, kind or date a
+    /// Only when the Size column is the sort key: by name, kind or date a
     /// folder gaining a size changes nothing, so most of the time the listing
     /// never moves at all. Once per listing, guarded, so a settled walk cannot
     /// reorder the rows twice.
@@ -1821,7 +1821,7 @@ impl DirPane {
         cx.notify();
     }
 
-    /// A folder's size for the Size column — only once it is final, so a cell
+    /// A folder's size for the Size column: only once it is final, so a cell
     /// never shows a number that is still climbing.
     fn folder_bytes(&self, entry_ix: usize) -> Option<u64> {
         let (bytes, settled) = self.bucket(entry_ix)?;
@@ -1855,7 +1855,7 @@ impl DirPane {
     /// when the timer fires, and the total out of whichever handle the pane owns
     /// at each tick. So there is no captured directory and no captured selection
     /// for a late result to land on, and no generation counter is needed to
-    /// notice one — replacing `footer.poll` drops this future at its `await`,
+    /// notice one: replacing `footer.poll` drops this future at its `await`,
     /// and a future that never resumes cannot install anything.
     fn spawn_measure_poll(cx: &mut Context<Self>) -> Task<()> {
         cx.spawn(async move |this, cx| {
@@ -2035,8 +2035,8 @@ impl DirPane {
     /// A divider sitting at the left edge of `column`.
     ///
     /// The width is computed *absolutely*, from the cursor's offset since the drag
-    /// began. The obvious alternative — nudge the width by how far the cursor has
-    /// drifted from the divider's current centre — reads as a converging feedback
+    /// began. The obvious alternative: nudge the width by how far the cursor has
+    /// drifted from the divider's current centre: reads as a converging feedback
     /// loop but is not one: `on_drag_move` fires per mouse event while `bounds`
     /// comes from the last laid-out frame, so a fast drag delivers several events
     /// against the same stale centre and applies the same correction several times
@@ -2046,7 +2046,7 @@ impl DirPane {
     /// happens before the drag threshold. `on_drag`'s constructor is the wrong
     /// place for it twice over: it fires only once the cursor has already
     /// travelled past `DRAG_THRESHOLD`, and the position it hands you is
-    /// `cursor_offset` — the cursor's offset *within the 6px handle*, not a
+    /// `cursor_offset`, the cursor's offset *within the 6px handle*, not a
     /// window coordinate.
     ///
     /// Dragging left widens the column, since the column's left edge is what moves.
@@ -2317,7 +2317,7 @@ impl DirPane {
 
         let colors = cx.theme().colors();
         // Deliberately one content colour throughout: names, secondary columns, and
-        // icons. No accent on directories, no muting on metadata — hierarchy comes from
+        // icons. No accent on directories, no muting on metadata: hierarchy comes from
         // column position and the selection background instead of from hue.
         //
         // Git status is the one exception, and only on the name. Hue here carries
@@ -2408,7 +2408,7 @@ impl DirPane {
             // Uniform row height is what lets `uniform_list` virtualize.
             .h(px(ROW_HEIGHT))
             // `uniform_list` hands each row `Definite(list_width)` as *available* space,
-            // but a flex root with `width: auto` sizes to its content — so without
+            // but a flex root with `width: auto` sizes to its content, so without
             // `w_full` the Name cell's `flex_1` has nothing to expand into and the
             // columns drift out of alignment with the header.
             .w_full()
@@ -2488,7 +2488,7 @@ impl DirPane {
                     this.accept_drop(paths.paths().to_vec(), None, target.clone(), window, cx);
                 }))
             })
-            // Also where the payload settles what it carries — see `resolve`.
+            // Also where the payload settles what it carries: see `resolve`.
             .on_drag(dragged, move |dragged: &DraggedPaths, _, _, cx| {
                 dragged.resolve(cx);
                 cx.new(|_| DragPreview {
@@ -2496,7 +2496,7 @@ impl DirPane {
                 })
             })
             // Promotes the same drag to a native one when it leaves the window.
-            // The resolver runs once, at promotion — never per frame — which is
+            // The resolver runs once, at promotion, never per frame, which is
             // why the is_dir probes belong here and not in the payload.
             .external_drag_payload(|dragged: &DraggedPaths, _, _: &mut App| {
                 Some(gpui::ExternalDragPayload::Files(gpui::FileDragPaths::new(
@@ -2565,7 +2565,7 @@ impl DirPane {
             .child(
                 div().truncate().child(
                     // A search is the pane's loudest running work, and while one
-                    // is on the rows are not this directory's — so nothing the
+                    // is on the rows are not this directory's, so nothing the
                     // footer would otherwise say about them is true.
                     self.search_status()
                         .unwrap_or_else(|| self.footer.text.clone()),

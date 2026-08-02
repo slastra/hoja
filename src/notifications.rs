@@ -1,7 +1,7 @@
 //! Desktop notifications, through the freedesktop Desktop Notifications spec.
 //!
 //! `notify-send` is the reference client for `org.freedesktop.Notifications`,
-//! the D-Bus interface every notification daemon implements — mako, dunst,
+//! the D-Bus interface every notification daemon implements: mako, dunst,
 //! GNOME Shell, Plasma, xfce4-notifyd. Nothing here is tied to any one of them;
 //! the desktop's own daemon decides how it looks, where it appears, and how
 //! long it stays.
@@ -9,7 +9,7 @@
 //! Shelled out rather than speaking D-Bus directly, for the same reason
 //! `xdg-open` and `wl-copy` are: a D-Bus client library is a large dependency
 //! for one call, and libnotify ships on any desktop that has a daemon to talk
-//! to. A missing binary means no notification and nothing else — this is a
+//! to. A missing binary means no notification and nothing else, this is a
 //! courtesy, not a feature worth failing a transfer over.
 
 use std::process::{Command, Stdio};
@@ -33,7 +33,7 @@ const CATEGORY_ERR: &str = "transfer.error";
 /// Cancelling is something you just did, so being told about it is noise.
 /// A job shorter than `NOTIFY_AFTER` finished while you were still looking at
 /// it, and the job strip already said so. Errors always announce however brief
-/// the job — the strip keeps a failed transfer until it is dismissed, but only
+/// the job, the strip keeps a failed transfer until it is dismissed, but only
 /// a notification reaches you when hoja is not the window you are looking at.
 pub fn worth_announcing(
     outcome: hoja_transfer::Outcome,
@@ -81,7 +81,7 @@ pub fn transfer_finished(summary: String, body: String, failed: bool, cx: &App) 
     .detach();
 }
 
-/// "1,234 files" — thousands separated, because the counts here run to six
+/// "1,234 files": thousands separated, because the counts here run to six
 /// digits and a bare number that long is unreadable at a glance.
 pub fn count(n: u64) -> String {
     let digits = n.to_string();

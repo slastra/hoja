@@ -127,7 +127,7 @@ impl PaneGroup {
     /// axis that already runs that way must produce the former, never `H[P, H[P, P]]`.
     ///
     /// Gated to match its only caller, the split/close tracing in `workspace`.
-    /// Without this it is dead code in a release build — which a debug build
+    /// Without this it is dead code in a release build, which a debug build
     /// cannot tell you, so it only ever surfaced from `makepkg`.
     #[cfg(debug_assertions)]
     pub fn shape(&self) -> String {
@@ -152,7 +152,7 @@ impl PaneGroup {
     /// pane's own edge and hit-testing the bounding boxes cached during prepaint.
     ///
     /// Returns `None` before the first paint, because nothing has populated those
-    /// boxes yet — a directional keybinding pressed at startup does nothing.
+    /// boxes yet, a directional keybinding pressed at startup does nothing.
     pub fn find_pane_in_direction(
         &self,
         active_pane: &Entity<DirPane>,
@@ -365,7 +365,7 @@ impl PaneAxis {
 
     /// Remove a pane from this subtree.
     ///
-    /// `Ok(Some(member))` means "I am down to one child — splice it into my slot and
+    /// `Ok(Some(member))` means "I am down to one child: splice it into my slot and
     /// delete me." Recursion rewrites `*member` on the way back up, so chains collapse.
     fn remove(&mut self, pane_to_remove: &Entity<DirPane>) -> Result<Option<Member>> {
         let mut found_pane = false;
@@ -507,7 +507,7 @@ fn flex_values_in_bounds(flexes: &[f32]) -> bool {
 // ---------------------------------------------------------------------------
 // The layout element.
 //
-// Not a taffy flex container — it does its own arithmetic so that flexes, divider
+// Not a taffy flex container, it does its own arithmetic so that flexes, divider
 // hitboxes, and the cached bounding boxes all stay consistent.
 // ---------------------------------------------------------------------------
 

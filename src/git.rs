@@ -6,9 +6,9 @@
 //! to reflow when the status arrives late, and a row keeps one line of text.
 //!
 //! Status comes from `git` itself rather than from a Rust reimplementation.
-//! Ignore rules are the whole difficulty here — `.gitignore` at every level,
-//! `core.excludesFile`, `info/exclude`, negations, submodules, sparse checkouts
-//! — and git is the only thing guaranteed to agree with what the user sees on
+//! Ignore rules are the whole difficulty here: `.gitignore` at every level,
+//! `core.excludesFile`, `info/exclude`, negations, submodules, sparse checkouts,
+//! and git is the only thing guaranteed to agree with what the user sees on
 //! the command line. The cost is a process spawn, which is why this never runs
 //! on the UI thread: measured at 7ms for a subdirectory of a 4k-file repository
 //! and 142ms in a 17k-file one with 23 submodules.
@@ -21,8 +21,8 @@ use std::process::Command;
 /// rolls up several children.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GitStatus {
-    /// Tracked, committed, unmodified. Never stored — the absence of an entry
-    /// means this — but directories need it when rolling up.
+    /// Tracked, committed, unmodified. Never stored, the absence of an entry
+    /// means this, but directories need it when rolling up.
     Unmodified,
     Ignored,
     Added,
@@ -141,11 +141,11 @@ pub fn statuses(dir: &Path) -> GitStatuses {
 /// One NUL-separated porcelain v2 record into a status and a repo-relative path.
 ///
 /// Record forms, by leading character:
-///   `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>`  — a tracked change
-///   `u <XY> ...  <path>`                            — unmerged, a conflict
-///   `? <path>`                                      — untracked
-///   `! <path>`                                      — ignored
-///   `# ...`                                         — a header, skipped
+///   `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>`   a tracked change
+///   `u <XY> ...  <path>`                             unmerged, a conflict
+///   `? <path>`                                       untracked
+///   `! <path>`                                       ignored
+///   `# ...`                                          a header, skipped
 fn parse_record(record: &[u8]) -> Option<(GitStatus, PathBuf)> {
     use std::os::unix::ffi::OsStrExt;
 

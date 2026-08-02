@@ -10,8 +10,8 @@ use std::time::SystemTime;
 #[derive(Debug, Clone)]
 pub struct DirEntry {
     pub name: String,
-    /// Where to show this entry when it did not come from the listed directory
-    /// — a search result, which lives somewhere below it. `name` stays the
+    /// Where to show this entry when it did not come from the listed directory:
+    /// a search result, which lives somewhere below it. `name` stays the
     /// entry's own name, because rename, git colouring, type-ahead, and
     /// selection all key on it.
     pub relative: Option<String>,
@@ -124,7 +124,7 @@ impl Default for ViewSettings {
     }
 }
 
-/// Read a directory, unsorted. Blocking — always call this from a background thread.
+/// Read a directory, unsorted. Blocking: always call this from a background thread.
 ///
 /// Unreadable individual entries are skipped rather than failing the whole listing; a
 /// directory with one bad inode should still show everything else.
@@ -151,13 +151,13 @@ pub fn read_dir(path: &Path, include_hidden: bool) -> anyhow::Result<Vec<DirEntr
 /// Order a listing in place.
 ///
 /// With `folders_first`, directories group before files regardless of key or
-/// direction — flipping the grouping is nobody's idea of "sort by size,
+/// direction: flipping the grouping is nobody's idea of "sort by size,
 /// descending"; only the order *within* each group reverses.
 pub fn sort_entries(entries: &mut [DirEntry], sort: Sort, folders_first: bool) {
     sort_entries_by(entries, sort, folders_first, |entry| entry.size);
 }
 
-/// The same, where some rows carry a size the entry itself does not — a
+/// The same, where some rows carry a size the entry itself does not, a
 /// directory's recursive total, which is measured after the listing was built.
 pub fn sort_entries_by(
     entries: &mut [DirEntry],
@@ -342,7 +342,7 @@ pub fn name_problem(name: &str) -> Option<&'static str> {
 /// a folder dropped into itself or into its own descendant, which the engine
 /// would otherwise try to copy into a tree that grows as it writes, and a drop
 /// onto a source itself. A drop back into the directory the files came from is
-/// refused too — it is a no-op, and refusing it means no target lights up.
+/// refused too, it is a no-op, and refusing it means no target lights up.
 pub fn is_valid_drop(sources: &[PathBuf], dest: &Path) -> bool {
     sources.iter().all(|source| {
         // `starts_with` compares whole components, so `/a/bc` is not inside
@@ -355,7 +355,7 @@ pub fn is_valid_drop(sources: &[PathBuf], dest: &Path) -> bool {
 ///
 /// Substring, not fuzzy. A filename filter wants to be predictable: fuzzy
 /// matching turns "test" into a hit on `the_second_thing.rs` and the result
-/// reads as noise. Smart case, as everywhere else — a lower-case query ignores
+/// reads as noise. Smart case, as everywhere else, a lower-case query ignores
 /// case, and any capital makes it exact.
 pub fn matches_filter(name: &str, query: &str) -> bool {
     if query.is_empty() {
@@ -371,7 +371,7 @@ pub fn matches_filter(name: &str, query: &str) -> bool {
 /// The closest ancestor of `path` that is still a directory, including `path`
 /// itself.
 ///
-/// Used when a pane's directory goes away — deleted elsewhere, or on a volume
+/// Used when a pane's directory goes away: deleted elsewhere, or on a volume
 /// that was unmounted. Walking up beats sitting on an error, because the error
 /// state has no way out except typing a new path. `/` always exists, so the
 /// walk terminates.
@@ -383,7 +383,7 @@ pub fn nearest_existing_dir(path: &Path) -> Option<PathBuf> {
 
 /// The row `delta` away from `cursor` in a listing of `len` rows.
 ///
-/// With no cursor — or one left behind by a listing that has since shrunk — a
+/// With no cursor, or one left behind by a listing that has since shrunk, a
 /// downward step enters at the top and an upward step at the bottom, which is
 /// what every list does when you first reach for the arrow keys. Steps past
 /// either end clamp rather than wrap: wrapping a file list turns one keypress
@@ -480,7 +480,7 @@ pub fn format_time(time: SystemTime) -> String {
 /// row silently stopped updating the footer.
 ///
 /// It lives here rather than beside `DirPane` for the only reason that makes it
-/// work — privacy in Rust is per module, so a field on the pane would be freely
+/// work: privacy in Rust is per module, so a field on the pane would be freely
 /// assignable from every line in that file.
 #[derive(Default, Debug)]
 pub struct Selection {
@@ -555,15 +555,15 @@ impl Selection {
 /// What the footer has to say about a listing or a selection.
 ///
 /// The split between `known` and `roots` is the whole point: every size that
-/// arrived with the listing is already in `known`, and only directories — whose
-/// size nothing knows without walking them — end up in `roots`. A selection of
+/// arrived with the listing is already in `known`, and only directories: whose
+/// size nothing knows without walking them: end up in `roots`. A selection of
 /// plain files therefore leaves `roots` empty, and empty roots is what tells the
 /// pane not to start a thread at all.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Summary {
     /// Segments before the size: `14 items`, or `src · folder`.
     pub lead: Vec<String>,
-    /// Segments after it — a lone file's timestamp.
+    /// Segments after it, a lone file's timestamp.
     pub trail: Vec<String>,
     /// Whether a size belongs on the line at all.
     pub sized: bool,
@@ -582,7 +582,7 @@ pub struct Summary {
 ///
 /// It totals **exactly the rows it is describing**, so `11 items · 44.9 GB`
 /// means those eleven and toggling hidden files moves both numbers together.
-/// The alternative — walking the directory itself — makes the size cover
+/// The alternative, walking the directory itself, makes the size cover
 /// entries the count beside it does not, and stops one walk from serving both
 /// this line and the Size column, which needs each row separately anyway.
 ///
@@ -651,7 +651,7 @@ pub fn summarise_selection(entries: &[DirEntry], selected: &Selection) -> Summar
 /// The line as it reads, given how much of the walk has landed.
 ///
 /// The ellipsis goes on the number rather than the line, because the number is
-/// the only part still moving — the shape the job strip already uses for a total
+/// the only part still moving, the shape the job strip already uses for a total
 /// it does not have yet.
 pub fn compose(summary: &Summary, walked: u64, settled: bool) -> String {
     let mut parts = summary.lead.clone();

@@ -702,7 +702,7 @@ impl Render for PathEditor {
 
 // ---------------------------------------------------------------------------
 // The element: shapes the line, keeps the caret visible via scroll_x, paints
-// selection/text/caret, and — load-bearing — re-registers the window input
+// selection/text/caret, and, load-bearing, re-registers the window input
 // handler on every paint (registration lasts one frame and requires the focus
 // handle to be *exactly* focused).
 // ---------------------------------------------------------------------------

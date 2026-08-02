@@ -7,7 +7,7 @@
 //!
 //! Volumes come from `lsblk`, filtered on `hotplug` rather than the `rm` flag.
 //! `rm` reflects the SCSI "medium is ejectable" bit and reads false on most USB
-//! enclosures — this machine's own USB disk reports `rm=false, hotplug=true` —
+//! enclosures, this machine's own USB disk reports `rm=false, hotplug=true`,
 //! which is the same trap `sys::is_removable` documents in the transfer engine.
 
 use std::path::PathBuf;
@@ -177,7 +177,7 @@ fn parse_volumes(json: &str) -> Vec<Place> {
 /// Mount a volume and return where it landed.
 ///
 /// Shells out to `udisksctl`, which routes through polkit and mounts as the
-/// user under /run/media — the same path Nautilus takes. Doing it ourselves
+/// user under /run/media, the same path Nautilus takes. Doing it ourselves
 /// would need root.
 pub fn mount(device: &std::path::Path) -> std::io::Result<PathBuf> {
     let out = Command::new("udisksctl")

@@ -3,7 +3,7 @@
 //!
 //! Still not a general picker component. Zed's `picker` is a delegate trait
 //! with resizable geometry, preview panes, multi-select, and sqlite
-//! persistence. This is the concrete overlap of two concrete lists — they
+//! persistence. This is the concrete overlap of two concrete lists, they
 //! differ only in where entries come from, what a row looks like, and what
 //! choosing one does, so that is all either of them defines.
 //!
@@ -64,8 +64,8 @@ impl PickerState {
     ///
     /// For a list that grows *underneath* the user rather than one they
     /// retyped: the place finder splices in volumes when a slow `lsblk`
-    /// returns, and a plain `rematch` would send the highlight back to the top
-    /// — moving it out from under an enter the user is in the middle of
+    /// returns, and a plain `rematch` would send the highlight back to the top,
+    /// moving it out from under an enter the user is in the middle of
     /// pressing.
     pub fn rematch_keeping_selection(&mut self, query: &str) {
         let held = self.matches.get(self.selected).map(|m| m.candidate_id);
@@ -110,7 +110,7 @@ pub fn list_height(state: &PickerState, row_height: f32) -> Pixels {
 
 /// The modal: query field on top, rows or an empty message below.
 ///
-/// The list arrives already sized, via `list_height` — see why there.
+/// The list arrives already sized, via `list_height`: see why there.
 pub fn shell(
     state: &PickerState,
     empty_message: &'static str,
@@ -194,7 +194,7 @@ pub fn match_entries(candidates: &[StringMatchCandidate], query: &str) -> Vec<St
         candidates,
         query,
         // Smart case: match case-insensitively and let case only score. Zed
-        // documented this the hard way — matching case-sensitively rejects a
+        // documented this the hard way: matching case-sensitively rejects a
         // capitalised query against a lower-case name, which is the common case.
         Case::smart_if_uppercase_in(query),
         LengthPenalty::On,
@@ -205,13 +205,13 @@ pub fn match_entries(candidates: &[StringMatchCandidate], query: &str) -> Vec<St
 /// A label with the matched characters in the accent colour.
 ///
 /// `with_default_highlights` takes the style it is given rather than inheriting
-/// from the element tree, so the colour has to be set here — a `text_color` on
+/// from the element tree, so the colour has to be set here, a `text_color` on
 /// an ancestor is silently ignored.
 ///
 /// The offsets are BYTES into the string that was *matched*, which is not
 /// always the string being drawn: a candidate may combine a label with a detail
 /// so that both are searchable, while only the label is highlighted. Ranges
-/// outside `text`, or landing inside a multi-byte character, are dropped —
+/// outside `text`, or landing inside a multi-byte character, are dropped:
 /// gpui asserts on a char boundary and takes the process with it, so clipping
 /// belongs here rather than in every caller.
 pub fn highlighted_label(

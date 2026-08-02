@@ -1,11 +1,11 @@
 //! "Open" and "Open With": XDG mime resolution, `.desktop` discovery, and
 //! detached launching.
 //!
-//! - MIME detection: `xdg-mime` (real shared-mime-info queries — globs plus
-//!   magic sniffing).
+//! - MIME detection: `xdg-mime`, which is a real shared-mime-info query,
+//!   globs plus magic sniffing.
 //! - `.desktop` parsing and Exec field-code expansion: `freedesktop-desktop-entry`
 //!   (`parse_exec_with_uris` handles `%f/%F/%u/%U` and quoting).
-//! - The `mimeapps.list` resolver is hand-rolled — no crate does it well. This
+//! - The `mimeapps.list` resolver is hand-rolled: no crate does it well. This
 //!   is a simplified but order-correct pass: per-desktop then generic files
 //!   across the XDG config/data hierarchy, `[Default Applications]` first-match,
 //!   `[Added Associations]` appended, `[Removed Associations]` masked, unioned
@@ -116,7 +116,7 @@ fn mime_db() -> &'static xdg_mime::SharedMimeInfo {
 }
 
 /// Desktop entries by desktop-file id, loaded once. Staleness across app
-/// installs is accepted for now — this cache lives for the app's lifetime.
+/// installs is accepted for now, this cache lives for the app's lifetime.
 fn entries() -> &'static HashMap<String, DesktopEntry> {
     static ENTRIES: OnceLock<HashMap<String, DesktopEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
@@ -194,7 +194,7 @@ fn load_associations() -> Associations {
 }
 
 /// `subclasses`: MIME type → its direct parents. We parse this ourselves
-/// because `SharedMimeInfo::get_parents` is unusable — it unaliases first and
+/// because `SharedMimeInfo::get_parents` is unusable, it unaliases first and
 /// its `unalias_mime_type` returns `None` for anything that is not literally an
 /// alias, so every canonical type comes back with no parents at all. Without
 /// this, "Open With" is empty for every source file on a system whose editors

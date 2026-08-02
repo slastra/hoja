@@ -3,13 +3,13 @@
 //! The job strip has one line, so a failed transfer could only ever say how
 //! many files failed and name the first. That is the wrong one to name: the
 //! first error is rarely the interesting one, and a job can fail in several
-//! ways at once — a directory that is unreadable, a filesystem that refuses
+//! ways at once, a directory that is unreadable, a filesystem that refuses
 //! symlinks, a disk that filled up halfway.
 //!
 //! Listing each failure with its own reason attached reads badly at the scale
 //! failures actually arrive: copying a source tree onto exFAT produced 2,619 of
 //! them, every one saying "Operation not permitted", and the answer the list was
-//! being asked for — *what went wrong* — was buried under 2,619 repetitions of
+//! being asked for, *what went wrong*, was buried under 2,619 repetitions of
 //! itself. So the reason is the heading and the files sit under it.
 
 use gpui::{
@@ -79,7 +79,7 @@ fn tidy(reason: &str) -> &str {
 /// The deepest directory every failure sits under, so the rows can drop it.
 ///
 /// A transfer that fails does so on a run of files in the same few directories,
-/// and their full paths are near-identical for the first hundred characters —
+/// and their full paths are near-identical for the first hundred characters,
 /// which is exactly the part a row has room for. Printed whole, seven rows read
 /// as seven copies of the same truncated prefix and no filenames at all. Lifted
 /// out, the rows carry only what distinguishes them.
@@ -138,7 +138,7 @@ impl FailureReport {
         match self.lines.get(ix) {
             // Flush left and at full strength against indented, muted files:
             // in a grouped report the reason is the finding and the names under
-            // it are the evidence. A background band said this more quietly —
+            // it are the evidence. A background band said this more quietly,
             // and in themes where the two surface colours are close, not at all.
             Some(Line::Reason { text, count }) => line
                 .px_3()

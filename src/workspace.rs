@@ -100,7 +100,7 @@ impl Modal {
 /// One per file, and a job can fail on every file it touches: copying a source
 /// tree onto exFAT produced 2,619, one for each symlink the filesystem cannot
 /// represent. Set well above that so the per-reason counts in the report are
-/// the real ones rather than a sample — at roughly 140 bytes each this is under
+/// the real ones rather than a sample: at roughly 140 bytes each this is under
 /// 1.5 MB, and it is a backstop against a pathological job rather than a budget.
 const MAX_RETAINED_FAILURES: usize = 10_000;
 
@@ -123,7 +123,7 @@ struct JobView {
     /// What failed, for the report the warning icon opens.
     failures: Vec<Failure>,
     /// When the transfer started, so a job short enough to have been watched
-    /// does not raise a notification about it — see `notifications::NOTIFY_AFTER`.
+    /// does not raise a notification about it: see `notifications::NOTIFY_AFTER`.
     started: std::time::Instant,
     /// Smoothed bytes per second, and the sample it was folded from.
     rate: Option<f64>,
@@ -162,16 +162,16 @@ fn metrics_font(cx: &App) -> Option<gpui::SharedString> {
 
 /// Weight of the newest sample in the rate estimate.
 ///
-/// A 120ms window over a tree of small files is violently bursty — one large
-/// file lands and the instantaneous figure jumps by an order of magnitude — and
+/// A 120ms window over a tree of small files is violently bursty, one large
+/// file lands and the instantaneous figure jumps by an order of magnitude, and
 /// a number that jitters like that is worse than no number.
 ///
 /// The weight sets a time constant of roughly `JOB_POLL_INTERVAL / w`, so this
 /// averages over about two seconds. It was 0.25 to begin with, which is half a
 /// second, and at that the reading chased every burst: 1.6, 2.1, 3.1, 1.9 GB/s
 /// in consecutive frames of the same steady copy. Two seconds still follows a
-/// real change of speed — crossing onto slower media, or into a directory of
-/// small files — within a few frames, which is as fast as anyone can read it.
+/// real change of speed: crossing onto slower media, or into a directory of
+/// small files: within a few frames, which is as fast as anyone can read it.
 const RATE_SMOOTHING: f64 = 0.06;
 
 /// Fold one interval's worth of bytes into the running rate estimate.
@@ -208,7 +208,7 @@ impl Figure {
                 value: value.to_string(),
                 unit: unit.to_string(),
             },
-            // No space to split on — "…" while the scan is still running.
+            // No space to split on: "…" while the scan is still running.
             None => Figure {
                 value: String::new(),
                 unit: formatted.to_string(),
@@ -229,7 +229,7 @@ impl Figure {
 /// longest each can hold: four digits and a decimal point, "MB/s", "1h 59m",
 /// "left". A cell sized to its content instead makes the progress bar beside it
 /// grow and shrink on every repaint, since the bar is what absorbs the
-/// difference — and the bar is the one thing on the strip that should hold
+/// difference, and the bar is the one thing on the strip that should hold
 /// still.
 const VALUE_W: f32 = 46.;
 /// Sized to "MB" and no wider. Slack in this cell lands between the unit and
@@ -262,7 +262,7 @@ const CHAR_W: f32 = 7.3;
 /// The size phrase: transferred, the slash, and the total.
 const SIZE_W: f32 = VALUE_W + SIZE_UNIT_W + SEP_W + TOTAL_W + TIGHT_GAP * 3.;
 /// Reserved for the failure badge, which is wider the more files failed.
-/// Holds the icon, a gap, and "2,619 failed" — a five-figure count would
+/// Holds the icon, a gap, and "2,619 failed", a five-figure count would
 /// overflow it, and a job that fails ten thousand times has said enough.
 const BADGE_W: f32 = 108.;
 /// Everything above plus the gaps, so the states that show a sentence line up
@@ -294,7 +294,7 @@ fn transfer_metrics(done: u64, total: u64, walk_complete: bool, rate: Option<f64
     };
     // Rate as soon as there is one; time remaining only once the scan has
     // settled a denominator to subtract from. A rate near zero means a stall,
-    // and dividing by it would promise infinity — say nothing instead.
+    // and dividing by it would promise infinity: say nothing instead.
     if let Some(rate) = rate.filter(|r| *r > 1.) {
         metrics.rate = Figure::split(&format!("{}/s", fs::format_rate(rate as u64)));
         if walk_complete && total > done {
@@ -326,7 +326,7 @@ impl JobView {
 /// Owns the pane tree and the notion of which pane is active.
 ///
 /// Following Zed: the tree is *not* the source of truth for activation. A separate
-/// `active_pane` handle plus a flat `panes` list track that, and focus drives it — a
+/// `active_pane` handle plus a flat `panes` list track that, and focus drives it, a
 /// pane emits `PaneEvent::Focus` on focus-in and we make it active in response. Clicking
 /// a pane focuses it, so activation needs no separate click plumbing.
 pub struct Workspace {
@@ -335,7 +335,7 @@ pub struct Workspace {
     active_pane: Entity<DirPane>,
     focus_handle: FocusHandle,
     pane_subscriptions: HashMap<EntityId, Subscription>,
-    /// Internal file clipboard — the source of truth for in-app paste. The
+    /// Internal file clipboard, the source of truth for in-app paste. The
     /// system clipboard is mirrored on write and consulted on read only to
     /// interoperate with other applications.
     clipboard: Option<ClipboardSet>,
@@ -351,10 +351,10 @@ pub struct Workspace {
     /// on every frame.
     title: String,
     /// What hoja remembers between runs. Written from `save_state`, never read
-    /// after startup — the panes own the live values.
+    /// after startup, the panes own the live values.
     state: State,
     save_task: Option<Task<()>>,
-    /// Which remembered fields are this instance's to publish — see `Dirty`.
+    /// Which remembered fields are this instance's to publish: see `Dirty`.
     dirty: config::Dirty,
     /// Window-bounds and app-quit hooks; held so they stay registered.
     _lifecycle: Vec<Subscription>,
@@ -420,7 +420,7 @@ impl Workspace {
                     this.remember_view(cx);
                 }),
                 // The throttled write is a `Task` this entity owns, so closing
-                // the window drops it — cancelling the timer before it ever
+                // the window drops it: cancelling the timer before it ever
                 // fires. Anything toggled inside the last SAVE_DEBOUNCE window
                 // went with it. Write inline here instead; there is no executor
                 // left to defer to.
@@ -428,7 +428,7 @@ impl Workspace {
                 // Release, not `on_app_quit`: closing the last window drops the
                 // window, which releases this entity, and only *then* quits the
                 // app. A quit observer therefore runs when the workspace is
-                // already gone, and its callback — which needs `&mut self` —
+                // already gone, and its callback, which needs `&mut self`,
                 // never fires at all. Measured: the toggle was still lost.
                 cx.on_release(|this, _| this.state.save_now(this.dirty)),
             ],
@@ -543,7 +543,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         // Geometric, using bounding boxes cached during the previous prepaint. Returns
-        // nothing before the first paint — a chord pressed at startup does nothing.
+        // nothing before the first paint, a chord pressed at startup does nothing.
         let Some(target) = self
             .center
             .find_pane_in_direction(&self.active_pane, direction)
@@ -579,7 +579,7 @@ impl Workspace {
         let internal = self.clipboard.clone();
 
         // The external read shells out to wl-paste, which blocks on the current
-        // clipboard owner — so it runs on the background executor. External
+        // clipboard owner, so it runs on the background executor. External
         // content wins when another app owns the selection; internal otherwise.
         let task = cx.spawn_in(window, async move |this, cx| {
             let external = cx
@@ -657,7 +657,7 @@ impl Workspace {
     }
 
     /// One poll loop for all jobs, alive only while jobs exist. 120ms matches
-    /// the "sample progress on a timer" design — frame-driven polling would
+    /// the "sample progress on a timer" design: frame-driven polling would
     /// couple a ~8Hz progress bar to vsync for no benefit. Spawned in the
     /// window so conflict prompts can be raised from inside the poll.
     fn ensure_polling(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -719,7 +719,7 @@ impl Workspace {
                     JobEvent::Done(summary) => {
                         job.done = Some(summary.outcome);
                         finished_jobs.push(job_id);
-                        // The summary is the authoritative list — it holds
+                        // The summary is the authoritative list, it holds
                         // failures raised before the strip started polling, and
                         // the walk's own, which arrive as no `FileError` at
                         // all. Rebuilding from it cannot double-count.
@@ -766,7 +766,7 @@ impl Workspace {
 
     /// Tell the desktop a transfer finished, when it is worth telling.
     ///
-    /// Not for a job you watched happen, and not for one you cancelled — you
+    /// Not for a job you watched happen, and not for one you cancelled, you
     /// already know. Errors always announce, however brief the job: the strip
     /// keeps a failed transfer around until it is dismissed, but only a
     /// notification reaches you when hoja is not the window you are looking at.
@@ -843,7 +843,7 @@ impl Workspace {
     }
 
     /// Delete the active pane's selection by moving it to the trash directory,
-    /// which is what makes `Undo` possible — an unlinked file cannot come back.
+    /// which is what makes `Undo` possible, an unlinked file cannot come back.
     ///
     /// There is deliberately no confirmation dialog: undo is the safety net, and
     /// a dialog that is always dismissed protects nobody.
@@ -855,7 +855,7 @@ impl Workspace {
         let parents = parent_dirs(&paths);
         let pane = self.active_pane.clone();
 
-        // Each item is a rename, so this is fast — but "fast" is a property of
+        // Each item is a rename, so this is fast, but "fast" is a property of
         // the filesystem, and a stalled network mount must not take the UI with
         // it.
         cx.spawn(async move |this, cx| {
@@ -994,7 +994,7 @@ impl Workspace {
             return;
         }
 
-        // Any *other* modal — the place finder — still holds focus here, and
+        // Any *other* modal, the place finder: still holds focus here, and
         // `available_actions` resolves against whatever is focused rather than
         // against the handle it is passed. Opening the palette over the finder
         // therefore enumerated the finder's dispatch path, and every pane
@@ -1160,7 +1160,7 @@ impl Workspace {
         }
 
         // The file was just written, so it is the newest answer and wins where
-        // it has one. Where it has none — a file that only sets a theme — what
+        // it has one. Where it has none, a file that only sets a theme: what
         // was remembered still stands, which is why the real state goes in here
         // and not an empty one. Passing `State::default()` reset every pane to
         // the compiled defaults on any settings edit, and then wrote the reset
@@ -1205,8 +1205,8 @@ impl Workspace {
 
         // Throttle rather than debounce: `self.state` is already up to date, so
         // a write that is coming will carry the latest values. Rescheduling on
-        // every change would let a rapid stream of them — a column drag, or a
-        // watcher that keeps firing — postpone the write indefinitely.
+        // every change would let a rapid stream of them, a column drag, or a
+        // watcher that keeps firing: postpone the write indefinitely.
         if self.save_task.is_some() {
             return;
         }
@@ -1241,7 +1241,7 @@ impl Workspace {
         })
         .detach();
 
-        // Nothing inside takes text, so the modal holds focus itself — without
+        // Nothing inside takes text, so the modal holds focus itself, without
         // this escape would go to the pane behind it.
         window.focus(&report.focus_handle(cx), cx);
         self.modal = Some(Modal::Failures(report));
@@ -1304,8 +1304,8 @@ impl Workspace {
         let error_color = cx.theme().status().error;
         let bar_bg = colors.element_background;
         // border_selected against element_background is two muted darks in most
-        // themes — the bar was drawn correctly and simply could not be seen.
-        // The bar says how much got through and nothing else — a job that
+        // themes, the bar was drawn correctly and simply could not be seen.
+        // The bar says how much got through and nothing else, a job that
         // failed still copied whatever it copied. Failure is the badge's to
         // report, in one place rather than smeared across the row.
         let bar_fill = colors.text_accent;
@@ -1632,7 +1632,7 @@ impl Workspace {
     ///
     /// Order is the order panes were created, not their arrangement on screen.
     /// For the two-pane case they are the same, and beyond it a cycle only has
-    /// to be predictable and reversible, which this is — `activate_in_direction`
+    /// to be predictable and reversible, which this is: `activate_in_direction`
     /// is what answers "the one to the left of this".
     fn cycle_focus(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         if self.panes.len() < 2 {
@@ -1727,7 +1727,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_places))
             .child(self.center.render(&self.active_pane, window, cx))
             // Search progress moved into the pane footer, where it belongs to
-            // the pane doing the searching — a background pane's used to be
+            // the pane doing the searching, a background pane's used to be
             // invisible. The strip is now transfers and notices only.
             .when(!self.jobs.is_empty() || self.notice.is_some(), |el| {
                 el.child(self.render_job_strip(cx))
@@ -1760,7 +1760,7 @@ mod tests {
     fn a_figure_keeps_its_unit_separate() {
         // The layout gives the number and the unit cells of their own, so they
         // have to arrive apart. Split at the last space, since a unit can hold
-        // one — "28s left".
+        // one: "28s left".
         assert_eq!(
             Figure::split("1.5 MB"),
             Figure { value: "1.5".into(), unit: "MB".into() }
@@ -1857,7 +1857,7 @@ mod tests {
     fn the_status_block_is_exactly_as_wide_as_what_it_holds() {
         // The sentence states ("scanning…", "done") right-align across
         // STATUS_W, so it has to end where the columns end. Derived rather than
-        // guessed, but derived arithmetic still drifts when a cell is added —
+        // guessed, but derived arithmetic still drifts when a cell is added,
         // and drifting the other way steals width from the progress bar.
         assert_eq!(
             SIZE_W,

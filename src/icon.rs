@@ -8,7 +8,7 @@ use gpui::{
 /// Where an icon's bytes come from, which determines how it can be coloured.
 ///
 /// GPUI's `svg()` rasterizes to an *alpha mask* and paints it as a solid quad in
-/// `text_color` — every colour in the source SVG is discarded. That makes bundled
+/// `text_color`: every colour in the source SVG is discarded. That makes bundled
 /// monochrome icons free to tint from the theme, but it also means a polychrome icon
 /// from a third-party icon theme cannot use that path at all. Those go through `img()`,
 /// which rasterizes via resvg and keeps its own colours.
@@ -64,7 +64,7 @@ impl RenderOnce for Icon {
                 .text_color(self.color)
                 .into_any_element(),
             IconSource::External(path) => {
-                // `text_color` is a no-op here — the raster keeps its own colours.
+                // `text_color` is a no-op here, the raster keeps its own colours.
                 img(path).size(self.size).flex_none().into_any_element()
             }
         }

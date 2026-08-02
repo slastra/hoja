@@ -1,7 +1,7 @@
 //! Attempt-failure caching and the M3 escalation seam.
 //!
 //! The principle throughout the engine is attempt-and-fallback: try the cheap
-//! syscall, catch the errno, and *cache the observed failure* — never predict
+//! syscall, catch the errno, and *cache the observed failure*, never predict
 //! kernel behavior from st_dev/fs-type sniffing. The first file of a job probes;
 //! every later file on the same mount pair skips the doomed attempt.
 

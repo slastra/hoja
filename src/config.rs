@@ -2,24 +2,24 @@
 //!
 //! Three directories, split by who writes them:
 //!
-//! - `~/.config/hoja/` — **you** write this. `settings.json` and `themes/`.
+//! - `~/.config/hoja/`: **you** write this. `settings.json` and `themes/`.
 //!   hoja never writes here, so it cannot reformat the file, drop the comments,
 //!   or lose an edit made while it was running.
-//! - `~/.local/state/hoja/` — **hoja** writes this. Column widths, window size,
+//! - `~/.local/state/hoja/`: **hoja** writes this. Column widths, window size,
 //!   and the view settings you last toggled. Things nobody would author by
 //!   hand, which is exactly what XDG_STATE_HOME is for.
-//! - `~/.local/share/hoja/` — the command palette's recency counts.
+//! - `~/.local/share/hoja/`, the command palette's recency counts.
 //!
 //! Settings seed, state remembers. A new install takes its defaults from
 //! `settings.json`; toggling hidden files in the menu records the new value in
 //! state, so it survives a restart.
 //!
 //! Two hoja processes share `state.json`, so a save is a read-modify-write
-//! under a lock that publishes only the fields *this* instance changed — see
+//! under a lock that publishes only the fields *this* instance changed: see
 //! `Dirty`. Writing the whole snapshot back let one window revert the other's
 //! settings, which is the ordinary two-window case rather than an exotic one.
 //!
-//! Where both files answer, the one written more recently wins — see `newer`.
+//! Where both files answer, the one written more recently wins: see `newer`.
 //! While hoja is running that is always the settings file, since it is watched
 //! and a save applies immediately. While hoja is closed it is whichever the
 //! user actually edited last, which is the point: state cannot be allowed to
@@ -68,7 +68,7 @@ pub fn state_file() -> Option<PathBuf> {
 
 // ---------------------------------------------------------------------------
 
-/// What you write. Every field is optional so a partial file is valid — writing
+/// What you write. Every field is optional so a partial file is valid: writing
 /// only `{"theme": "…"}` should not reset everything else to a default.
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -211,7 +211,7 @@ pub struct WindowState {
 ///
 /// Nothing else can tell them apart. A `State` is a full snapshot, taken when
 /// hoja started, so writing all of it back publishes stale answers for every
-/// field the user never touched — and if another hoja changed one of those in
+/// field the user never touched, and if another hoja changed one of those in
 /// the meantime, the write silently reverts it. Only the fields flagged here
 /// are this instance's to publish.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -276,14 +276,14 @@ impl State {
     /// The same write, on the calling thread.
     ///
     /// Closing the window drops the background executor along with everything
-    /// else, so the last write — the one carrying whatever was toggled in the
-    /// final moments — has to happen inline or not at all.
+    /// else, so the last write, the one carrying whatever was toggled in the
+    /// final moments, has to happen inline or not at all.
     pub fn save_now(&self, dirty: Dirty) {
         self.commit(dirty);
     }
 
     /// Read what is on disk now, lay this instance's changes over it, write it
-    /// back — all while holding the lock, so a second hoja doing the same thing
+    /// back: all while holding the lock, so a second hoja doing the same thing
     /// cannot read between our read and our write.
     fn commit(&self, dirty: Dirty) {
         if let Some(path) = state_file() {
@@ -319,7 +319,7 @@ impl State {
 /// A separate file rather than `state.json` itself: the write finishes with a
 /// rename, which puts a *new* inode in place, so a lock held on the old one
 /// would guard nothing. Advisory locks only bind processes that ask for them,
-/// which here is every hoja and nothing else — the file is ours.
+/// which here is every hoja and nothing else, the file is ours.
 ///
 /// Failing to lock is not a reason to skip the save. The lock narrows a race
 /// measured in microseconds; losing a setting outright is worse than losing it
@@ -344,7 +344,7 @@ impl FileLock {
 /// target.
 ///
 /// `fs::write` truncates first, so a crash or a kill between the truncation and
-/// the write leaves an empty or half-written file — and `State::load` treats a
+/// the write leaves an empty or half-written file, and `State::load` treats a
 /// file it cannot parse as absent, so the failure is silent and everything
 /// remembered is gone. `rename` within one directory is atomic, so a reader
 /// sees either the old file or the new one.
@@ -384,7 +384,7 @@ fn pick<T>(state: Option<T>, settings: Option<T>, winner: Winner) -> Option<T> {
 /// Whichever file was written more recently.
 ///
 /// State cannot simply win, which is what it used to do: `remember_view` writes
-/// all three view fields at once, and a single column drag reaches it — so
+/// all three view fields at once, and a single column drag reaches it, so
 /// after one drag, state has a concrete answer for everything and the `view`
 /// block of `settings.json` is inert forever. Editing that file with hoja
 /// closed would then do nothing at all, silently.
@@ -433,7 +433,7 @@ pub const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 ///
 /// Load-bearing, and not obvious: on Linux, *reading* a watched file or listing
 /// a watched directory emits `Access(Open)`. A watcher that reacts to every
-/// event and then reads what it watches therefore wakes itself up forever — the
+/// event and then reads what it watches therefore wakes itself up forever, the
 /// read is indistinguishable from an edit. Every watcher here reads what it
 /// watches, so every one of them needs this.
 pub fn is_content_change(event: &notify::Event) -> bool {
@@ -497,7 +497,7 @@ mod tests {
         assert!(!view.folders_first, "what you never toggled stays configured");
 
         // The other way round: the settings file is the newer of the two, so
-        // what it says beats what was remembered — and where it says nothing,
+        // what it says beats what was remembered, and where it says nothing,
         // the remembered value still stands.
         let view = initial_view(&settings, &state, Winner::Settings);
         assert!(!view.show_hidden, "an edit made while hoja was closed applies");
@@ -538,8 +538,8 @@ mod tests {
         };
         theirs.commit_at(&path, Dirty { sort: true, ..Dirty::default() });
 
-        // This one started before that, so its snapshot still says name-ascending
-        // — but it only ever toggled hidden files.
+        // This one started before that, so its snapshot still says name-ascending,
+        // but it only ever toggled hidden files.
         let ours = State {
             sort: Some(SortSetting::default()),
             show_hidden: Some(true),

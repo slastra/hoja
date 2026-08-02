@@ -23,19 +23,19 @@ for important data.
 - **Navigation.** Each pane has its own history. Use the back, forward, up, and
   home buttons. Click the path, then type a new path.
 - **Folder sizes.** The Size column shows a real, recursive size for folders,
-  not a blank. hoja walks the tree to find one — in parallel, in the
-  background — and each folder's cell fills in when its own subtree is counted,
+  not a blank. hoja walks the tree to find one, in parallel and in the
+  background, and each folder's cell fills in when its own subtree is counted,
   so no number ever climbs in the listing. Sorting by size reorders once, when
   every folder is final.
 - **Pane footer.** Each pane says what it is holding: `14 items · 1.2 GB` for
   the folder, `Cargo.toml · 2.8 KB · 2026-08-02 07:50` for one file,
   `3 selected · 259 MB` for several. It totals exactly the rows above it, so it
   is the sum of the Size column. The one walk serves both, which is why
-  selecting a folder costs nothing — its size is already there. A running
+  selecting a folder costs nothing, because its size is already there. A running
   search reports here too, in the pane doing the searching.
 - **The active pane.** The pane your keys act on keeps the full text colour.
   In the others the names, the icons, and the path go quiet, and the selection
-  holds at half strength — so two panes with selections cannot be mistaken for
+  holds at half strength, so two panes with selections cannot be mistaken for
   each other. A name coloured by git status keeps its colour, only fainter.
 - **View settings.** Each pane has a menu at the right end of the toolbar.
   It controls hidden files, folder grouping, and the sort order. hoja does
@@ -148,8 +148,8 @@ allowed, and hoja applies a change as soon as you save.
 
 `--theme` on the command line, then `$HOJA_THEME`, then this file.
 
-hoja keeps what you change through the interface — the sort order, hidden
-files, and the column widths you drag — in `~/.local/state/hoja/state.json`,
+hoja keeps what you change through the interface (the sort order, hidden
+files, and the column widths you drag) in `~/.local/state/hoja/state.json`,
 and reads it back at the next start. It writes that file and you write the
 other one, so neither can overwrite the other. When both have an answer, the
 more recent one applies: what you last toggled survives a restart, and editing
@@ -285,7 +285,7 @@ Prefer the sway harness, which exercises the Wayland backend hoja actually
 ships on; it needs `sway`, `grim`, `wtype` and `wlrctl`. Nested, its window
 presents to the host as class `wlroots`, so float it at a fixed size or a tiling
 compositor will stretch it and move the rows a test clicks. The X11 one needs only
-`Xvfb`, `xdotool` and ImageMagick, but tests gpui's X11 backend instead — so it
+`Xvfb`, `xdotool` and ImageMagick, but tests gpui's X11 backend instead, so it
 cannot say anything about drag and drop, the clipboard, or window state.
 
 ## Transfer engine

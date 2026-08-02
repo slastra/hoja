@@ -69,7 +69,7 @@ pub fn load_user_themes(cx: &mut App) {
     }
 }
 
-/// Switch the active theme by name. This is Zed's `reload_theme` in two lines — a global
+/// Switch the active theme by name. This is Zed's `reload_theme` in two lines, a global
 /// swap plus a blunt full repaint, rather than per-view observation.
 /// The theme that is actually on screen.
 ///
@@ -113,7 +113,7 @@ pub fn list_names(cx: &mut App) -> Vec<String> {
 /// Watch the user theme directory and re-apply the current theme whenever a
 /// file in it changes.
 ///
-/// Only colour themes are watched, matching Zed — icon themes have no equivalent.
+/// Only colour themes are watched, matching Zed: icon themes have no equivalent.
 pub fn watch_user_themes(cx: &mut App) {
     let dir = themes_dir();
     if std::fs::create_dir_all(&dir).is_err() {

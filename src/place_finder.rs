@@ -70,7 +70,7 @@ impl PlaceFinder {
 
         // Home and bookmarks are a file read; volumes shell out to lsblk, which
         // stalls on a spun-down or flaky enclosure. Open on what is free and
-        // splice the drives in when they arrive — the shape `resolve_open_with`
+        // splice the drives in when they arrive, the shape `resolve_open_with`
         // uses for the context menu.
         let places = places::local();
         let mut picker = PickerState::new(query);
@@ -118,7 +118,7 @@ impl PlaceFinder {
         cx.notify();
     }
 
-    /// The same, for the volumes arriving late — see `rematch_keeping_selection`.
+    /// The same, for the volumes arriving late: see `rematch_keeping_selection`.
     fn rematch_keeping_selection(&mut self, cx: &mut Context<Self>) {
         let query = self.picker.query.read(cx).text().to_string();
         self.picker.rematch_keeping_selection(query.trim());

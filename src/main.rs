@@ -93,7 +93,7 @@ fn main() {
     application().with_assets(Assets).run(move |cx: &mut App| {
         // Sets up ThemeRegistry, FontFamilyCache, SystemAppearance, and GlobalTheme so
         // `cx.theme()` resolves. The asset source is what `svg()` and the registry read
-        // bundled icons and themes through. It does NOT parse bundled theme JSON —
+        // bundled icons and themes through. It does NOT parse bundled theme JSON:
         // that's the two calls below.
         theme::init(LoadThemes::All(Box::new(Assets)), cx);
         if let Err(err) = theming::load_bundled_themes(cx) {
@@ -126,7 +126,7 @@ fn main() {
         // required or the binding never resolves. Split/focus actions bubble past the
         // focused pane up to the workspace, which handles them.
         //
-        // Space-separated keystrokes form a chord. `ctrl-` is literal Control — note
+        // Space-separated keystrokes form a chord. `ctrl-` is literal Control: note
         // that `cmd`/`super`/`win` are all aliases for the *platform* modifier, which on
         // Linux is Super, a key Hyprland grabs. Use `ctrl-` or `secondary-`, never
         // `cmd-`.
@@ -144,7 +144,7 @@ fn main() {
             // Tab between panes, F3 to split, ctrl-w to close: the file manager
             // scheme, which goes back to Norton Commander, rather than the
             // editor one. The other directions are still actions and still
-            // reachable by name in the palette — that is what the palette is
+            // reachable by name in the palette, that is what the palette is
             // for, and a command used once a week should not own a chord.
             KeyBinding::new("tab", FocusNext, Some("DirPane && !AddressBar")),
             KeyBinding::new("shift-tab", FocusPrevious, Some("DirPane && !AddressBar")),

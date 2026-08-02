@@ -58,7 +58,7 @@ impl ConflictState {
 
         loop {
             if self.cancel.load(Ordering::Relaxed) {
-                // A late answer from the prompt lands in a dropped receiver — harmless.
+                // A late answer from the prompt lands in a dropped receiver: harmless.
                 return Resolution::CancelJob;
             }
             match rx.recv_timeout(Duration::from_millis(100)) {

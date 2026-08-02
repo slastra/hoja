@@ -84,7 +84,7 @@ pub struct CommandPalette {
     focus_handle: FocusHandle,
     picker: PickerState,
     commands: Vec<Command>,
-    /// Where focus came from. Load-bearing three times over — see `new`.
+    /// Where focus came from. Load-bearing three times over: see `new`.
     previous_focus: FocusHandle,
     history: HashMap<String, usize>,
     _subscriptions: Vec<Subscription>,

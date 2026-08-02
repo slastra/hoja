@@ -69,7 +69,7 @@ impl Phase {
 
 /// All-atomic; safe to sample from any thread at any cadence. Totals are settled
 /// by the scan before the transfer starts, except where the scan is skipped (see
-/// `should_scan`), in which case they grow as the walk finds things —
+/// `should_scan`), in which case they grow as the walk finds things:
 /// `walk_complete` tells the UI when the denominator
 /// is final, so it can render an indeterminate bar before that.
 #[derive(Debug, Default)]
@@ -252,13 +252,13 @@ struct Worker {
     /// The scan ran and finished, so the totals are final and the transfer must
     /// not add to them again.
     scanned: bool,
-    /// Reused by every read/write fallback in the job — see `copy_extent`.
+    /// Reused by every read/write fallback in the job: see `copy_extent`.
     copy_buf: Vec<u8>,
     /// `st_dev` → mount key, so the statx behind `mount_key` happens once per
     /// filesystem rather than once per file. Keying on `st_dev` is sound for
     /// what the answer is used for: it decides whether rename and reflink are
-    /// worth attempting, and two bind mounts of one filesystem — the case
-    /// `MNT_ID` exists to tell apart — share a superblock and so share both
+    /// worth attempting, and two bind mounts of one filesystem, the case
+    /// `MNT_ID` exists to tell apart: share a superblock and so share both
     /// answers.
     mount_keys: HashMap<u64, MountKey>,
 }
@@ -296,7 +296,7 @@ impl Worker {
     ///
     /// Worth it whenever bytes will actually be copied: the walk costs about a
     /// second and a half for 86,000 files against a copy of the same tree that
-    /// costs minutes, and it buys a real denominator — without it the progress
+    /// costs minutes, and it buys a real denominator, without it the progress
     /// label reads `1.2 MB / …` for the entire job and the bar never leaves
     /// zero, because the walk only completes when the copy does.
     ///
@@ -333,7 +333,7 @@ impl Worker {
 
         // symlink_metadata, not metadata: a symlink is recreated, never read, so
         // it is one file and no bytes. Following it here would add its target's
-        // size to a total that the transfer never counts towards done — and
+        // size to a total that the transfer never counts towards done, and
         // node_modules is full of them, so the bar would stop short every time.
         if meta.file_type().is_symlink() {
             self.progress.files_total.fetch_add(1, Ordering::Relaxed);
@@ -534,7 +534,7 @@ impl Worker {
             }
             DestPlan::Cancel => return Step::Cancelled,
         };
-        // Overwrite of an existing entry: remove it first — symlink() has no
+        // Overwrite of an existing entry, so remove it first: symlink() has no
         // replace semantics.
         let _ = std::fs::remove_file(&dest);
         match meta::copy_symlink(src, &dest) {
@@ -594,7 +594,7 @@ impl Worker {
             }
 
         // Enumerate children first so totals grow ahead of processing (this IS
-        // the one walk — gate counters for M3 accumulate on these same adds).
+        // the one walk: gate counters for M3 accumulate on these same adds).
         let entries = match std::fs::read_dir(src) {
             Ok(iter) => {
                 let mut v: Vec<_> = iter.filter_map(Result::ok).collect();
@@ -644,7 +644,7 @@ impl Worker {
             self.warn(dest, w);
         }
 
-        // Move: remove the now-empty source dir, but never when a child failed —
+        // Move: remove the now-empty source dir, but never when a child failed,
         // that would orphan whatever is still inside.
         if self.spec.op == Operation::Move && !child_failed
             && let Err(err) = std::fs::remove_dir(src) {
@@ -662,7 +662,7 @@ impl Worker {
             && self.caps.rename_worth_trying(src_key, dst_key)
         {
             // rename() clobbers silently, so conflicts resolve BEFORE the
-            // attempt — and the attempt itself refuses to replace, so a file
+            // attempt, and the attempt itself refuses to replace, so a file
             // appearing in between is re-resolved rather than destroyed.
             let mut planned = match self.resolve_dest(src, dest) {
                 DestPlan::Proceed { path, .. } => path,

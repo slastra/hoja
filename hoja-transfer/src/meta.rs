@@ -1,5 +1,5 @@
 //! Metadata preservation: mode, xattrs, mtime. Fail-soft where the destination
-//! filesystem cannot hold what the source had (FAT has no mode or xattrs) —
+//! filesystem cannot hold what the source had (FAT has no mode or xattrs),
 //! those degrade to warnings, never failures.
 
 use std::fs::File;
@@ -62,12 +62,12 @@ fn apply_mtime(src_meta: &std::fs::Metadata, dest: &File, warnings: &mut Vec<Str
 
 /// Copy xattrs between two open files. TOCTOU-free: operates on fds, never paths.
 ///
-/// Errors collapse into a single warning string — one unreadable or unwritable
+/// Errors collapse into a single warning string, one unreadable or unwritable
 /// attribute must not fail the copy. `ENOTSUP` from the destination (FAT) is the
 /// expected fail-soft case.
 pub fn copy_xattrs(src: &File, dest: &File) -> Result<(), String> {
     // This runs once per file, and a tree can hold hundreds of thousands of
-    // them — nearly all with no xattrs at all. Both buffers used to be 64KB
+    // them: nearly all with no xattrs at all. Both buffers used to be 64KB
     // heap vectors allocated and zeroed up front, whatever the answer turned
     // out to be: about 11GB of memset to copy a node_modules tree, for lists
     // that were almost always empty. The empty case now touches the heap not
@@ -104,7 +104,7 @@ pub fn copy_xattrs(src: &File, dest: &File) -> Result<(), String> {
             continue;
         };
         // Only user.* and security-neutral namespaces can be set unprivileged;
-        // trusted.* / system.* fail with EPERM for normal users — skip silently
+        // trusted.* / system.* fail with EPERM for normal users: skip silently
         // for anything but user.* to avoid noise.
         let is_user = name_str.starts_with("user.");
 

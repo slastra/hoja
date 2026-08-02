@@ -1,7 +1,7 @@
 //! Recursive byte totals for the pane footer, walked in the background.
 //!
 //! A directory has no size until something counts it, and the footer promises a
-//! real one — for a selected folder and for the folder a pane is showing. That
+//! real one, for a selected folder and for the folder a pane is showing. That
 //! is a full tree walk, so it happens off the UI thread, reports as it goes, and
 //! stops the moment nobody wants the answer any more.
 //!
@@ -9,7 +9,7 @@
 //! the same stat-every-file work spread across cores. Measured here on a
 //! 1,507,072-file tree, warm: 4.16s on one thread, 2.11s on two, 1.09s on four,
 //! 1.02s on eight, and 1.11s on thirty-two. Four workers gets essentially all of
-//! it, and oversubscribing costs — the same shape the transfer benchmarks
+//! it, and oversubscribing costs, the same shape the transfer benchmarks
 //! showed. `du`, sequential and in C, takes 2.48s.
 //!
 //! Shaped after `crate::search`, which is the house pattern for a cancellable
@@ -19,7 +19,7 @@
 //!
 //! A total *per root*, not one between them. One walk then serves both the
 //! pane's footer, which sums them, and the Size column, which shows each
-//! separately — the same bytes read once, attributed rather than merely added.
+//! separately, the same bytes read once, attributed rather than merely added.
 
 use std::collections::HashSet;
 use std::os::unix::fs::MetadataExt;
@@ -38,7 +38,7 @@ struct Root {
     ///
     /// rayon's `Scope` says when *everything* finishes and never when a subtree
     /// does, but a shallow folder is settled long before a walk of twenty-five
-    /// of them — and a column cell must not sit blank waiting on its
+    /// of them, and a column cell must not sit blank waiting on its
     /// neighbours. So the roots count their own outstanding work.
     pending: AtomicUsize,
 }
@@ -88,7 +88,7 @@ struct Walk {
     roots: Arc<Vec<Root>>,
     cancel: Arc<AtomicBool>,
     /// `(dev, ino)` of files with more than one link, so a tree that hardlinks
-    /// into a store — pnpm's `node_modules` is 83% such files — is not counted
+    /// into a store (pnpm's `node_modules` is 83% such files) is not counted
     /// several times over. Only consulted when `nlink > 1`, so the ordinary
     /// case never takes the lock.
     linked: Mutex<HashSet<(u64, u64)>>,
@@ -131,7 +131,7 @@ pub fn spawn(paths: Vec<PathBuf>) -> Measure {
             };
             // The dedicated pool if it exists, rayon's global one otherwise.
             // The global pool sizes itself to every core, which measured slower
-            // than four — but a total that is merely slower beats none at all.
+            // than four, but a total that is merely slower beats none at all.
             //
             // Written out twice rather than hoisted into a closure: binding it
             // pins one `'scope` lifetime, and `walk` then fails to outlive it.
@@ -195,7 +195,7 @@ fn descend<'a>(scope: &rayon::Scope<'a>, dir: PathBuf, walk: &'a Walk, ix: usize
     if walk.cancel.load(Ordering::Relaxed) {
         // Released on the cancelled path too, so the counts unwind with the
         // threads. That does leave the root reading as settled on a partial
-        // figure — which nothing can observe, because the only way to cancel is
+        // figure, which nothing can observe, because the only way to cancel is
         // to drop the handle, and the reader has therefore already let go.
         walk.leave(ix);
         return;
@@ -214,7 +214,7 @@ fn descend<'a>(scope: &rayon::Scope<'a>, dir: PathBuf, walk: &'a Walk, ix: usize
         };
         // Never followed. A link that points at an ancestor makes the walk a
         // cycle, and `~/.wine/dosdevices/z: -> /` puts one in a great many home
-        // directories — `crate::search` learned this the same way. The link
+        // directories: `crate::search` learned this the same way. The link
         // itself occupies no space worth reporting.
         if file_type.is_symlink() {
             continue;
@@ -241,7 +241,7 @@ impl Walk {
     /// One directory's worth of work is finished under `ix`.
     ///
     /// `Release` so that a reader seeing the count fall to zero also sees every
-    /// byte written under that root — the pairing with `Measure::settled`'s
+    /// byte written under that root, the pairing with `Measure::settled`'s
     /// `Acquire`.
     fn leave(&self, ix: usize) {
         self.roots[ix].pending.fetch_sub(1, Ordering::Release);
@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn a_hardlinked_file_counts_once() {
         let root = fixture("links");
-        // Three names, one inode, 4000 bytes between them — not 12000.
+        // Three names, one inode, 4000 bytes between them, not 12000.
         std::fs::hard_link(root.join("a/deep/low.bin"), root.join("first.bin")).unwrap();
         std::fs::hard_link(root.join("a/deep/low.bin"), root.join("a/second.bin")).unwrap();
 
@@ -415,7 +415,7 @@ mod tests {
 
         let measure = spawn(vec![root.clone()]);
         settle(&measure);
-        // Running as root would read it anyway, so accept either — the point of
+        // Running as root would read it anyway, so accept either, the point of
         // the test is that the walk finishes and reports rather than giving up.
         let bytes = measure.bytes(0);
         assert!(bytes == 7000 || bytes == 15000, "got {bytes}");
