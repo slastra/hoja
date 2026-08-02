@@ -416,14 +416,24 @@ pub fn format_remaining(seconds: f64) -> String {
     if !seconds.is_finite() || seconds < 0. {
         return String::new();
     }
+    // Two digits throughout, so the figure is the same width at nine seconds
+    // as at fifty, and counting down does not shuffle the words after it.
     let s = seconds.round() as u64;
     match s {
-        0..=59 => format!("{s}s"),
-        60..=3599 => format!("{}m {}s", s / 60, s % 60),
-        _ => format!("{}h {}m", s / 3600, (s % 3600) / 60),
+        0..=59 => format!("{s:02}s"),
+        60..=3599 => format!("{:02}m {:02}s", s / 60, s % 60),
+        _ => format!("{:02}h {:02}m", s / 3600, (s % 3600) / 60),
     }
 }
 
+/// One tenth, always, for anything measured in a unit prefix.
+///
+/// The precision used to depend on the number: a tenth below 100 and none above
+/// it, so a column of sizes was a column of decimal points that appeared and
+/// disappeared and never lined up. Showing the tenth even when it is zero costs
+/// two characters and makes "15.0 GB" and "150.7 GB" the same shape.
+///
+/// Plain bytes keep no tenth. There is no such thing as a tenth of a byte.
 pub fn format_size(bytes: u64) -> String {
     const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
     if bytes < 1024 {
@@ -435,11 +445,23 @@ pub fn format_size(bytes: u64) -> String {
         value /= 1024.0;
         unit += 1;
     }
-    if value >= 100.0 {
-        format!("{value:.0} {}", UNITS[unit])
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+/// A transfer rate, which wants the opposite of `format_size`.
+///
+/// A tenth of a megabyte per second is noise: the figure is an estimate over a
+/// two-second window and its last digit changes faster than it can be read.
+/// Rounded whole, it holds still long enough to mean something.
+pub fn format_rate(bytes_per_second: u64) -> String {
+    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
+    let mut value = bytes_per_second as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
     }
+    format!("{value:.0} {}", UNITS[unit])
 }
 
 /// Local-time timestamp for the Modified column.
@@ -805,12 +827,12 @@ mod tests {
     #[test]
     fn remaining_time_gets_coarser_the_further_out_it_is() {
         use super::format_remaining;
-        assert_eq!(format_remaining(0.), "0s");
+        assert_eq!(format_remaining(0.), "00s");
         assert_eq!(format_remaining(45.4), "45s");
-        assert_eq!(format_remaining(59.6), "1m 0s");
-        assert_eq!(format_remaining(135.), "2m 15s");
-        assert_eq!(format_remaining(3600.), "1h 0m");
-        assert_eq!(format_remaining(4800.), "1h 20m");
+        assert_eq!(format_remaining(59.6), "01m 00s");
+        assert_eq!(format_remaining(135.), "02m 15s");
+        assert_eq!(format_remaining(3600.), "01h 00m");
+        assert_eq!(format_remaining(4800.), "01h 20m");
         // A rate of zero divides to infinity; that is not a duration.
         assert_eq!(format_remaining(f64::INFINITY), "");
         assert_eq!(format_remaining(f64::NAN), "");
@@ -1114,6 +1136,23 @@ mod tests {
         assert_eq!(format_size(1024), "1.0 KB");
         assert_eq!(format_size(1024 * 1024), "1.0 MB");
         assert_eq!(format_size(1536 * 1024), "1.5 MB");
+    }
+
+    #[test]
+    fn a_size_keeps_its_tenth_past_a_hundred() {
+        // The tenth used to vanish above 100, so a column of sizes had decimal
+        // points that came and went and never lined up with each other.
+        assert_eq!(format_size(150 * 1024 * 1024), "150.0 MB");
+        assert_eq!(format_size(1023 * 1024 * 1024), "1023.0 MB");
+    }
+
+    #[test]
+    fn a_rate_never_shows_a_tenth() {
+        // The opposite rule: this is an estimate over a two-second window, and
+        // the last digit of it changes faster than anyone can read it.
+        assert_eq!(format_rate(1536 * 1024), "2 MB");
+        assert_eq!(format_rate(150 * 1024 * 1024), "150 MB");
+        assert_eq!(format_rate(512), "512 B");
     }
 }
 

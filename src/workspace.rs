@@ -130,6 +130,36 @@ struct JobView {
     last_sample: (std::time::Instant, u64),
 }
 
+/// A monospaced family the system actually has, or `None` to leave the metrics
+/// in the UI font with tabular figures.
+///
+/// gpui matches a family name exactly and a miss loads nothing at all, so the
+/// name cannot simply be asserted: generic aliases like "monospace" are a
+/// fontconfig idea that never reaches the font database. The list is checked
+/// against what is installed and the first hit wins.
+fn metrics_font(cx: &App) -> Option<gpui::SharedString> {
+    static CHOSEN: std::sync::OnceLock<Option<gpui::SharedString>> = std::sync::OnceLock::new();
+    CHOSEN
+        .get_or_init(|| {
+            const PREFERRED: [&str; 8] = [
+                "DejaVu Sans Mono",
+                "Liberation Mono",
+                "Noto Sans Mono",
+                "JetBrains Mono",
+                "Source Code Pro",
+                "Fira Code",
+                "Hack",
+                "Ubuntu Mono",
+            ];
+            let installed = cx.text_system().all_font_names();
+            PREFERRED
+                .iter()
+                .find(|name| installed.iter().any(|have| have == *name))
+                .map(|name| gpui::SharedString::from(*name))
+        })
+        .clone()
+}
+
 /// Weight of the newest sample in the rate estimate.
 ///
 /// A 120ms window over a tree of small files is violently bursty — one large
@@ -201,22 +231,34 @@ impl Figure {
 /// grow and shrink on every repaint, since the bar is what absorbs the
 /// difference — and the bar is the one thing on the strip that should hold
 /// still.
-const VALUE_W: f32 = 34.;
-const SIZE_UNIT_W: f32 = 20.;
+const VALUE_W: f32 = 46.;
+/// Sized to "MB" and no wider. Slack in this cell lands between the unit and
+/// the slash, where it reads as a gap the phrase does not want; the gap that
+/// matters is the one before the unit, and that one is a real gap rather than
+/// leftover cell.
+const SIZE_UNIT_W: f32 = 16.;
 const SEP_W: f32 = 8.;
-const RATE_VALUE_W: f32 = 32.;
-const RATE_UNIT_W: f32 = 32.;
-const LEFT_VALUE_W: f32 = 44.;
-const LEFT_UNIT_W: f32 = 28.;
-/// `gap_0p5` inside the size phrase, `gap_1` between the top-level cells.
-const TIGHT_GAP: f32 = 2.;
-const GAP: f32 = 4.;
+const RATE_VALUE_W: f32 = 34.;
+const RATE_UNIT_W: f32 = 36.;
+const LEFT_VALUE_W: f32 = 54.;
+const LEFT_UNIT_W: f32 = 32.;
+/// One character wide, so a split figure reads exactly like an unsplit one:
+/// "381.7 MB" in two cells and "1.0 GB" in one have the same gap before the
+/// unit. At half that the number and its unit ran together.
+const TIGHT_GAP: f32 = 7.;
+const GAP: f32 = 8.;
 /// The total, which needs no growth room of its own: it is fixed for the life
 /// of a job, so it is laid out as one figure held to the left of its cell,
 /// starting right after the slash. Splitting it like the transferred size put
 /// a number's worth of empty space between the two, and the phrase read as two
 /// unrelated columns.
-const TOTAL_W: f32 = VALUE_W + TIGHT_GAP + SIZE_UNIT_W;
+const TOTAL_W: f32 = 68.;
+/// Advance width of one character in the metrics font at `text_xs`. Monospace,
+/// so every character is this wide, which is the entire reason the metrics are
+/// set in it. Only the column-width test reads it; the layout is the constants
+/// above, and this is what checks they are big enough.
+#[cfg(test)]
+const CHAR_W: f32 = 7.3;
 /// The size phrase: transferred, the slash, and the total.
 const SIZE_W: f32 = VALUE_W + SIZE_UNIT_W + SEP_W + TOTAL_W + TIGHT_GAP * 3.;
 /// Reserved for the failure badge, which is wider the more files failed.
@@ -254,7 +296,7 @@ fn transfer_metrics(done: u64, total: u64, walk_complete: bool, rate: Option<f64
     // settled a denominator to subtract from. A rate near zero means a stall,
     // and dividing by it would promise infinity — say nothing instead.
     if let Some(rate) = rate.filter(|r| *r > 1.) {
-        metrics.rate = Figure::split(&format!("{}/s", fs::format_size(rate as u64)));
+        metrics.rate = Figure::split(&format!("{}/s", fs::format_rate(rate as u64)));
         if walk_complete && total > done {
             let left = (total - done) as f64 / rate;
             let remaining = fs::format_remaining(left);
@@ -1370,16 +1412,18 @@ impl Workspace {
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap_1()
-                            // Tabular figures: Noto Sans carries `tnum`, so every
-                            // digit takes the same width and a number changing
-                            // does not reflow the cell it sits in. Without it a
-                            // "1" is markedly narrower than an "8" and the text
-                            // shuffles on every repaint.
+                            .gap_2()
+                            // Monospace, so a digit and a decimal point and a
+                            // space all take the same width and nothing in the
+                            // block reflows as the numbers climb. `tnum` stays
+                            // for the machine with no mono font installed: it
+                            // evens out the digits of a proportional face, which
+                            // is most of the same benefit.
                             .font_features(gpui::FontFeatures(std::sync::Arc::new(vec![(
                                 "tnum".to_string(),
                                 1,
                             )])))
+                            .when_some(metrics_font(cx), |el, family| el.font_family(family))
                             .text_color(muted);
                         match status {
                             // One sentence, right-aligned across the whole block
@@ -1406,7 +1450,7 @@ impl Workspace {
                                         .flex()
                                         .flex_row()
                                         .items_center()
-                                        .gap_0p5()
+                                        .gap(px(TIGHT_GAP))
                                         .child(value(VALUE_W, m.done.value))
                                         .child(unit(SIZE_UNIT_W, m.done.unit))
                                         .child(
@@ -1751,7 +1795,7 @@ mod tests {
             Metrics {
                 done: fig("1.1", "MB"),
                 total: fig("", "…"),
-                rate: fig("47.7", "MB/s"),
+                rate: fig("48", "MB/s"),
                 left: Figure::default(),
             }
         );
@@ -1760,15 +1804,15 @@ mod tests {
             transfer_metrics(100_000_000, 500_000_000, true, Some(50_000_000.)),
             Metrics {
                 done: fig("95.4", "MB"),
-                total: fig("477", "MB"),
-                rate: fig("47.7", "MB/s"),
-                left: fig("8s", "left"),
+                total: fig("476.8", "MB"),
+                rate: fig("48", "MB/s"),
+                left: fig("08s", "left"),
             }
         );
         // A stalled transfer must not promise an infinite wait.
         assert_eq!(
             transfer_metrics(100, 500_000_000, true, Some(0.)),
-            Metrics { done: fig("100", "B"), total: fig("477", "MB"), ..Default::default() }
+            Metrics { done: fig("100", "B"), total: fig("476.8", "MB"), ..Default::default() }
         );
         // Nothing left to do is not "0s left" forever.
         assert_eq!(
@@ -1796,7 +1840,7 @@ mod tests {
         );
         let fits = |text: &str, width: f32| {
             assert!(
-                text.chars().count() as f32 * 6.5 <= width,
+                text.chars().count() as f32 * CHAR_W <= width,
                 "{text:?} needs more than {width}px"
             );
         };
@@ -1823,9 +1867,9 @@ mod tests {
         // The total is one cell now, so it has to hold the number and the unit
         // together. `format_size` drops the decimal once it reaches three
         // digits, so the widest it prints is four digits and a two-letter unit.
-        for widest in ["1023 PB", "99.9 GB", "1023 B"] {
+        for widest in ["1023.0 PB", "99.9 GB", "1023 B"] {
             assert!(
-                widest.chars().count() as f32 * 6.5 <= TOTAL_W,
+                widest.chars().count() as f32 * CHAR_W <= TOTAL_W,
                 "{widest:?} outgrew the total's cell"
             );
         }
