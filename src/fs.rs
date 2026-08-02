@@ -405,13 +405,16 @@ pub fn stem_range(name: &str) -> std::ops::Range<usize> {
 }
 
 /// Human-readable size for the listing's right-hand column.
-/// "45s", "2m 15s", "1h 20m" — how long is left, at a glance.
+/// "45s", "2m 15s", "1h 20m": how long is left, at a glance.
 ///
 /// Coarser the further out it is, because a remaining hour is not known to the
 /// second and printing it that way would claim otherwise.
+///
+/// Empty when there is no answer, so the caller shows nothing rather than a
+/// placeholder standing in for a number.
 pub fn format_remaining(seconds: f64) -> String {
     if !seconds.is_finite() || seconds < 0. {
-        return "—".to_string();
+        return String::new();
     }
     let s = seconds.round() as u64;
     match s {
@@ -809,8 +812,8 @@ mod tests {
         assert_eq!(format_remaining(3600.), "1h 0m");
         assert_eq!(format_remaining(4800.), "1h 20m");
         // A rate of zero divides to infinity; that is not a duration.
-        assert_eq!(format_remaining(f64::INFINITY), "—");
-        assert_eq!(format_remaining(f64::NAN), "—");
+        assert_eq!(format_remaining(f64::INFINITY), "");
+        assert_eq!(format_remaining(f64::NAN), "");
     }
 
     #[test]

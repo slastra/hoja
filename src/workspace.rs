@@ -185,6 +185,14 @@ impl Figure {
             },
         }
     }
+
+    /// Put back together, for a figure that has no reason to be pinned.
+    fn joined(&self) -> String {
+        if self.value.is_empty() {
+            return self.unit.clone();
+        }
+        format!("{} {}", self.value, self.unit)
+    }
 }
 
 /// Column widths, in the order they are laid out. Fixed, and sized for the
@@ -195,25 +203,30 @@ impl Figure {
 /// still.
 const VALUE_W: f32 = 34.;
 const SIZE_UNIT_W: f32 = 20.;
-const SEP_W: f32 = 10.;
+const SEP_W: f32 = 8.;
 const RATE_VALUE_W: f32 = 32.;
 const RATE_UNIT_W: f32 = 32.;
 const LEFT_VALUE_W: f32 = 44.;
 const LEFT_UNIT_W: f32 = 28.;
+/// `gap_0p5` inside the size phrase, `gap_1` between the top-level cells.
+const TIGHT_GAP: f32 = 2.;
+const GAP: f32 = 4.;
+/// The total, which needs no growth room of its own: it is fixed for the life
+/// of a job, so it is laid out as one figure held to the left of its cell,
+/// starting right after the slash. Splitting it like the transferred size put
+/// a number's worth of empty space between the two, and the phrase read as two
+/// unrelated columns.
+const TOTAL_W: f32 = VALUE_W + TIGHT_GAP + SIZE_UNIT_W;
+/// The size phrase: transferred, the slash, and the total.
+const SIZE_W: f32 = VALUE_W + SIZE_UNIT_W + SEP_W + TOTAL_W + TIGHT_GAP * 3.;
 /// Reserved for the failure badge, which is wider the more files failed.
 /// Holds the icon, a gap, and "2,619 failed" — a five-figure count would
 /// overflow it, and a job that fails ten thousand times has said enough.
 const BADGE_W: f32 = 108.;
 /// Everything above plus the gaps, so the states that show a sentence line up
 /// with the states that show numbers.
-const STATUS_W: f32 = VALUE_W * 2.
-    + SIZE_UNIT_W * 2.
-    + SEP_W
-    + RATE_VALUE_W
-    + RATE_UNIT_W
-    + LEFT_VALUE_W
-    + LEFT_UNIT_W
-    + 30.;
+const STATUS_W: f32 =
+    SIZE_W + RATE_VALUE_W + RATE_UNIT_W + LEFT_VALUE_W + LEFT_UNIT_W + GAP * 4.;
 
 /// The right-hand metrics of a job row, each number split from its unit.
 ///
@@ -244,7 +257,12 @@ fn transfer_metrics(done: u64, total: u64, walk_complete: bool, rate: Option<f64
         metrics.rate = Figure::split(&format!("{}/s", fs::format_size(rate as u64)));
         if walk_complete && total > done {
             let left = (total - done) as f64 / rate;
-            metrics.left = Figure::split(&format!("{} left", fs::format_remaining(left)));
+            let remaining = fs::format_remaining(left);
+            // Never "left" on its own: the word is only meaningful attached to
+            // the number it qualifies.
+            if !remaining.is_empty() {
+                metrics.left = Figure::split(&format!("{remaining} left"));
+            }
         }
     }
     metrics
@@ -729,7 +747,7 @@ impl Workspace {
         let files = notifications::count(summary.files_copied);
         let body = if failed {
             format!(
-                "{files} of {} to {where_to} — {} failed",
+                "{files} of {} to {where_to}, {} failed",
                 notifications::count(summary.files_copied + summary.errors.len() as u64),
                 notifications::count(summary.errors.len() as u64)
             )
@@ -1376,19 +1394,32 @@ impl Workspace {
                                     .child(sentence),
                             ),
                             Ok(m) => row
-                                .child(value(VALUE_W, m.done.value))
-                                .child(unit(SIZE_UNIT_W, m.done.unit))
                                 .child(
+                                    // "450 MB / 687 MB" is one reading, not two
+                                    // numbers that happen to be adjacent. Set at
+                                    // the row's spacing the slash floated in the
+                                    // middle of it, tied to neither side; at half
+                                    // that the phrase closes up and the wider gap
+                                    // to the rate does the separating.
                                     div()
-                                        .w(px(SEP_W))
                                         .flex_none()
                                         .flex()
                                         .flex_row()
-                                        .justify_center()
-                                        .child("/"),
+                                        .items_center()
+                                        .gap_0p5()
+                                        .child(value(VALUE_W, m.done.value))
+                                        .child(unit(SIZE_UNIT_W, m.done.unit))
+                                        .child(
+                                            div()
+                                                .w(px(SEP_W))
+                                                .flex_none()
+                                                .flex()
+                                                .flex_row()
+                                                .justify_center()
+                                                .child("/"),
+                                        )
+                                        .child(unit(TOTAL_W, m.total.joined())),
                                 )
-                                .child(value(VALUE_W, m.total.value))
-                                .child(unit(SIZE_UNIT_W, m.total.unit))
                                 .child(value(RATE_VALUE_W, m.rate.value))
                                 .child(unit(RATE_UNIT_W, m.rate.unit))
                                 .child(value(LEFT_VALUE_W, m.left.value))
@@ -1776,6 +1807,34 @@ mod tests {
         // The longest forms of the remaining time, which decide its two cells.
         fits("1h 59m", LEFT_VALUE_W);
         fits("left", LEFT_UNIT_W);
+    }
+
+    #[test]
+    fn the_status_block_is_exactly_as_wide_as_what_it_holds() {
+        // The sentence states ("scanning…", "done") right-align across
+        // STATUS_W, so it has to end where the columns end. Derived rather than
+        // guessed, but derived arithmetic still drifts when a cell is added —
+        // and drifting the other way steals width from the progress bar.
+        assert_eq!(
+            SIZE_W,
+            VALUE_W + TIGHT_GAP + SIZE_UNIT_W + TIGHT_GAP + SEP_W + TIGHT_GAP + TOTAL_W,
+            "the four cells of the size phrase and the three gaps between them"
+        );
+        // The total is one cell now, so it has to hold the number and the unit
+        // together. `format_size` drops the decimal once it reaches three
+        // digits, so the widest it prints is four digits and a two-letter unit.
+        for widest in ["1023 PB", "99.9 GB", "1023 B"] {
+            assert!(
+                widest.chars().count() as f32 * 6.5 <= TOTAL_W,
+                "{widest:?} outgrew the total's cell"
+            );
+        }
+        assert_eq!(
+            STATUS_W,
+            SIZE_W + GAP + RATE_VALUE_W + GAP + RATE_UNIT_W + GAP + LEFT_VALUE_W
+                + GAP + LEFT_UNIT_W,
+            "the size phrase, the rate, the remaining time, and the gaps between"
+        );
     }
 
     #[test]
