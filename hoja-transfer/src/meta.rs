@@ -66,19 +66,40 @@ fn apply_mtime(src_meta: &std::fs::Metadata, dest: &File, warnings: &mut Vec<Str
 /// attribute must not fail the copy. `ENOTSUP` from the destination (FAT) is the
 /// expected fail-soft case.
 pub fn copy_xattrs(src: &File, dest: &File) -> Result<(), String> {
-    // 64KB covers every real-world xattr list; values on ext4 fit in a block.
-    let mut names = vec![0u8; 64 * 1024];
-    let len = match rustix::fs::flistxattr(src, &mut *names) {
-        Ok(len) => len,
+    // This runs once per file, and a tree can hold hundreds of thousands of
+    // them — nearly all with no xattrs at all. Both buffers used to be 64KB
+    // heap vectors allocated and zeroed up front, whatever the answer turned
+    // out to be: about 11GB of memset to copy a node_modules tree, for lists
+    // that were almost always empty. The empty case now touches the heap not
+    // at all, and the value buffer waits until there is something to put in it.
+    let mut stack = [0u8; 512];
+    // Deferred: the common path never initialises it.
+    let mut heap: Vec<u8>;
+    let names: &[u8] = match rustix::fs::flistxattr(src, &mut stack) {
+        Ok(len) => &stack[..len],
         // Source fs has no xattrs: nothing to lose.
         Err(rustix::io::Errno::OPNOTSUPP) => return Ok(()),
+        // A list too long for the stack buffer. Rare enough to pay for a second
+        // call: size zero asks how much room it needs.
+        Err(rustix::io::Errno::RANGE) => {
+            let empty: &mut [u8] = &mut [];
+            let needed = rustix::fs::flistxattr(src, empty)
+                .map_err(|err| format!("xattrs not read: {err}"))?;
+            heap = vec![0u8; needed];
+            let len = rustix::fs::flistxattr(src, &mut heap[..])
+                .map_err(|err| format!("xattrs not read: {err}"))?;
+            &heap[..len]
+        }
         Err(err) => return Err(format!("xattrs not read: {err}")),
     };
+    if names.is_empty() {
+        return Ok(());
+    }
 
     let mut lost = Vec::new();
     let mut value = vec![0u8; 64 * 1024];
 
-    for name in names[..len].split(|&b| b == 0).filter(|s| !s.is_empty()) {
+    for name in names.split(|&b| b == 0).filter(|s| !s.is_empty()) {
         let Ok(name_str) = std::str::from_utf8(name) else {
             continue;
         };

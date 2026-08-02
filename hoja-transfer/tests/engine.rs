@@ -7,7 +7,7 @@ use std::path::Path;
 
 use common::*;
 use hoja_transfer::{
-    ConflictChoice, ConflictDecision, JobPolicy, JobSpec, Operation, Outcome, spawn_job,
+    ConflictChoice, Event, ConflictDecision, JobPolicy, JobSpec, Operation, Outcome, spawn_job,
 };
 
 fn copy_spec(sources: Vec<std::path::PathBuf>, dest: &Path) -> JobSpec {
@@ -344,6 +344,54 @@ fn metadata_is_preserved() {
     let mut buf = [0u8; 64];
     if let Ok(n) = rustix::fs::getxattr(&dest, "user.pane.test", &mut buf[..]) {
         assert_eq!(&buf[..n], b"value");
+    }
+}
+
+#[test]
+fn an_xattr_list_too_long_for_the_stack_buffer_still_copies() {
+    // copy_xattrs reads the name list into a 512-byte stack buffer, because
+    // nearly every file has no xattrs and a heap allocation per file is pure
+    // waste. This is the other path: enough names to overflow it, so the ERANGE
+    // fallback has to ask for the real size and take the heap.
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let src = write_file(src_dir.path(), "many.txt", b"content");
+
+    let mut set = 0;
+    for i in 0..40 {
+        // ~28 bytes of name each: past 512 well before the end.
+        let name = format!("user.hoja.padding.attribute.{i:04}");
+        if rustix::fs::setxattr(
+            &src,
+            name.as_str(),
+            b"v",
+            rustix::fs::XattrFlags::empty(),
+        )
+        .is_ok()
+        {
+            set += 1;
+        }
+    }
+    if set < 40 {
+        // No xattr support here; nothing to assert about.
+        return;
+    }
+
+    let handle = spawn_job(copy_spec(vec![src], dst_dir.path())).unwrap();
+    let (events, summary) = drain(&handle, never_conflict);
+    assert_eq!(summary.outcome, Outcome::Completed);
+    assert!(
+        !events.iter().any(|e| matches!(e, Event::Warning { .. })),
+        "the long list should copy without complaint: {events:?}"
+    );
+
+    let dest = dst_dir.path().join("many.txt");
+    let mut buf = [0u8; 64];
+    for i in [0, 17, 39] {
+        let name = format!("user.hoja.padding.attribute.{i:04}");
+        let n = rustix::fs::getxattr(&dest, name.as_str(), &mut buf[..])
+            .unwrap_or_else(|err| panic!("{name} missing on the copy: {err}"));
+        assert_eq!(&buf[..n], b"v");
     }
 }
 
