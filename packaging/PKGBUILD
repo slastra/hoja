@@ -20,6 +20,10 @@ depends=(
   # to ldd. Without it the window never opens.
   'vulkan-icd-loader'
 )
+# Not listed, but relied on: util-linux, for `setsid -f` (every launch detaches
+# through it, so without it nothing opens at all) and `lsblk` (the place finder's
+# drive list). It is a dependency of `base`, which Arch guarantees, and base
+# members are conventionally left out of depends.
 
 # hoja shells out for these, and works without each one: no git means no
 # version-control colouring, no udisks means drives can be listed but not
@@ -65,7 +69,9 @@ build() {
   cd "$_pkgname"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
-  cargo build --frozen --release --all-features
+  # No --all-features: neither crate declares any, so it does nothing today and
+  # would silently opt in to whichever one gets added first.
+  cargo build --frozen --release
 }
 
 check() {
@@ -84,6 +90,6 @@ package() {
   install -Dm755 target/release/hoja "$pkgdir/usr/bin/hoja"
   install -Dm644 packaging/hoja.desktop \
     "$pkgdir/usr/share/applications/hoja.desktop"
-  install -Dm644 README.md "$pkgdir/usr/share/doc/$_pkgname/README.md"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
