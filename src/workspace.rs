@@ -200,6 +200,10 @@ const RATE_VALUE_W: f32 = 32.;
 const RATE_UNIT_W: f32 = 32.;
 const LEFT_VALUE_W: f32 = 44.;
 const LEFT_UNIT_W: f32 = 28.;
+/// Reserved for the failure badge, which is wider the more files failed.
+/// Holds the icon, a gap, and "2,619 failed" — a five-figure count would
+/// overflow it, and a job that fails ten thousand times has said enough.
+const BADGE_W: f32 = 108.;
 /// Everything above plus the gaps, so the states that show a sentence line up
 /// with the states that show numbers.
 const STATUS_W: f32 = VALUE_W * 2.
@@ -1241,8 +1245,10 @@ impl Workspace {
         let bar_bg = colors.element_background;
         // border_selected against element_background is two muted darks in most
         // themes — the bar was drawn correctly and simply could not be seen.
+        // The bar says how much got through and nothing else — a job that
+        // failed still copied whatever it copied. Failure is the badge's to
+        // report, in one place rather than smeared across the row.
         let bar_fill = colors.text_accent;
-        let bar_done = cx.theme().status().success;
 
         let rows: Vec<_> = self
             .jobs
@@ -1267,12 +1273,6 @@ impl Workspace {
 
                 let status = match (job.done, phase) {
                     (Some(Outcome::Cancelled), _) => Err("cancelled".to_string()),
-                    // Which files failed is the icon's job; the row has room
-                    // for how many.
-                    (Some(_), _) if job.errors == 1 => Err("1 failed".to_string()),
-                    (Some(_), _) if job.errors > 0 => {
-                        Err(format!("{} failed", notifications::count(job.errors as u64)))
-                    }
                     (Some(_), _) => Err("done".to_string()),
                     // The count climbs while it runs, which is the useful part:
                     // it says up front that this is 86,000 files, not 20.
@@ -1322,13 +1322,7 @@ impl Workspace {
                                 div()
                                     .h_full()
                                     .rounded_sm()
-                                    .bg(if job.errors > 0 {
-                                        error_color
-                                    } else if is_done {
-                                        bar_done
-                                    } else {
-                                        bar_fill
-                                    })
+                                    .bg(bar_fill)
                                     .w(relative(fraction)),
                             ),
                     )
@@ -1368,7 +1362,7 @@ impl Workspace {
                                 "tnum".to_string(),
                                 1,
                             )])))
-                            .text_color(if job.errors > 0 { error_color } else { muted });
+                            .text_color(muted);
                         match status {
                             // One sentence, right-aligned across the whole block
                             // so it ends where the columns end.
@@ -1405,19 +1399,54 @@ impl Workspace {
                     // exactly as wide as it was.
                     .when(job.errors > 0, |el| {
                         el.child(
+                            // Fixed width with the badge held to its right edge:
+                            // the count climbs while the job runs, and growing
+                            // leftwards into reserved space keeps it from
+                            // shoving the progress bar about. Sized for a count
+                            // in the thousands, which a tree of symlinks onto a
+                            // filesystem that cannot hold them will reach.
                             div()
-                                .id(("job-errors", ix))
                                 .flex_none()
-                                .px_1()
-                                .cursor_pointer()
-                                .hover(|s| s.bg(colors.element_hover))
-                                .child(Icon::from_path(
-                                    "icons/file_icons/warning.svg",
-                                    error_color,
-                                ))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.show_failures(ix, window, cx)
-                                })),
+                                .w(px(BADGE_W))
+                                .flex()
+                                .flex_row()
+                                .justify_end()
+                                .child(
+                                    div()
+                                        .id(("job-errors", ix))
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap_1()
+                                        .px_1p5()
+                                        .py_0p5()
+                                        .rounded_sm()
+                                        .bg(gpui::Hsla {
+                                            a: 0.15,
+                                            ..error_color
+                                        })
+                                        .text_color(error_color)
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(gpui::Hsla {
+                                            a: 0.28,
+                                            ..error_color
+                                        }))
+                                        .child(Icon::from_path(
+                                            "icons/file_icons/warning.svg",
+                                            error_color,
+                                        ))
+                                        .child(if job.errors == 1 {
+                                            "1 failed".to_string()
+                                        } else {
+                                            format!(
+                                                "{} failed",
+                                                notifications::count(job.errors as u64)
+                                            )
+                                        })
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.show_failures(ix, window, cx)
+                                        })),
+                                ),
                         )
                     })
                     .child(
@@ -1427,7 +1456,7 @@ impl Workspace {
                             .px_1()
                             .cursor_pointer()
                             .hover(|s| s.bg(colors.element_hover))
-                            .child(if is_done { "dismiss" } else { "✕" })
+                            .child("✕")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let Some(job) = this.jobs.get(ix) else { return };
                                 let id = job.handle.id();
