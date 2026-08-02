@@ -254,6 +254,13 @@ struct Worker {
     scanned: bool,
     /// Reused by every read/write fallback in the job — see `copy_extent`.
     copy_buf: Vec<u8>,
+    /// `st_dev` → mount key, so the statx behind `mount_key` happens once per
+    /// filesystem rather than once per file. Keying on `st_dev` is sound for
+    /// what the answer is used for: it decides whether rename and reflink are
+    /// worth attempting, and two bind mounts of one filesystem — the case
+    /// `MNT_ID` exists to tell apart — share a superblock and so share both
+    /// answers.
+    mount_keys: HashMap<u64, MountKey>,
 }
 
 impl Worker {
@@ -281,6 +288,7 @@ impl Worker {
             dest_mount: None,
             scanned: false,
             copy_buf: Vec::new(),
+            mount_keys: HashMap::new(),
         }
     }
 
@@ -495,6 +503,16 @@ impl Worker {
         self.continue_or_fatal()
     }
 
+    /// `mount_key` for a path whose metadata we already hold.
+    fn src_mount_key(&mut self, path: &Path, meta: &std::fs::Metadata) -> Option<MountKey> {
+        if let Some(key) = self.mount_keys.get(&meta.dev()) {
+            return Some(*key);
+        }
+        let key = sys::mount_key(path).ok()?;
+        self.mount_keys.insert(meta.dev(), key);
+        Some(key)
+    }
+
     fn continue_or_fatal(&self) -> Step {
         if self.spec.policy.abort_on_first_error {
             Step::Fatal
@@ -508,7 +526,7 @@ impl Worker {
             self.progress.files_total.fetch_add(1, Ordering::Relaxed);
         }
         let dest = match self.resolve_dest(src, dest) {
-            DestPlan::Proceed(d) => d,
+            DestPlan::Proceed { path, .. } => path,
             DestPlan::Skip => {
                 self.files_skipped += 1;
                 self.progress.files_done.fetch_add(1, Ordering::Relaxed);
@@ -542,7 +560,8 @@ impl Worker {
         // in one atomic call. NOREPLACE both expresses "only if absent" and
         // closes the window between testing and renaming.
         if self.spec.op == Operation::Move
-            && let (Ok(src_key), Some(dst_key)) = (sys::mount_key(src), self.dest_mount)
+            && let (Some(src_key), Some(dst_key)) =
+                (self.src_mount_key(src, src_meta), self.dest_mount)
             && self.caps.rename_worth_trying(src_key, dst_key)
         {
             match sys::rename_no_replace(src, dest) {
@@ -639,14 +658,14 @@ impl Worker {
 
         // Tier 0: move via rename.
         if self.spec.op == Operation::Move
-            && let (Ok(src_key), Some(dst_key)) = (sys::mount_key(src), self.dest_mount)
+            && let (Some(src_key), Some(dst_key)) = (self.src_mount_key(src, src_meta), self.dest_mount)
             && self.caps.rename_worth_trying(src_key, dst_key)
         {
             // rename() clobbers silently, so conflicts resolve BEFORE the
             // attempt — and the attempt itself refuses to replace, so a file
             // appearing in between is re-resolved rather than destroyed.
             let mut planned = match self.resolve_dest(src, dest) {
-                DestPlan::Proceed(d) => d,
+                DestPlan::Proceed { path, .. } => path,
                 DestPlan::Skip => {
                     self.files_skipped += 1;
                     self.progress.files_done.fetch_add(1, Ordering::Relaxed);
@@ -663,7 +682,7 @@ impl Worker {
             if matches!(&renamed, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
                 // Raced: ask again against the destination that now exists.
                 match self.resolve_dest(src, &planned) {
-                    DestPlan::Proceed(d) => {
+                    DestPlan::Proceed { path: d, .. } => {
                         planned = d;
                         renamed = sys::rename_no_replace(src, &planned);
                     }
@@ -688,8 +707,10 @@ impl Worker {
                 Err(err) if err.raw_os_error() == Some(rustix::io::Errno::XDEV.raw_os_error()) => {
                     self.caps.mark_rename_failed(src_key, dst_key);
                     // Fall through to copy-then-delete with the ALREADY resolved
-                    // destination.
-                    return self.copy_file_inner(src, &planned, src_meta, true);
+                    // destination. Nothing is there: an Overwrite unlinked it
+                    // above, KeepBoth picked a free name, and rename_no_replace
+                    // would have refused had anything appeared since.
+                    return self.copy_file_inner(src, &planned, src_meta, true, false);
                 }
                 Err(err) => {
                     self.queue_error(src, Stage::Rename, err);
@@ -698,8 +719,8 @@ impl Worker {
             }
         }
 
-        let planned = match self.resolve_dest(src, dest) {
-            DestPlan::Proceed(d) => d,
+        let (planned, existed) = match self.resolve_dest(src, dest) {
+            DestPlan::Proceed { path, existed } => (path, existed),
             DestPlan::Skip => {
                 self.files_skipped += 1;
                 self.progress.files_done.fetch_add(1, Ordering::Relaxed);
@@ -707,7 +728,13 @@ impl Worker {
             }
             DestPlan::Cancel => return Step::Cancelled,
         };
-        self.copy_file_inner(src, &planned, src_meta, self.spec.op == Operation::Move)
+        self.copy_file_inner(
+            src,
+            &planned,
+            src_meta,
+            self.spec.op == Operation::Move,
+            existed,
+        )
     }
 
     /// The copy path shared by Copy jobs and cross-fs Move fallback.
@@ -718,6 +745,7 @@ impl Worker {
         dest: &Path,
         src_meta: &std::fs::Metadata,
         delete_source: bool,
+        dest_existed: bool,
     ) -> Step {
         // Hardlink preservation: second and later links to an inode we already
         // copied become hardlinks to the first copy.
@@ -797,7 +825,6 @@ impl Worker {
 
                 // Atomic replace over an existing file needs the data durable
                 // before the rename; fresh destinations keep cp-parity speed.
-                let dest_existed = dest.exists();
                 if dest_existed && let Err(err) = rustix::fs::fsync(&tmp) {
                     drop(tmp);
                     let _ = std::fs::remove_file(&tmp_path);
@@ -837,7 +864,8 @@ impl Worker {
         src_meta: &std::fs::Metadata,
     ) -> std::io::Result<CopyOutcome> {
         // Tier 1: reflink, unless this mount pair already refused.
-        if let (Ok(src_key), Some(dst_key)) = (sys::mount_key(src), self.dest_mount)
+        if let (Some(src_key), Some(dst_key)) =
+            (self.src_mount_key(src, src_meta), self.dest_mount)
             && self.caps.reflink_worth_trying(src_key, dst_key)
         {
             match copy::try_reflink(src_file, tmp) {
@@ -861,13 +889,18 @@ impl Worker {
             &self.progress.bytes_done,
             &self.cancel,
             &mut self.copy_buf,
+            // st_blocks is in 512-byte units. Short of the length means holes.
+            (src_meta.blocks() * 512) < src_meta.len(),
         )
     }
 
     fn resolve_dest(&mut self, src: &Path, dest: &Path) -> DestPlan {
         // lstat: a dangling symlink at dest is still a conflict.
         if std::fs::symlink_metadata(dest).is_err() {
-            return DestPlan::Proceed(dest.to_path_buf());
+            return DestPlan::Proceed {
+                path: dest.to_path_buf(),
+                existed: false,
+            };
         }
         self.progress.set_phase(Phase::AwaitingConflict);
         let resolution = self.conflicts.resolve(src, dest);
@@ -875,12 +908,19 @@ impl Worker {
         match resolution {
             Resolution::CancelJob => DestPlan::Cancel,
             Resolution::Proceed(ConflictChoice::Skip) => DestPlan::Skip,
-            Resolution::Proceed(ConflictChoice::Overwrite) => DestPlan::Proceed(dest.to_path_buf()),
+            Resolution::Proceed(ConflictChoice::Overwrite) => DestPlan::Proceed {
+                path: dest.to_path_buf(),
+                existed: true,
+            },
             Resolution::Proceed(ConflictChoice::KeepBoth) => {
                 for attempt in 1..1000 {
                     let candidate = sys::keep_both_name(dest, attempt);
                     if std::fs::symlink_metadata(&candidate).is_err() {
-                        return DestPlan::Proceed(candidate);
+                        // Chosen because nothing is there.
+                        return DestPlan::Proceed {
+                            path: candidate,
+                            existed: false,
+                        };
                     }
                 }
                 DestPlan::Skip
@@ -890,7 +930,10 @@ impl Worker {
 }
 
 enum DestPlan {
-    Proceed(PathBuf),
+    /// `existed` answers what a second `dest.exists()` used to ask: resolving a
+    /// destination already stats it, so asking again was a syscall per file for
+    /// something we had just learned.
+    Proceed { path: PathBuf, existed: bool },
     Skip,
     Cancel,
 }

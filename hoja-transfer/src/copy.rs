@@ -44,11 +44,41 @@ pub fn copy_contents(
     bytes_done: &AtomicU64,
     cancel: &Arc<AtomicBool>,
     buf: &mut Vec<u8>,
+    maybe_sparse: bool,
 ) -> std::io::Result<CopyOutcome> {
     rustix::fs::ftruncate(dest, len)?;
 
     let mut mechanism = CopyMechanism::CopyFileRange;
     let mut cfr_ok = true;
+
+    // A file whose allocated blocks already cover its length has no holes to
+    // find, so the SEEK_DATA/SEEK_HOLE walk below is two syscalls per file
+    // spent proving it. That is most files, and nearly all small ones.
+    if !maybe_sparse {
+        if len > 0 {
+            copy_extent(
+                src,
+                dest,
+                0,
+                len,
+                &mut cfr_ok,
+                &mut mechanism,
+                buf,
+                bytes_done,
+                cancel,
+            )?;
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(CopyOutcome::Cancelled);
+            }
+        }
+        let final_len = dest.metadata()?.len();
+        if final_len != len {
+            return Err(std::io::Error::other(format!(
+                "size mismatch after copy: expected {len}, got {final_len}"
+            )));
+        }
+        return Ok(CopyOutcome::Done(mechanism));
+    }
 
     let mut offset: u64 = 0;
     loop {

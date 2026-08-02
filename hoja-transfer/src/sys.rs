@@ -146,10 +146,11 @@ pub fn partial_path(final_dest: &Path) -> PathBuf {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "unnamed".to_string());
     let nonce = PARTIAL_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let unique = format!(
-        ".hoja-partial-{name}.{}-{nonce}",
-        std::process::id(),
-    );
+    // Cached: glibc dropped its getpid cache in 2.25, so `std::process::id()` is
+    // a real syscall — and this runs for every file copied.
+    static PID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    let pid = PID.get_or_init(std::process::id);
+    let unique = format!(".hoja-partial-{name}.{pid}-{nonce}");
     final_dest.with_file_name(unique)
 }
 

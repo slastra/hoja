@@ -2,7 +2,7 @@
 
 pkgname=hoja-git
 _pkgname=hoja
-pkgver=r51.7d82e60
+pkgver=r55.bafdf5f
 pkgrel=1
 pkgdesc='GPU-accelerated file manager with splittable panes, built on GPUI'
 arch=('x86_64')
