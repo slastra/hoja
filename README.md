@@ -65,6 +65,16 @@ for important data.
 - **Icons.** File icons follow the Zed icon system. The theme sets the icon
   color.
 
+## Install
+
+On Arch Linux, build the package from `packaging/`:
+
+```sh
+cd packaging && makepkg -si
+```
+
+It builds from the current `main`, since there are no releases yet.
+
 ## Build
 
 1. Install Rust 1.95 or later. The Zed source sets this minimum.

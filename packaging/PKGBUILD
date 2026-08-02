@@ -16,6 +16,8 @@ depends=(
   'freetype2'
   'libxkbcommon'
   'libxkbcommon-x11'
+  # Owns the icon theme directory the .desktop entry's icon is installed into.
+  'hicolor-icon-theme'
   # Loaded at run time by the renderer rather than linked, so it is invisible
   # to ldd. Without it the window never opens.
   'vulkan-icd-loader'
@@ -36,6 +38,13 @@ optdepends=(
 )
 
 makedepends=('git' 'cargo' 'clang' 'cmake' 'pkgconf' 'wayland-protocols')
+
+# Arch turns LTO on by default, which puts -flto in the flags the cc crate uses
+# for C and assembly. Wasmtime — pulled in through GPUI — implements its
+# unwinding longjmp in hand-written assembly, and LTO drops it, so the link
+# fails on an undefined wasmtime_longjmp symbol. Cargo applies its own LTO from
+# the release profile regardless, so nothing is lost.
+options=('!lto')
 provides=('pane')
 conflicts=('pane')
 source=("git+$url.git")
