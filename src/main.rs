@@ -163,8 +163,8 @@ fn main() {
             // inside the palette's, and the deeper context wins, so enter and
             // escape always reach the editor. The pickers listen for its
             // Committed and Cancelled instead.
-            KeyBinding::new("down", palette::SelectNext, Some("palette")),
-            KeyBinding::new("up", palette::SelectPrevious, Some("palette")),
+            KeyBinding::new("down", picker::SelectNext, Some("picker")),
+            KeyBinding::new("up", picker::SelectPrevious, Some("picker")),
             // Address-bar editing. Every binding here MUST have a matching
             // on_action listener on the editor div, or it silently falls
             // through to the (now-guarded) DirPane binding.

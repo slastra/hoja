@@ -70,6 +70,23 @@ const UNDO_DEPTH: usize = 32;
 
 const JOB_POLL_INTERVAL: Duration = Duration::from_millis(120);
 
+/// The one overlay a workspace shows at a time. The conflict dialog is not
+/// here: it is raised by the engine rather than by the user, and must survive
+/// whatever else is open.
+enum Modal {
+    Palette(Entity<CommandPalette>),
+    Places(Entity<PlaceFinder>),
+}
+
+impl Modal {
+    fn element(&self) -> gpui::AnyElement {
+        match self {
+            Modal::Palette(palette) => palette.clone().into_any_element(),
+            Modal::Places(finder) => finder.clone().into_any_element(),
+        }
+    }
+}
+
 struct PendingConflict {
     job: JobId,
     dest: PathBuf,
@@ -109,11 +126,12 @@ pub struct Workspace {
     /// restores a multi-selection in one go.
     undo_stack: Vec<Vec<TrashedItem>>,
     notice: Option<Notice>,
-    palette: Option<Entity<CommandPalette>>,
+    /// One slot, so opening either closes the other. Two fields let ctrl-p on
+    /// top of the palette leave both open and both rendered.
+    modal: Option<Modal>,
     /// Last title pushed to the compositor, so an unchanged one is not re-sent
     /// on every frame.
     title: String,
-    places: Option<Entity<PlaceFinder>>,
     poll_task: Option<Task<()>>,
     /// Conflicts wait here while one dialog is up; one worker blocks per job,
     /// so concurrent jobs can queue several. Tagged with the job so cancelling
@@ -137,9 +155,8 @@ impl Workspace {
             jobs: Vec::new(),
             undo_stack: Vec::new(),
             notice: None,
-            palette: None,
+            modal: None,
             title: String::new(),
-            places: None,
             poll_task: None,
             pending_conflicts: VecDeque::new(),
             conflict_dialog: None,
@@ -607,9 +624,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.palette.take().is_some() {
-            window.focus(&self.active_pane.focus_handle(cx), cx);
-            cx.notify();
+        if matches!(self.modal, Some(Modal::Palette(_))) {
+            self.close_modal(window, cx);
             return;
         }
 
@@ -620,9 +636,7 @@ impl Workspace {
         let palette = cx.new(|cx| CommandPalette::new(origin, window, cx));
 
         cx.subscribe_in(&palette, window, |this, _, _: &DismissEvent, window, cx| {
-            this.palette = None;
-            window.focus(&this.active_pane.focus_handle(cx), cx);
-            cx.notify();
+            this.close_modal(window, cx)
         })
         .detach();
 
@@ -631,7 +645,7 @@ impl Workspace {
         // the field is inside its dispatch path.
         let query_focus = palette.read(cx).query_focus(cx);
         window.focus(&query_focus, cx);
-        self.palette = Some(palette);
+        self.modal = Some(Modal::Palette(palette));
         cx.notify();
     }
 
@@ -642,18 +656,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.places.take().is_some() {
-            window.focus(&self.active_pane.focus_handle(cx), cx);
-            cx.notify();
+        if matches!(self.modal, Some(Modal::Places(_))) {
+            self.close_modal(window, cx);
             return;
         }
 
         let finder = cx.new(|cx| PlaceFinder::new(window, cx));
 
         cx.subscribe_in(&finder, window, |this, _, _: &DismissEvent, window, cx| {
-            this.places = None;
-            window.focus(&this.active_pane.focus_handle(cx), cx);
-            cx.notify();
+            this.close_modal(window, cx)
         })
         .detach();
         // Mounting outlives the finder's own dismissal, so this subscription
@@ -675,7 +686,7 @@ impl Workspace {
 
         let query_focus = finder.read(cx).query_focus(cx);
         window.focus(&query_focus, cx);
-        self.places = Some(finder);
+        self.modal = Some(Modal::Places(finder));
         cx.notify();
     }
 
@@ -705,6 +716,36 @@ impl Workspace {
             });
         })
         .detach();
+    }
+
+    fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.modal = None;
+        window.focus(&self.active_pane.focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    /// The scrim both modals sit in. `conflict_dialog` keeps its own, since it
+    /// centres rather than anchoring near the top.
+    fn modal_scrim(&self, child: gpui::AnyElement, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .occlude()
+            .absolute()
+            .inset_0()
+            .bg(hsla(0., 0., 0., 0.45))
+            .flex()
+            .justify_center()
+            // Without this the modal stretches to the full height of the scrim
+            // and trails empty background below its last row.
+            .items_start()
+            // Anchored near the top rather than centred: the list grows
+            // downward, so a centred modal would shift under the cursor as
+            // results narrow.
+            .pt(px(80.))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.close_modal(window, cx)),
+            )
+            .child(child)
     }
 
     fn dismiss_jobs(&mut self, _: &DismissJobs, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1001,49 +1042,8 @@ impl Render for Workspace {
                     || self.active_pane.read(cx).search_status().is_some(),
                 |el| el.child(self.render_job_strip(cx)),
             )
-            .when_some(self.palette.clone(), |el, palette| {
-                el.child(
-                    div()
-                        .occlude()
-                        .absolute()
-                        .inset_0()
-                        .bg(hsla(0., 0., 0., 0.45))
-                        .flex()
-                        .justify_center()
-                        // Without this the palette stretches to the full height
-                        // of the scrim and trails empty background below its
-                        // last row.
-                        .items_start()
-                        // Anchored near the top rather than centred: the list
-                        // grows downward, so a centred modal would shift under
-                        // the cursor as results narrow.
-                        .pt(px(80.))
-                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
-                            this.palette = None;
-                            window.focus(&this.active_pane.focus_handle(cx), cx);
-                            cx.notify();
-                        }))
-                        .child(palette),
-                )
-            })
-            .when_some(self.places.clone(), |el, finder| {
-                el.child(
-                    div()
-                        .occlude()
-                        .absolute()
-                        .inset_0()
-                        .bg(hsla(0., 0., 0., 0.45))
-                        .flex()
-                        .justify_center()
-                        .items_start()
-                        .pt(px(80.))
-                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
-                            this.places = None;
-                            window.focus(&this.active_pane.focus_handle(cx), cx);
-                            cx.notify();
-                        }))
-                        .child(finder),
-                )
+            .when_some(self.modal.as_ref().map(Modal::element), |el, modal| {
+                el.child(self.modal_scrim(modal, cx))
             })
             .when_some(self.conflict_dialog.clone(), |el, dialog| {
                 el.child(

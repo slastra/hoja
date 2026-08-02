@@ -5,22 +5,27 @@
 //! places rather than actions, and choosing one navigates the active pane
 //! instead of dispatching an action. An unmounted volume is mounted first.
 
-use fuzzy_nucleo::{StringMatchCandidate, StringMatch};
+use fuzzy_nucleo::StringMatchCandidate;
 use gpui::{
-    App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Subscription,
-    UniformListScrollHandle, Window, actions, div, prelude::*, px, uniform_list,
+    App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Subscription, Window,
+    actions, div, prelude::*, uniform_list,
 };
 use std::path::PathBuf;
 use theme::ActiveTheme;
 
 use crate::path_editor::{PathEditor, PathEditorEvent};
-use crate::picker::{highlighted_label, match_entries};
+use crate::picker::{self, PickerState, SelectNext, SelectPrevious, highlighted_label};
 use crate::places::{self, Place};
 
 actions!(places, [Toggle]);
 
 const ROW_HEIGHT: f32 = 32.;
-const MAX_VISIBLE_ROWS: f32 = 10.;
+
+/// Match the detail as well as the label, so typing part of a path finds a
+/// bookmark whose name does not contain it.
+fn candidate((ix, place): (usize, &Place)) -> StringMatchCandidate {
+    StringMatchCandidate::new(ix, &format!("{} {}", place.label(), place.detail())[..])
+}
 
 /// Emitted upward; the workspace owns the active pane and the status strip.
 pub enum PlaceEvent {
@@ -38,12 +43,8 @@ pub enum PlaceEvent {
 
 pub struct PlaceFinder {
     focus_handle: FocusHandle,
-    query: Entity<PathEditor>,
+    picker: PickerState,
     places: Vec<Place>,
-    candidates: Vec<StringMatchCandidate>,
-    matches: Vec<StringMatch>,
-    selected: usize,
-    scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -72,24 +73,13 @@ impl PlaceFinder {
         // splice the drives in when they arrive — the shape `resolve_open_with`
         // uses for the context menu.
         let places = places::local();
-        let candidates = places
-            .iter()
-            .enumerate()
-            .map(|(ix, place)| {
-                // Match the detail as well as the label, so typing part of a
-                // path finds a bookmark whose name does not contain it.
-                StringMatchCandidate::new(ix, &format!("{} {}", place.label(), place.detail())[..])
-            })
-            .collect();
+        let mut picker = PickerState::new(query);
+        picker.candidates = places.iter().enumerate().map(candidate).collect();
 
         let mut finder = Self {
             focus_handle,
-            query,
+            picker,
             places,
-            candidates,
-            matches: Vec::new(),
-            selected: 0,
-            scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
         };
         finder.rematch(cx);
@@ -105,13 +95,12 @@ impl PlaceFinder {
             }
             let _ = this.update(cx, |this, cx| {
                 let base = this.places.len();
-                this.candidates
-                    .extend(volumes.iter().enumerate().map(|(ix, place)| {
-                        StringMatchCandidate::new(
-                            base + ix,
-                            &format!("{} {}", place.label(), place.detail())[..],
-                        )
-                    }));
+                this.picker.candidates.extend(
+                    volumes
+                        .iter()
+                        .enumerate()
+                        .map(|(ix, place)| candidate((base + ix, place))),
+                );
                 this.places.extend(volumes);
                 this.rematch(cx);
             });
@@ -120,34 +109,27 @@ impl PlaceFinder {
     }
 
     pub fn query_focus(&self, cx: &App) -> FocusHandle {
-        self.query.focus_handle(cx)
+        self.picker.query.focus_handle(cx)
     }
 
     fn rematch(&mut self, cx: &mut Context<Self>) {
-        let query = self.query.read(cx).text().to_string();
-        self.matches = match_entries(&self.candidates, query.trim());
-        self.selected = 0;
-        self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
+        let query = self.picker.query.read(cx).text().to_string();
+        self.picker.rematch(query.trim());
         cx.notify();
     }
 
-    fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.matches.is_empty() {
-            return;
-        }
-        let len = self.matches.len() as isize;
-        self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
-        self.scroll
-            .scroll_to_item(self.selected, gpui::ScrollStrategy::Nearest);
+    fn select_next(&mut self, _: &SelectNext, _: &mut Window, cx: &mut Context<Self>) {
+        self.picker.move_selection(1);
+        cx.notify();
+    }
+
+    fn select_previous(&mut self, _: &SelectPrevious, _: &mut Window, cx: &mut Context<Self>) {
+        self.picker.move_selection(-1);
         cx.notify();
     }
 
     fn confirm(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(place) = self
-            .matches
-            .get(self.selected)
-            .and_then(|m| self.places.get(m.candidate_id))
-        else {
+        let Some((place, _)) = self.picker.chosen(&self.places) else {
             return;
         };
 
@@ -165,34 +147,22 @@ impl PlaceFinder {
 
     fn render_row(&self, ix: usize, window: &Window, cx: &Context<Self>) -> gpui::AnyElement {
         let colors = cx.theme().colors();
-        let Some(matched) = self.matches.get(ix) else {
+        let Some(matched) = self.picker.matches.get(ix) else {
             return div().into_any_element();
         };
         let Some(place) = self.places.get(matched.candidate_id) else {
             return div().into_any_element();
         };
-        let selected = ix == self.selected;
 
-        div()
-            .id(ix)
-            .h(px(ROW_HEIGHT))
-            .w_full()
-            .px_3()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .cursor_pointer()
-            .text_sm()
-            .when(selected, |row| row.bg(colors.element_selected))
+        picker::row(ix, ROW_HEIGHT, ix == self.picker.selected, cx)
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                if *hovered && this.selected != ix {
-                    this.selected = ix;
+                if *hovered && this.picker.selected != ix {
+                    this.picker.selected = ix;
                     cx.notify();
                 }
             }))
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.selected = ix;
+                this.picker.selected = ix;
                 this.confirm(window, cx);
             }))
             .child(
@@ -226,63 +196,22 @@ impl EventEmitter<PlaceEvent> for PlaceFinder {}
 
 impl Render for PlaceFinder {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.theme().colors();
-        let count = self.matches.len();
+        let list = uniform_list(
+            "places",
+            self.picker.matches.len(),
+            cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
+                range
+                    .map(|ix| this.render_row(ix, window, cx))
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .track_scroll(&self.picker.scroll)
+        .into_any_element();
 
-        div()
-            .occlude()
+        picker::shell(&self.picker, ROW_HEIGHT, "No matching places", list, cx)
             .track_focus(&self.focus_handle)
-            .key_context("palette")
-            .on_action(cx.listener(|this, _: &crate::command_palette::SelectNext, _, cx| {
-                this.move_selection(1, cx)
-            }))
-            .on_action(cx.listener(|this, _: &crate::command_palette::SelectPrevious, _, cx| {
-                this.move_selection(-1, cx)
-            }))
-            .flex()
-            .flex_col()
-            .w(px(544.))
-            .rounded_lg()
-            .border_1()
-            .border_color(colors.border)
-            .bg(colors.elevated_surface_background)
-            .shadow_lg()
-            .child(
-                div()
-                    .flex_none()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(colors.border)
-                    .text_sm()
-                    .child(self.query.clone()),
-            )
-            .when(count == 0, |el| {
-                el.child(
-                    div()
-                        .px_3()
-                        .py_2()
-                        .text_sm()
-                        .text_color(colors.text_muted)
-                        .child("No matching places"),
-                )
-            })
-            .when(count > 0, |el| {
-                el.child(
-                    uniform_list(
-                        "places",
-                        count,
-                        cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
-                            range
-                                .map(|ix| this.render_row(ix, window, cx))
-                                .collect::<Vec<_>>()
-                        }),
-                    )
-                    .track_scroll(&self.scroll)
-                    // Definite, not a maximum: uniform_list virtualizes and
-                    // renders nothing when given only a max.
-                    .h(px(ROW_HEIGHT * (count as f32).min(MAX_VISIBLE_ROWS))),
-                )
-            })
+            .key_context(picker::KEY_CONTEXT)
+            .on_action(cx.listener(Self::select_next))
+            .on_action(cx.listener(Self::select_previous))
     }
 }

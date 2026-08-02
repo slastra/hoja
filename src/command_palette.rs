@@ -21,30 +21,27 @@
 
 use std::collections::HashMap;
 
-use fuzzy_nucleo::{StringMatch, StringMatchCandidate};
+use fuzzy_nucleo::StringMatchCandidate;
 use gpui::{
-    Action, App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Subscription,
-    UniformListScrollHandle, Window, actions, div, prelude::*, px, uniform_list,
+    Action, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Subscription,
+    Window, actions, div, prelude::*, uniform_list,
 };
 use theme::ActiveTheme;
 
 use crate::path_editor::{PathEditor, PathEditorEvent};
-use crate::picker::{highlighted_label, match_entries};
+use crate::picker::{self, PickerState, SelectNext, SelectPrevious, highlighted_label};
 
 actions!(palette, [Toggle]);
 
-// The palette owns its navigation keys so menu bindings cannot leak in, and so
-// changing menu keys cannot silently change palette behaviour.
-actions!(palette, [SelectNext, SelectPrevious]);
-
 const ROW_HEIGHT: f32 = 28.;
-/// Ten rows. Beyond this the list scrolls rather than growing, so the palette
-/// never runs off the bottom of the window.
-const MAX_VISIBLE_ROWS: f32 = 10.;
 
-/// Actions that exist to be bound to a key, not to be read from a list. Row
-/// movement and selection are meaningless as palette entries: you cannot
-/// usefully "run" `move down` from a modal that closes when you do.
+/// Namespaces whose actions exist to be bound to a key, not read from a list.
+/// A picker's own navigation cannot be usefully "run" from a modal that closes
+/// when you run something, and neither can the toggles that open them.
+const HIDDEN_NAMESPACES: &[&str] = &["picker", "palette", "places"];
+
+/// Individual actions that are pure row movement. Listing "move down" as a
+/// command is noise: it does nothing you can see from a modal.
 const HIDDEN: &[&str] = &[
     "pane::MoveUp",
     "pane::MoveDown",
@@ -61,8 +58,14 @@ const HIDDEN: &[&str] = &[
     "pane::CursorUp",
     "pane::CursorDown",
     "pane::ToggleSelection",
-    "palette::Toggle",
 ];
+
+fn is_hidden(name: &str) -> bool {
+    HIDDEN.contains(&name)
+        || name
+            .split_once("::")
+            .is_some_and(|(namespace, _)| HIDDEN_NAMESPACES.contains(&namespace))
+}
 
 /// How many launches back the ordering remembers.
 const HISTORY_LIMIT: usize = 200;
@@ -79,12 +82,8 @@ struct Command {
 
 pub struct CommandPalette {
     focus_handle: FocusHandle,
-    query: Entity<PathEditor>,
+    picker: PickerState,
     commands: Vec<Command>,
-    candidates: Vec<StringMatchCandidate>,
-    matches: Vec<StringMatch>,
-    selected: usize,
-    scroll: UniformListScrollHandle,
     /// Where focus came from. Load-bearing three times over — see `new`.
     previous_focus: FocusHandle,
     history: HashMap<String, usize>,
@@ -219,7 +218,8 @@ impl CommandPalette {
                 .cmp(history.get(&a.id).unwrap_or(&0))
                 .then_with(|| a.name.cmp(&b.name))
         });
-        let candidates: Vec<StringMatchCandidate> = commands
+        let mut picker = PickerState::new(query);
+        picker.candidates = commands
             .iter()
             .enumerate()
             .map(|(ix, command)| StringMatchCandidate::new(ix, &command.name))
@@ -227,12 +227,8 @@ impl CommandPalette {
 
         let mut palette = Self {
             focus_handle,
-            query,
+            picker,
             commands,
-            candidates,
-            matches: Vec::new(),
-            selected: 0,
-            scroll: UniformListScrollHandle::new(),
             previous_focus,
             history,
             _subscriptions: subscriptions,
@@ -242,48 +238,30 @@ impl CommandPalette {
     }
 
     pub fn query_focus(&self, cx: &App) -> FocusHandle {
-        self.query.focus_handle(cx)
+        self.picker.query.focus_handle(cx)
     }
 
     fn rematch(&mut self, cx: &mut Context<Self>) {
-        let raw = self.query.read(cx).text().to_string();
-        let query = normalize_action_query(&raw);
-
-        // An empty query keeps recency order, which is why the candidates were
+        // Normalised, so a keymap-style query still matches the humanized name.
+        // An empty one keeps recency order, which is why the candidates were
         // built in that order.
-        self.matches = match_entries(&self.candidates, &query);
-        self.selected = 0;
-        self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
-        cx.notify();
-    }
-
-    fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.matches.is_empty() {
-            return;
-        }
-        let len = self.matches.len() as isize;
-        // Wrapping: a palette is a short list and reaching the end by holding
-        // down should come back around rather than stick.
-        self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
-        self.scroll
-            .scroll_to_item(self.selected, gpui::ScrollStrategy::Nearest);
+        let raw = self.picker.query.read(cx).text().to_string();
+        self.picker.rematch(&normalize_action_query(&raw));
         cx.notify();
     }
 
     fn select_next(&mut self, _: &SelectNext, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_selection(1, cx);
+        self.picker.move_selection(1);
+        cx.notify();
     }
 
     fn select_previous(&mut self, _: &SelectPrevious, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_selection(-1, cx);
+        self.picker.move_selection(-1);
+        cx.notify();
     }
 
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(command) = self
-            .matches
-            .get(self.selected)
-            .and_then(|m| self.commands.get(m.candidate_id))
-        else {
+        let Some((command, _)) = self.picker.chosen(&self.commands) else {
             return;
         };
         let action = command.action.boxed_clone();
@@ -325,7 +303,7 @@ fn available_commands(
     window
         .available_actions(cx)
         .into_iter()
-        .filter(|action| !HIDDEN.contains(&action.name()))
+        .filter(|action| !is_hidden(action.name()))
         .map(|action| {
             let keystrokes = window
                 .highest_precedence_binding_for_action_in(action.as_ref(), origin)
@@ -391,61 +369,23 @@ fn save_history(history: &HashMap<String, usize>, cx: &App) {
 
 impl Render for CommandPalette {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.theme().colors();
-        let count = self.matches.len();
-
         let list = uniform_list(
             "commands",
-            count,
+            self.picker.matches.len(),
             cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
                 range
                     .map(|ix| this.render_row(ix, window, cx))
                     .collect::<Vec<_>>()
             }),
         )
-        .track_scroll(&self.scroll)
-        // uniform_list virtualizes, so it needs a definite height rather than a
-        // maximum: given only a max it renders nothing. Size it to the rows
-        // there are, capped, so a three-result palette is three rows tall.
-        .h(px(ROW_HEIGHT * (count as f32).min(MAX_VISIBLE_ROWS)));
+        .track_scroll(&self.picker.scroll)
+        .into_any_element();
 
-        div()
-            .occlude()
+        picker::shell(&self.picker, ROW_HEIGHT, "No matching commands", list, cx)
             .track_focus(&self.focus_handle)
-            .key_context("palette")
+            .key_context(picker::KEY_CONTEXT)
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_previous))
-            .flex()
-            .flex_col()
-            .w(px(544.))
-            .rounded_lg()
-            .border_1()
-            .border_color(colors.border)
-            .bg(colors.elevated_surface_background)
-            .shadow_lg()
-            .child(
-                div()
-                    .flex_none()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(colors.border)
-                    .text_sm()
-                    .child(self.query.clone()),
-            )
-            .when(count == 0, |el| {
-                // Keep the modal from collapsing and jumping when nothing
-                // matches.
-                el.child(
-                    div()
-                        .px_3()
-                        .py_2()
-                        .text_sm()
-                        .text_color(colors.text_muted)
-                        .child("No matching commands"),
-                )
-            })
-            .when(count > 0, |el| el.child(list))
     }
 }
 
@@ -457,13 +397,12 @@ impl CommandPalette {
         cx: &Context<Self>,
     ) -> gpui::AnyElement {
         let colors = cx.theme().colors();
-        let Some(matched) = self.matches.get(ix) else {
+        let Some(matched) = self.picker.matches.get(ix) else {
             return div().into_any_element();
         };
         let Some(command) = self.commands.get(matched.candidate_id) else {
             return div().into_any_element();
         };
-        let selected = ix == self.selected;
 
         let keycaps: Vec<_> = command
             .keystrokes
@@ -481,29 +420,17 @@ impl CommandPalette {
             })
             .collect();
 
-        div()
-            .id(ix)
-            .h(px(ROW_HEIGHT))
-            .w_full()
-            .px_3()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .cursor_pointer()
-            .text_sm()
-            .text_color(colors.text)
-            .when(selected, |row| row.bg(colors.element_selected))
+        picker::row(ix, ROW_HEIGHT, ix == self.picker.selected, cx)
             // Hovering selects, which is a large part of why Zed's palette
             // feels responsive rather than modal.
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                if *hovered && this.selected != ix {
-                    this.selected = ix;
+                if *hovered && this.picker.selected != ix {
+                    this.picker.selected = ix;
                     cx.notify();
                 }
             }))
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.selected = ix;
+                this.picker.selected = ix;
                 this.confirm(window, cx);
             }))
             .child(
