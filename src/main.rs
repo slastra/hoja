@@ -36,8 +36,8 @@ use place_finder as places_finder;
 use file_menu::{Cancel as MenuCancel, Confirm as MenuConfirm, SelectNext, SelectPrevious};
 use path_editor as ab;
 use workspace::{
-    ClosePane, Copy, Cut, DismissJobs, FocusDown, FocusLeft, FocusRight, FocusUp, Paste,
-    SplitDown, SplitLeft, SplitRight, SplitUp, Undo, Workspace,
+    ClosePane, Copy, Cut, DismissJobs, FocusNext, FocusPrevious, Paste,
+    SplitRight, Undo, Workspace,
 };
 
 struct Args {
@@ -123,15 +123,15 @@ fn main() {
             KeyBinding::new("f2", RenameSelected, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-h", ToggleHiddenFiles, Some("DirPane && !AddressBar")),
             KeyBinding::new("enter", OpenSelected, Some("DirPane && !AddressBar")),
-            KeyBinding::new("ctrl-k ctrl-left", SplitLeft, Some("DirPane && !AddressBar")),
-            KeyBinding::new("ctrl-k ctrl-right", SplitRight, Some("DirPane && !AddressBar")),
-            KeyBinding::new("ctrl-k ctrl-up", SplitUp, Some("DirPane && !AddressBar")),
-            KeyBinding::new("ctrl-k ctrl-down", SplitDown, Some("DirPane && !AddressBar")),
-            KeyBinding::new("ctrl-k left", FocusLeft, Some("DirPane && !AddressBar")),
-            KeyBinding::new("ctrl-k right", FocusRight, Some("DirPane && !AddressBar")),
-            KeyBinding::new("ctrl-k up", FocusUp, Some("DirPane && !AddressBar")),
-            KeyBinding::new("ctrl-k down", FocusDown, Some("DirPane && !AddressBar")),
-            KeyBinding::new("ctrl-k ctrl-w", ClosePane, Some("DirPane && !AddressBar")),
+            // Tab between panes, F3 to split, ctrl-w to close: the file manager
+            // scheme, which goes back to Norton Commander, rather than the
+            // editor one. The other directions are still actions and still
+            // reachable by name in the palette — that is what the palette is
+            // for, and a command used once a week should not own a chord.
+            KeyBinding::new("tab", FocusNext, Some("DirPane && !AddressBar")),
+            KeyBinding::new("shift-tab", FocusPrevious, Some("DirPane && !AddressBar")),
+            KeyBinding::new("f3", SplitRight, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-w", ClosePane, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-c", Copy, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-x", Cut, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-v", Paste, Some("DirPane && !AddressBar")),

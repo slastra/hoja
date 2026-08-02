@@ -131,11 +131,15 @@ not next to each other.
 
 **Panes and view**
 
+To split in another direction, or to move to the pane above or to the left,
+open the command palette and type the name. These commands are not on a key
+because they are rare.
+
 | Key | Function |
 |---|---|
-| `ctrl-k ctrl-←/→/↑/↓` | Split the active pane in that direction |
-| `ctrl-k ←/→/↑/↓` | Move focus to the adjacent pane |
-| `ctrl-k ctrl-w` | Close the active pane |
+| `tab` / `shift-tab` | Move to the next or the previous pane |
+| `f3` | Split the active pane |
+| `ctrl-w` | Close the active pane |
 | `ctrl-h` | Show or hide hidden files |
 | `ctrl-shift-d` | Dismiss finished transfers |
 | `ctrl-shift-p` | Open the command palette |

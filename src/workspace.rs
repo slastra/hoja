@@ -32,6 +32,8 @@ actions!(
         FocusRight,
         FocusUp,
         FocusDown,
+        FocusNext,
+        FocusPrevious,
         ClosePane,
         Copy,
         Cut,
@@ -962,6 +964,36 @@ impl Workspace {
         self.activate_in_direction(SplitDirection::Down, window, cx);
     }
 
+    fn focus_next(&mut self, _: &FocusNext, window: &mut Window, cx: &mut Context<Self>) {
+        self.cycle_focus(1, window, cx);
+    }
+
+    fn focus_previous(&mut self, _: &FocusPrevious, window: &mut Window, cx: &mut Context<Self>) {
+        self.cycle_focus(-1, window, cx);
+    }
+
+    /// Tab: step to the next pane, wrapping.
+    ///
+    /// Order is the order panes were created, not their arrangement on screen.
+    /// For the two-pane case they are the same, and beyond it a cycle only has
+    /// to be predictable and reversible, which this is — `activate_in_direction`
+    /// is what answers "the one to the left of this".
+    fn cycle_focus(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panes.len() < 2 {
+            return;
+        }
+        let current = self
+            .panes
+            .iter()
+            .position(|pane| pane == &self.active_pane)
+            .unwrap_or(0) as isize;
+        let next = (current + delta).rem_euclid(self.panes.len() as isize) as usize;
+        let pane = self.panes[next].clone();
+        // Focusing is enough: a pane emits Focus and the workspace makes it
+        // active in response.
+        window.focus(&pane.focus_handle(cx), cx);
+    }
+
     fn close_pane(&mut self, _: &ClosePane, window: &mut Window, cx: &mut Context<Self>) {
         let pane = self.active_pane.clone();
         self.remove_pane(&pane, window, cx);
@@ -1025,6 +1057,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::focus_right))
             .on_action(cx.listener(Self::focus_up))
             .on_action(cx.listener(Self::focus_down))
+            .on_action(cx.listener(Self::focus_next))
+            .on_action(cx.listener(Self::focus_previous))
             .on_action(cx.listener(Self::close_pane))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::cut))
