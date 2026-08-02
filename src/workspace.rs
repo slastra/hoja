@@ -139,29 +139,56 @@ fn fold_rate(previous: Option<f64>, bytes: u64, secs: f64) -> Option<f64> {
     })
 }
 
-/// The right-hand text of a job row: what is done, and — once there is anything
-/// worth saying — how fast and how much longer.
-fn transfer_status(done: u64, total: u64, walk_complete: bool, rate: Option<f64>) -> String {
-    let mut status = format!(
-        "{} / {}",
-        fs::format_size(done),
-        if walk_complete {
-            fs::format_size(total)
-        } else {
-            "…".to_string()
-        }
-    );
+/// Column widths for the three metrics.
+///
+/// Fixed, and wide enough for the longest each can be: "1023 MB / 1023 MB",
+/// "1023 MB/s", "1h 59m left". A cell sized to its content instead makes the
+/// progress bar beside it grow and shrink on every repaint, since the bar is
+/// what absorbs the difference — and the bar is the one thing on the strip that
+/// should hold still.
+const PROGRESS_W: f32 = 132.;
+const RATE_W: f32 = 76.;
+const LEFT_W: f32 = 76.;
+/// The three plus the two gaps between them, so the states that show a sentence
+/// instead line up with the states that show numbers.
+const STATUS_W: f32 = PROGRESS_W + RATE_W + LEFT_W + 16.;
+
+/// The right-hand metrics of a job row, one per column.
+///
+/// Three strings rather than one sentence: they are laid out in three cells of
+/// their own, and a metric that has nothing to say leaves its cell empty rather
+/// than shortening the row.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Metrics {
+    progress: String,
+    rate: String,
+    left: String,
+}
+
+fn transfer_metrics(done: u64, total: u64, walk_complete: bool, rate: Option<f64>) -> Metrics {
+    let mut metrics = Metrics {
+        progress: format!(
+            "{} / {}",
+            fs::format_size(done),
+            if walk_complete {
+                fs::format_size(total)
+            } else {
+                "…".to_string()
+            }
+        ),
+        ..Metrics::default()
+    };
     // Rate as soon as there is one; time remaining only once the scan has
     // settled a denominator to subtract from. A rate near zero means a stall,
     // and dividing by it would promise infinity — say nothing instead.
     if let Some(rate) = rate.filter(|r| *r > 1.) {
-        status.push_str(&format!(" · {}/s", fs::format_size(rate as u64)));
+        metrics.rate = format!("{}/s", fs::format_size(rate as u64));
         if walk_complete && total > done {
             let left = (total - done) as f64 / rate;
-            status.push_str(&format!(" · {} left", fs::format_remaining(left)));
+            metrics.left = format!("{} left", fs::format_remaining(left));
         }
     }
-    status
+    metrics
 }
 
 impl JobView {
@@ -1144,17 +1171,22 @@ impl Workspace {
                     Phase::from_u8(progress.phase.load(std::sync::atomic::Ordering::Relaxed));
 
                 let status = match (job.done, phase) {
-                    (Some(Outcome::Cancelled), _) => "cancelled".to_string(),
+                    (Some(Outcome::Cancelled), _) => Err("cancelled".to_string()),
                     (Some(_), _) if job.errors > 0 => {
-                        job.last_error.clone().unwrap_or_else(|| "errors".into())
+                        Err(job.last_error.clone().unwrap_or_else(|| "errors".into()))
                     }
-                    (Some(_), _) => "done".to_string(),
+                    (Some(_), _) => Err("done".to_string()),
                     // The count climbs while it runs, which is the useful part:
                     // it says up front that this is 86,000 files, not 20.
-                    (None, Phase::Scanning) => format!("scanning… {files_total} files"),
-                    (None, Phase::Flushing) => "flushing to device…".to_string(),
-                    (None, Phase::AwaitingConflict) => "waiting for answer…".to_string(),
-                    _ => transfer_status(bytes_done, bytes_total, walk_complete, job.rate),
+                    (None, Phase::Scanning) => Err(format!("scanning… {files_total} files")),
+                    (None, Phase::Flushing) => Err("flushing to device…".to_string()),
+                    (None, Phase::AwaitingConflict) => Err("waiting for answer…".to_string()),
+                    _ => Ok(transfer_metrics(
+                        bytes_done,
+                        bytes_total,
+                        walk_complete,
+                        job.rate,
+                    )),
                 };
 
                 let is_done = job.done.is_some();
@@ -1202,14 +1234,46 @@ impl Workspace {
                                     .w(relative(fraction)),
                             ),
                     )
-                    .child(
-                        div()
+                    .child({
+                        // Right-aligned in a cell of its own, so a metric that
+                        // gains a digit grows leftwards into its own slack
+                        // instead of shoving everything beside it.
+                        let cell = |width: f32, text: String| {
+                            div()
+                                .w(px(width))
+                                .flex_none()
+                                .flex()
+                                .flex_row()
+                                .justify_end()
+                                .overflow_hidden()
+                                .child(text)
+                        };
+                        let row = div()
                             .flex_none()
-                            .max_w(px(460.))
-                            .truncate()
-                            .text_color(if job.errors > 0 { error_color } else { muted })
-                            .child(status),
-                    )
+                            .w(px(STATUS_W))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .text_color(if job.errors > 0 { error_color } else { muted });
+                        match status {
+                            // One sentence, right-aligned across the whole block
+                            // so it ends where the columns end.
+                            Err(sentence) => row.child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .flex_row()
+                                    .justify_end()
+                                    .overflow_hidden()
+                                    .child(sentence),
+                            ),
+                            Ok(metrics) => row
+                                .child(cell(PROGRESS_W, metrics.progress))
+                                .child(cell(RATE_W, metrics.rate))
+                                .child(cell(LEFT_W, metrics.left)),
+                        }
+                    })
                     .child(
                         div()
                             .id(("job-x", ix))
@@ -1443,28 +1507,71 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_says_only_what_it_knows() {
+    fn metrics_say_only_what_they_know() {
+        let m = |d, t, w, r| transfer_metrics(d, t, w, r);
+
         // Mid-scan: no denominator yet, so no time remaining either.
-        assert_eq!(transfer_status(1_200_000, 0, false, None), "1.1 MB / …");
         assert_eq!(
-            transfer_status(1_200_000, 0, false, Some(50_000_000.)),
-            "1.1 MB / … · 47.7 MB/s"
+            m(1_200_000, 0, false, None),
+            Metrics { progress: "1.1 MB / …".into(), ..Default::default() }
+        );
+        assert_eq!(
+            m(1_200_000, 0, false, Some(50_000_000.)),
+            Metrics {
+                progress: "1.1 MB / …".into(),
+                rate: "47.7 MB/s".into(),
+                left: String::new(),
+            }
         );
         // Scan finished: everything.
         assert_eq!(
-            transfer_status(100_000_000, 500_000_000, true, Some(50_000_000.)),
-            "95.4 MB / 477 MB · 47.7 MB/s · 8s left"
+            m(100_000_000, 500_000_000, true, Some(50_000_000.)),
+            Metrics {
+                progress: "95.4 MB / 477 MB".into(),
+                rate: "47.7 MB/s".into(),
+                left: "8s left".into(),
+            }
         );
         // A stalled transfer must not promise an infinite wait.
         assert_eq!(
-            transfer_status(100, 500_000_000, true, Some(0.)),
-            "100 B / 477 MB"
+            m(100, 500_000_000, true, Some(0.)),
+            Metrics { progress: "100 B / 477 MB".into(), ..Default::default() }
         );
         // Nothing left to do is not "0s left" forever.
         assert_eq!(
-            transfer_status(500, 500, true, Some(1000.)),
-            "500 B / 500 B · 1000 B/s"
+            m(500, 500, true, Some(1000.)),
+            Metrics {
+                progress: "500 B / 500 B".into(),
+                rate: "1000 B/s".into(),
+                left: String::new(),
+            }
         );
+    }
+
+    #[test]
+    fn every_metric_fits_the_column_it_is_given() {
+        // The columns are fixed, so the longest each can be has to fit. At
+        // text_xs a character is about 6px; the widths allow for that with room
+        // to spare, and this pins the assumption so a formatting change that
+        // outgrows a column is caught here rather than by truncation on screen.
+        let widest = transfer_metrics(
+            1023 * 1024 * 1024,
+            1023 * 1024 * 1024 + 1,
+            true,
+            Some(1023. * 1024. * 1024.),
+        );
+        for (text, width) in [
+            (&widest.progress, PROGRESS_W),
+            (&widest.rate, RATE_W),
+            (&transfer_metrics(0, 1, true, Some(1.5)).left, LEFT_W),
+        ] {
+            assert!(
+                text.chars().count() as f32 * 6.5 <= width,
+                "{text:?} needs more than {width}px"
+            );
+        }
+        // The longest duration form, which is the one that decides LEFT_W.
+        assert!("1h 59m left".chars().count() as f32 * 6.5 <= LEFT_W);
     }
 
     #[test]
