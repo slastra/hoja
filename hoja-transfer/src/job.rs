@@ -252,6 +252,8 @@ struct Worker {
     /// The scan ran and finished, so the totals are final and the transfer must
     /// not add to them again.
     scanned: bool,
+    /// Reused by every read/write fallback in the job — see `copy_extent`.
+    copy_buf: Vec<u8>,
 }
 
 impl Worker {
@@ -278,6 +280,7 @@ impl Worker {
             files_skipped: 0,
             dest_mount: None,
             scanned: false,
+            copy_buf: Vec::new(),
         }
     }
 
@@ -857,6 +860,7 @@ impl Worker {
             src_meta.len(),
             &self.progress.bytes_done,
             &self.cancel,
+            &mut self.copy_buf,
         )
     }
 

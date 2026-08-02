@@ -43,12 +43,12 @@ pub fn copy_contents(
     len: u64,
     bytes_done: &AtomicU64,
     cancel: &Arc<AtomicBool>,
+    buf: &mut Vec<u8>,
 ) -> std::io::Result<CopyOutcome> {
     rustix::fs::ftruncate(dest, len)?;
 
     let mut mechanism = CopyMechanism::CopyFileRange;
     let mut cfr_ok = true;
-    let mut buf: Option<Vec<u8>> = None;
 
     let mut offset: u64 = 0;
     loop {
@@ -69,7 +69,7 @@ pub fn copy_contents(
                     len,
                     &mut cfr_ok,
                     &mut mechanism,
-                    &mut buf,
+                    buf,
                     bytes_done,
                     cancel,
                 )?;
@@ -97,7 +97,7 @@ pub fn copy_contents(
             hole_start,
             &mut cfr_ok,
             &mut mechanism,
-            &mut buf,
+            buf,
             bytes_done,
             cancel,
         )?;
@@ -132,7 +132,7 @@ fn copy_extent(
     end: u64,
     cfr_ok: &mut bool,
     mechanism: &mut CopyMechanism,
-    buf: &mut Option<Vec<u8>>,
+    buf: &mut Vec<u8>,
     bytes_done: &AtomicU64,
     cancel: &Arc<AtomicBool>,
 ) -> std::io::Result<()> {
@@ -174,12 +174,20 @@ fn copy_extent(
             }
         }
 
-        let buffer = buf.get_or_insert_with(|| vec![0u8; BUF_SIZE]);
-        let n = src.read_at(&mut buffer[..want], pos)?;
+        // Grown to fit, never pre-sized to the maximum. This buffer belongs to
+        // the job, not to the file, because this is the path every
+        // cross-filesystem copy takes — to a USB drive, a network mount, tmpfs
+        // — and it used to allocate a fresh 4MB here for each one. Copying
+        // 66,000 files with a median size of 901 bytes asked for 265GB of
+        // buffer to move 0.7GB of data, one mmap and munmap at a time.
+        if buf.len() < want {
+            buf.resize(want, 0);
+        }
+        let n = src.read_at(&mut buf[..want], pos)?;
         if n == 0 {
             return Err(std::io::Error::other("unexpected EOF while copying"));
         }
-        dest.write_all_at(&buffer[..n], pos)?;
+        dest.write_all_at(&buf[..n], pos)?;
         pos += n as u64;
         bytes_done.fetch_add(n as u64, Ordering::Relaxed);
     }
