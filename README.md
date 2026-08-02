@@ -10,9 +10,11 @@ shows files in panes, so the word says both halves of it.
 **Warning:** hoja is experimental software. Do not use hoja as your only tool
 for important data.
 
-![hoja with two panes, Rosé Pine theme](docs/screenshot.png)
+![Two panes on this repository. The colour of a name is its git status: green for untracked, orange for modified, dim for ignored.](docs/screenshot.png)
 
 ## Features
+
+### The panes
 
 - **Panes.** Split the window into panes. Each pane shows one directory. The
   split tree is recursive, in the same shape as the Zed editor.
@@ -23,6 +25,13 @@ for important data.
 - **View settings.** Each pane has a menu at the right end of the toolbar.
   It controls hidden files, folder grouping, and the sort order. hoja does
   not show hidden files by default.
+- **Live listings.** hoja watches the directory it shows. If another program
+  adds, removes, or changes a file, the pane re-lists and keeps your selection.
+  If the directory itself goes away, the pane moves to the nearest directory
+  above it that still exists and tells you.
+
+### Moving files
+
 - **File transfer.** hoja selects the fastest correct method for each file:
   - A move on one filesystem uses `rename()`. This is instant.
   - A copy on btrfs or XFS uses reflink. This is instant for all file sizes.
@@ -41,35 +50,37 @@ for important data.
   the files on one filesystem and copies them across filesystems, which is the
   usual behaviour. Hold `ctrl` to copy or `shift` to move. Files that come from
   another application are always copied.
+- **Clipboard.** Copy and paste files between hoja and other file managers.
+  hoja reads and writes the GNOME clipboard format.
+
+### Finding things
+
 - **Search.** Press `ctrl-f` and type. hoja searches every folder below the one
   the pane shows and lists what it finds, with the path of each result. Results
   appear while the search runs. Press enter to go back to the list, then enter
   again to open. Press escape to stop searching.
-- **Command palette.** Press `ctrl-shift-p`, type part of a command name, and
-  press enter. The list shows only the commands that apply right now, with
-  their keys. Commands you use often move to the top.
 - **Places.** Press `ctrl-p` to go to your home directory, a bookmark, or an
   attached drive. hoja reads the same bookmarks file the GTK file dialogs use,
   so what you bookmark in Files appears here with no setup. A drive that is
   plugged in but not mounted is listed too; choosing it mounts the drive first.
-- **Live listings.** hoja watches the directory it shows. If another program
-  adds, removes, or changes a file, the pane re-lists and keeps your selection.
-  If the directory itself goes away, the pane moves to the nearest directory
-  above it that still exists and tells you.
+- **Command palette.** Press `ctrl-shift-p`, type part of a command name, and
+  press enter. The list shows only the commands that apply right now, with
+  their keys. Commands you use often move to the top.
+
+### How it looks
+
 - **Git status.** In a git repository, the colour of a file name shows its
   status: added, modified, deleted, renamed, or in conflict. A folder shows
   the status of the files in it. Ignored files are dim. hoja asks `git`
   itself, so the result always agrees with the command line.
-- **Clipboard.** Copy and paste files between pane and other file managers.
-  hoja reads and writes the GNOME clipboard format.
-- **Settings.** `~/.config/hoja/settings.json` sets the theme and what a new
-  pane shows. hoja never writes this file, so your comments and your layout
-  stay. It applies changes to the file immediately.
 - **Themes.** hoja reads Zed theme files. Put a theme file in
   `~/.config/hoja/themes/`. hoja applies changes to these files immediately.
   The Rosé Pine themes are included.
 - **Icons.** File icons follow the Zed icon system. The theme sets the icon
   color.
+- **Settings.** `~/.config/hoja/settings.json` sets the theme and what a new
+  pane shows. hoja never writes this file, so your comments and your layout
+  stay. It applies changes to the file immediately.
 
 ## Install
 
@@ -81,16 +92,13 @@ cd packaging && makepkg -si
 
 It builds from the current `main`, since there are no releases yet.
 
-## Build
+## Start
 
-1. Install Rust 1.95 or later. The Zed source sets this minimum.
-2. On Arch Linux, install these packages:
-   `clang cmake pkgconf fontconfig freetype2 wayland wayland-protocols
-   libxkbcommon libxkbcommon-x11 vulkan-icd-loader alsa-lib openssl zstd`
-3. Run `cargo build --release`.
+```sh
+hoja [DIRECTORY] [--theme NAME] [--list-themes]
+```
 
-Note: Cargo compiles GPUI with your local toolchain. The toolchain file in the
-Zed repository does not apply to git dependencies.
+The `HOJA_THEME` environment variable also sets the theme.
 
 ## Settings
 
@@ -119,14 +127,6 @@ and reads it back at the next start. It writes that file and you write the
 other one, so neither can overwrite the other. When both have an answer, the
 more recent one applies: what you last toggled survives a restart, and editing
 the settings file takes effect over it.
-
-## Start
-
-```sh
-hoja [DIRECTORY] [--theme NAME] [--list-themes]
-```
-
-The `HOJA_THEME` environment variable also sets the theme.
 
 ## Keys
 
@@ -223,6 +223,17 @@ because they are rare.
 | `↑` `↓` | Move the highlight |
 | `enter` or `escape` | Choose, or close |
 
+## Build
+
+1. Install Rust 1.95 or later. The Zed source sets this minimum.
+2. On Arch Linux, install these packages:
+   `clang cmake pkgconf fontconfig freetype2 wayland wayland-protocols
+   libxkbcommon libxkbcommon-x11 vulkan-icd-loader alsa-lib openssl zstd`
+3. Run `cargo build --release`.
+
+Note: Cargo compiles GPUI with your local toolchain. The toolchain file in the
+Zed repository does not apply to git dependencies.
+
 ## Transfer engine
 
 The `hoja-transfer` crate contains the transfer engine. It is a standard
@@ -239,7 +250,7 @@ The reflink test needs a btrfs filesystem. To prepare one:
 
 ```sh
 ./scripts/btrfs-loop.sh up
-HOJA_TEST_BTRFS=/tmp/pane-btrfs/mnt cargo test -p hoja-transfer -- --ignored
+HOJA_TEST_BTRFS=/tmp/hoja-btrfs/mnt cargo test -p hoja-transfer -- --ignored
 ```
 
 ## Roadmap
@@ -250,7 +261,7 @@ These features are planned and not complete:
 - A job journal, for undo of a transfer and resume after a crash
 - A relative time option for the Modified column, such as "2 hours ago"
 - Optional columns for the owner, the group, and the permissions
-- Tabs, search, previews, and thumbnails
+- Tabs, previews, and thumbnails
 - Delta sync between machines
 
 See [`docs/transfer-plan.md`](docs/transfer-plan.md) for the full design.
