@@ -1,13 +1,16 @@
-# pane
+# hoja
 
-pane is a file manager for Linux. It runs on Wayland. It uses
+hoja is a file manager for Linux. It runs on Wayland. It uses
 [GPUI](https://www.gpui.rs/), the GPU-accelerated UI framework from the Zed
 editor.
 
-**Warning:** pane is experimental software. Do not use pane as your only tool
+*Hoja* is Spanish for a sheet of paper and for a pane of glass. The program
+shows files in panes, so the word says both halves of it.
+
+**Warning:** hoja is experimental software. Do not use hoja as your only tool
 for important data.
 
-![pane with two panes, Rosé Pine theme](docs/screenshot.png)
+![hoja with two panes, Rosé Pine theme](docs/screenshot.png)
 
 ## Features
 
@@ -18,27 +21,27 @@ for important data.
 - **Navigation.** Each pane has its own history. Use the back, forward, up, and
   home buttons. Click the path, then type a new path.
 - **View settings.** Each pane has a menu at the right end of the toolbar.
-  It controls hidden files, folder grouping, and the sort order. pane does
+  It controls hidden files, folder grouping, and the sort order. hoja does
   not show hidden files by default.
-- **File transfer.** pane selects the fastest correct method for each file:
+- **File transfer.** hoja selects the fastest correct method for each file:
   - A move on one filesystem uses `rename()`. This is instant.
   - A copy on btrfs or XFS uses reflink. This is instant for all file sizes.
   - All other copies use `copy_file_range` with a fallback. Sparse files stay
     sparse.
-  - pane keeps permissions, times, extended attributes, symlinks, and
-    hardlinks. Writes are atomic. On removable media, pane flushes data before
+  - hoja keeps permissions, times, extended attributes, symlinks, and
+    hardlinks. Writes are atomic. On removable media, hoja flushes data before
     it reports success.
 - **Delete with undo.** `delete` removes the selection and `ctrl-z` puts it
-  back. pane moves the files to the trash directory of the freedesktop
+  back. hoja moves the files to the trash directory of the freedesktop
   specification, on the same filesystem, so a delete is instant and other
-  file managers can empty what pane deletes. pane has no other trash
+  file managers can empty what hoja deletes. hoja has no other trash
   controls: no browser, no restore list, no empty command.
 - **Drag and drop.** Drag rows to another pane, onto a folder, or to another
   application. Drag files from another application into a pane. A drag moves
   the files on one filesystem and copies them across filesystems, which is the
   usual behaviour. Hold `ctrl` to copy or `shift` to move. Files that come from
   another application are always copied.
-- **Search.** Press `ctrl-f` and type. pane searches every folder below the one
+- **Search.** Press `ctrl-f` and type. hoja searches every folder below the one
   the pane shows and lists what it finds, with the path of each result. Results
   appear while the search runs. Press enter to go back to the list, then enter
   again to open. Press escape to stop searching.
@@ -46,21 +49,21 @@ for important data.
   press enter. The list shows only the commands that apply right now, with
   their keys. Commands you use often move to the top.
 - **Places.** Press `ctrl-p` to go to your home directory, a bookmark, or an
-  attached drive. pane reads the same bookmarks file the GTK file dialogs use,
+  attached drive. hoja reads the same bookmarks file the GTK file dialogs use,
   so what you bookmark in Files appears here with no setup. A drive that is
   plugged in but not mounted is listed too; choosing it mounts the drive first.
-- **Live listings.** pane watches the directory it shows. If another program
+- **Live listings.** hoja watches the directory it shows. If another program
   adds, removes, or changes a file, the pane re-lists and keeps your selection.
   If the directory itself goes away, the pane moves to the nearest directory
   above it that still exists and tells you.
 - **Git status.** In a git repository, the colour of a file name shows its
   status: added, modified, deleted, renamed, or in conflict. A folder shows
-  the status of the files in it. Ignored files are dim. pane asks `git`
+  the status of the files in it. Ignored files are dim. hoja asks `git`
   itself, so the result always agrees with the command line.
 - **Clipboard.** Copy and paste files between pane and other file managers.
-  pane reads and writes the GNOME clipboard format.
-- **Themes.** pane reads Zed theme files. Put a theme file in
-  `~/.config/pane/themes/`. pane applies changes to these files immediately.
+  hoja reads and writes the GNOME clipboard format.
+- **Themes.** hoja reads Zed theme files. Put a theme file in
+  `~/.config/hoja/themes/`. hoja applies changes to these files immediately.
   The Rosé Pine themes are included.
 - **Icons.** File icons follow the Zed icon system. The theme sets the icon
   color.
@@ -89,10 +92,10 @@ Zed repository does not apply to git dependencies.
 ## Start
 
 ```sh
-pane [DIRECTORY] [--theme NAME] [--list-themes]
+hoja [DIRECTORY] [--theme NAME] [--list-themes]
 ```
 
-The `PANE_THEME` environment variable also sets the theme.
+The `HOJA_THEME` environment variable also sets the theme.
 
 ## Keys
 
@@ -167,7 +170,7 @@ because they are rare.
 | Click a column header | Sort. Click again to reverse the order. |
 | Drag a header divider | Resize the column |
 | Click the magnifier | Start or stop a search |
-| Drag rows | Move them. Across filesystems, pane copies them. |
+| Drag rows | Move them. Across filesystems, hoja copies them. |
 | `ctrl`-drag / `shift`-drag | Always copy / always move |
 | Drop on a folder row | Put the files in that folder |
 | Back and forward buttons | Go back and forward in the history |
@@ -191,21 +194,21 @@ because they are rare.
 
 ## Transfer engine
 
-The `pane-transfer` crate contains the transfer engine. It is a standard
+The `hoja-transfer` crate contains the transfer engine. It is a standard
 Rust library with no UI dependencies. One worker thread does each job. The UI
 reads progress from atomic counters.
 
 To run the engine tests:
 
 ```sh
-cargo test -p pane-transfer
+cargo test -p hoja-transfer
 ```
 
 The reflink test needs a btrfs filesystem. To prepare one:
 
 ```sh
 ./scripts/btrfs-loop.sh up
-PANE_TEST_BTRFS=/tmp/pane-btrfs/mnt cargo test -p pane-transfer -- --ignored
+HOJA_TEST_BTRFS=/tmp/pane-btrfs/mnt cargo test -p hoja-transfer -- --ignored
 ```
 
 ## Roadmap
@@ -223,10 +226,10 @@ See [`docs/transfer-plan.md`](docs/transfer-plan.md) for the full design.
 
 ## License
 
-The license of pane is GPL-3.0-or-later. See the `LICENSE` file.
+The license of hoja is GPL-3.0-or-later. See the `LICENSE` file.
 
 GPUI has the Apache-2.0 license. The Zed `theme` and `file_icons` crates have
-the GPL-3.0-or-later license. This is why pane uses the GPL.
+the GPL-3.0-or-later license. This is why hoja uses the GPL.
 
 The included assets have their own licenses:
 

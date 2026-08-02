@@ -1,12 +1,12 @@
 [workspace]
-members = ["pane-transfer"]
+members = ["hoja-transfer"]
 
 [package]
-name = "pane"
+name = "hoja"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
-description = "A GPU-accelerated file manager with Zed-style splittable panes"
+description = "A GPU-accelerated file manager with splittable panes"
 
 # Pinned to a specific zed revision. Safe to pin by `rev` here only because gpui is
 # our sole git source — nothing else in the graph depends on it, so there is no
@@ -35,7 +35,7 @@ file_icons = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67
 theme_settings = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
 fuzzy_nucleo = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
 
-pane-transfer = { path = "pane-transfer" }
+hoja-transfer = { path = "hoja-transfer" }
 
 anyhow = "1"
 chrono = "0.4"

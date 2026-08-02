@@ -147,7 +147,7 @@ pub fn partial_path(final_dest: &Path) -> PathBuf {
         .unwrap_or_else(|| "unnamed".to_string());
     let nonce = PARTIAL_COUNTER.fetch_add(1, Ordering::Relaxed);
     let unique = format!(
-        ".pane-partial-{name}.{}-{nonce}",
+        ".hoja-partial-{name}.{}-{nonce}",
         std::process::id(),
     );
     final_dest.with_file_name(unique)
@@ -155,7 +155,7 @@ pub fn partial_path(final_dest: &Path) -> PathBuf {
 
 /// Listing-side filter for the app: partial files should not appear in panes.
 pub fn is_partial_name(name: &str) -> bool {
-    name.starts_with(".pane-partial-")
+    name.starts_with(".hoja-partial-")
 }
 
 /// Byte index where a file name's extension begins, or `name.len()` when it

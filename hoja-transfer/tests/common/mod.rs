@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use pane_transfer::{ConflictDecision, Event, JobHandle, JobSummary};
+use hoja_transfer::{ConflictDecision, Event, JobHandle, JobSummary};
 
 pub fn ext4_dir() -> tempfile::TempDir {
     tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir on target fs")
@@ -68,7 +68,7 @@ pub fn no_partials_under(dir: &Path) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             assert!(
-                !pane_transfer::is_partial_name(&name),
+                !hoja_transfer::is_partial_name(&name),
                 "orphaned partial file: {}",
                 entry.path().display()
             );

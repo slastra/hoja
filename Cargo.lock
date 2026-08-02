@@ -3138,6 +3138,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "hoja"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "file_icons",
+ "freedesktop-desktop-entry",
+ "fuzzy_nucleo",
+ "gpui",
+ "gpui_platform",
+ "hoja-transfer",
+ "notify 8.2.0",
+ "parking_lot",
+ "rust-embed",
+ "serde_json_lenient",
+ "smallvec",
+ "theme",
+ "theme_settings",
+ "unicode-segmentation",
+ "xdg-mime",
+]
+
+[[package]]
+name = "hoja-transfer"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rustix 1.1.4",
+ "tempfile",
+]
+
+[[package]]
 name = "home"
 version = "0.5.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4775,38 +4807,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "pane"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "file_icons",
- "freedesktop-desktop-entry",
- "fuzzy_nucleo",
- "gpui",
- "gpui_platform",
- "notify 8.2.0",
- "pane-transfer",
- "parking_lot",
- "rust-embed",
- "serde_json_lenient",
- "smallvec",
- "theme",
- "theme_settings",
- "unicode-segmentation",
- "xdg-mime",
-]
-
-[[package]]
-name = "pane-transfer"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "rustix 1.1.4",
- "tempfile",
 ]
 
 [[package]]

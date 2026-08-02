@@ -69,7 +69,7 @@ pub fn spawn(root: PathBuf, query: String, show_hidden: bool) -> Search {
     let capped = Arc::new(AtomicBool::new(false));
 
     std::thread::Builder::new()
-        .name("pane-search".into())
+        .name("hoja-search".into())
         .spawn({
             let cancel = cancel.clone();
             let done = done.clone();
@@ -95,7 +95,7 @@ pub fn spawn(root: PathBuf, query: String, show_hidden: bool) -> Search {
                         if name.starts_with('.') && !show_hidden {
                             continue;
                         }
-                        if pane_transfer::is_partial_name(&name) {
+                        if hoja_transfer::is_partial_name(&name) {
                             continue;
                         }
 
@@ -184,7 +184,7 @@ mod tests {
     }
 
     fn fixture(tag: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("pane-search-test-{}-{tag}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("hoja-search-test-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("a/deep/deeper")).unwrap();
         std::fs::create_dir_all(root.join(".hidden")).unwrap();

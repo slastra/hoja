@@ -14,7 +14,7 @@ pub fn themes_dir() -> PathBuf {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("pane").join("themes")
+    base.join("hoja").join("themes")
 }
 
 /// Parse one theme family file.
@@ -41,7 +41,7 @@ pub fn load_bundled_themes(cx: &mut App) -> Result<()> {
         };
         match parse_family(&bytes) {
             Ok(family) => registry.insert_theme_families([family]),
-            Err(err) => eprintln!("[pane] skipping bundled theme {path}: {err}"),
+            Err(err) => eprintln!("[hoja] skipping bundled theme {path}: {err}"),
         }
     }
     Ok(())
@@ -64,7 +64,7 @@ pub fn load_user_themes(cx: &mut App) {
             parse_family(&bytes).with_context(|| format!("parsing {}", path.display()))
         }) {
             Ok(family) => registry.insert_theme_families([family]),
-            Err(err) => eprintln!("[pane] skipping user theme {}: {err:#}", path.display()),
+            Err(err) => eprintln!("[hoja] skipping user theme {}: {err:#}", path.display()),
         }
     }
 }
@@ -101,14 +101,14 @@ pub fn watch_user_themes(active: String, cx: &mut App) {
     }) {
         Ok(w) => w,
         Err(err) => {
-            eprintln!("[pane] theme watcher unavailable: {err}");
+            eprintln!("[hoja] theme watcher unavailable: {err}");
             return;
         }
     };
 
     use notify::Watcher as _;
     if let Err(err) = watcher.watch(&dir, notify::RecursiveMode::NonRecursive) {
-        eprintln!("[pane] cannot watch {}: {err}", dir.display());
+        eprintln!("[hoja] cannot watch {}: {err}", dir.display());
         return;
     }
 
@@ -141,7 +141,7 @@ pub fn watch_user_themes(active: String, cx: &mut App) {
             cx.update(|cx| {
                 load_user_themes(cx);
                 if let Err(err) = apply(&active, cx) {
-                    eprintln!("[pane] theme reload failed: {err}");
+                    eprintln!("[hoja] theme reload failed: {err}");
                 }
             });
         }

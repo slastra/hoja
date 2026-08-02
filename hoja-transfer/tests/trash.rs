@@ -8,13 +8,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use pane_transfer::{TrashedItem, restore, trash};
+use hoja_transfer::{TrashedItem, restore, trash};
 
 /// Serialises the tests and points `XDG_DATA_HOME` somewhere disposable.
 fn trash_env() -> MutexGuard<'static, PathBuf> {
     static ENV: OnceLock<Mutex<PathBuf>> = OnceLock::new();
     ENV.get_or_init(|| {
-        let root = std::env::temp_dir().join(format!("pane-trash-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("hoja-trash-test-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         // Safety: set once, before any test body runs, under the lock that
         // every test in this file takes.

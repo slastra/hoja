@@ -10,7 +10,7 @@ use gpui::{
     Task, UniformListScrollHandle, Window, actions, anchored, deferred, div, prelude::*, px,
     uniform_list,
 };
-use pane_transfer::Operation;
+use hoja_transfer::Operation;
 use theme::ActiveTheme;
 
 use crate::file_menu::{FileMenu, MenuItem};
@@ -578,7 +578,7 @@ impl DirPane {
                 items.extend(apps.into_iter().take(8).map(|app| {
                     MenuItem::action(format!("Open with {}", app.name), move |_, _| {
                         if let Err(err) = crate::opener::launch(&app) {
-                            eprintln!("[pane] launch failed: {err}");
+                            eprintln!("[hoja] launch failed: {err}");
                         }
                     })
                 }));
@@ -979,7 +979,7 @@ impl DirPane {
             Some(from) => {
                 let modifiers = window.modifiers();
                 let move_it = !modifiers.control
-                    && (modifiers.shift || pane_transfer::same_filesystem(from, &dest));
+                    && (modifiers.shift || hoja_transfer::same_filesystem(from, &dest));
                 if move_it {
                     Operation::Move
                 } else {
@@ -1020,7 +1020,7 @@ impl DirPane {
         }) {
             Ok(watcher) => watcher,
             Err(err) => {
-                eprintln!("[pane] directory watcher unavailable: {err}");
+                eprintln!("[hoja] directory watcher unavailable: {err}");
                 return;
             }
         };
@@ -1315,7 +1315,7 @@ impl DirPane {
             return Ok(entry.name.clone());
         }
         let target = self.dir.join(new_name);
-        pane_transfer::rename_no_replace(&entry.path, &target)
+        hoja_transfer::rename_no_replace(&entry.path, &target)
             .map(|()| new_name.to_string())
             .map_err(|err| err.to_string())
     }
@@ -1597,7 +1597,7 @@ impl DirPane {
         if entry.is_dir {
             self.navigate_to(path, cx);
         } else if let Err(err) = crate::opener::open(&path) {
-            eprintln!("[pane] open failed: {err}");
+            eprintln!("[hoja] open failed: {err}");
         }
     }
 
@@ -1740,7 +1740,7 @@ impl DirPane {
             })
             .child(
                 div()
-                    .id("pane-search")
+                    .id("hoja-search")
                     .flex_none()
                     .size(px(20.))
                     .flex()

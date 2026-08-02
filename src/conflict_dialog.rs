@@ -12,7 +12,7 @@ use gpui::{
     App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Subscription, Window, div,
     prelude::*, px,
 };
-use pane_transfer::{ConflictChoice, ConflictDecision};
+use hoja_transfer::{ConflictChoice, ConflictDecision};
 use theme::ActiveTheme;
 
 use crate::icon::Icon;

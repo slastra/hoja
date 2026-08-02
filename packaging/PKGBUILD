@@ -1,12 +1,12 @@
 # Maintainer: Shaun Lastra <shaun@revolvetrading.com>
 
-pkgname=pane-git
-_pkgname=pane
+pkgname=hoja-git
+_pkgname=hoja
 pkgver=r0.0000000
 pkgrel=1
 pkgdesc='GPU-accelerated file manager with splittable panes, built on GPUI'
 arch=('x86_64')
-url='https://github.com/slastra/pane'
+url='https://github.com/slastra/hoja'
 license=('GPL-3.0-or-later')
 
 # Linked directly. Everything else the binary pulls in — brotli, bzip2, expat,
@@ -45,8 +45,8 @@ makedepends=('git' 'cargo' 'clang' 'cmake' 'pkgconf' 'wayland-protocols')
 # fails on an undefined wasmtime_longjmp symbol. Cargo applies its own LTO from
 # the release profile regardless, so nothing is lost.
 options=('!lto')
-provides=('pane')
-conflicts=('pane')
+provides=('hoja')
+conflicts=('hoja')
 source=("git+$url.git")
 b2sums=('SKIP')
 
@@ -78,16 +78,16 @@ check() {
   # and another under /tmp to force EXDEV and exercise the copy fallback — so it
   # asserts something about the machine it runs on, not about the code, and
   # fails where a build root has both on the same filesystem.
-  cargo test --frozen --release -p pane
+  cargo test --frozen --release -p hoja
 }
 
 package() {
   cd "$_pkgname"
-  install -Dm755 target/release/pane "$pkgdir/usr/bin/pane"
-  install -Dm644 packaging/pane.desktop \
-    "$pkgdir/usr/share/applications/pane.desktop"
-  install -Dm644 packaging/pane.svg \
-    "$pkgdir/usr/share/icons/hicolor/scalable/apps/pane.svg"
+  install -Dm755 target/release/hoja "$pkgdir/usr/bin/hoja"
+  install -Dm644 packaging/hoja.desktop \
+    "$pkgdir/usr/share/applications/hoja.desktop"
+  install -Dm644 packaging/hoja.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/hoja.svg"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$_pkgname/README.md"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

@@ -6,7 +6,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
 use common::*;
-use pane_transfer::{
+use hoja_transfer::{
     ConflictChoice, ConflictDecision, JobPolicy, JobSpec, Operation, Outcome, spawn_job,
 };
 
@@ -120,10 +120,10 @@ fn tier1_fallback_on_ext4() {
 }
 
 #[test]
-#[ignore = "needs a btrfs mount: scripts/btrfs-loop.sh, then PANE_TEST_BTRFS=<mnt>"]
+#[ignore = "needs a btrfs mount: scripts/btrfs-loop.sh, then HOJA_TEST_BTRFS=<mnt>"]
 fn tier1_btrfs_reflink_succeeds() {
-    let Ok(mnt) = std::env::var("PANE_TEST_BTRFS") else {
-        panic!("set PANE_TEST_BTRFS to a writable btrfs mount");
+    let Ok(mnt) = std::env::var("HOJA_TEST_BTRFS") else {
+        panic!("set HOJA_TEST_BTRFS to a writable btrfs mount");
     };
     let base = Path::new(&mnt);
     let src_dir = tempfile::tempdir_in(base).unwrap();

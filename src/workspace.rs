@@ -6,7 +6,7 @@ use gpui::{
     App, Context, DismissEvent, Entity, EntityId, FocusHandle, Focusable, Subscription, Task,
     Window, actions, div, hsla, prelude::*, px, relative,
 };
-use pane_transfer::{
+use hoja_transfer::{
     ConflictDecision, Event as JobEvent, JobHandle, JobId, JobPolicy, JobSpec, Operation, Outcome,
     Phase, TrashedItem,
 };
@@ -216,7 +216,7 @@ impl Workspace {
         let new_pane = self.add_pane(dir, view, window, cx);
         self.center.split(&source, &new_pane, direction);
         #[cfg(debug_assertions)]
-        eprintln!("[pane] split {direction:?} -> {}", self.center.shape());
+        eprintln!("[hoja] split {direction:?} -> {}", self.center.shape());
         cx.notify();
     }
 
@@ -242,7 +242,7 @@ impl Workspace {
             window.focus(&fallback.focus_handle(cx), cx);
         }
         #[cfg(debug_assertions)]
-        eprintln!("[pane] close -> {}", self.center.shape());
+        eprintln!("[hoja] close -> {}", self.center.shape());
         cx.notify();
     }
 
@@ -344,7 +344,7 @@ impl Workspace {
             dest_dir: dest_dir.clone(),
             policy: JobPolicy::default(),
         };
-        match pane_transfer::spawn_job(spec) {
+        match hoja_transfer::spawn_job(spec) {
             Ok(handle) => {
                 self.jobs.push(JobView {
                     handle,
@@ -475,7 +475,7 @@ impl Workspace {
         }
         match std::fs::create_dir(&candidate) {
             Ok(()) => self.active_pane.update(cx, |pane, cx| pane.refresh(cx)),
-            Err(err) => eprintln!("[pane] new folder failed: {err}"),
+            Err(err) => eprintln!("[hoja] new folder failed: {err}"),
         }
     }
 
@@ -500,7 +500,7 @@ impl Workspace {
                 .background_spawn(async move {
                     paths
                         .into_iter()
-                        .map(|path| pane_transfer::trash(&path).map_err(|err| (path, err)))
+                        .map(|path| hoja_transfer::trash(&path).map_err(|err| (path, err)))
                         .collect::<Vec<_>>()
                 })
                 .await;
@@ -545,7 +545,7 @@ impl Workspace {
                     let mut restored = Vec::new();
                     let mut failures = Vec::new();
                     for item in batch {
-                        match pane_transfer::restore(&item) {
+                        match hoja_transfer::restore(&item) {
                             Ok(()) => restored.push(item.original),
                             Err(err) => failures.push((item, err)),
                         }

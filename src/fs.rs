@@ -141,7 +141,7 @@ pub fn read_dir(path: &Path, include_hidden: bool) -> anyhow::Result<Vec<DirEntr
             // In-progress transfer temps are an implementation detail; a crash
             // can orphan them until the journal (M4) grows a reaper, and either
             // way they should not appear in listings.
-            !dotted || !pane_transfer::is_partial_name(&name.to_string_lossy())
+            !dotted || !hoja_transfer::is_partial_name(&name.to_string_lossy())
         })
         .map(|e| DirEntry::from_std(&e))
         .collect())
@@ -389,7 +389,7 @@ pub fn step_row(len: usize, cursor: Option<usize>, delta: isize) -> Option<usize
 /// definition with the engine's ` (copy)` insertion point so the two cannot
 /// drift apart.
 pub fn stem_range(name: &str) -> std::ops::Range<usize> {
-    0..pane_transfer::stem_end(name)
+    0..hoja_transfer::stem_end(name)
 }
 
 /// Human-readable size for the listing's right-hand column.
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn hidden_files_are_filtered() {
-        let dir = std::env::temp_dir().join(format!("pane-fs-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("hoja-fs-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("visible.txt"), b"v").unwrap();
         std::fs::write(dir.join(".hidden"), b"h").unwrap();

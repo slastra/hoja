@@ -42,7 +42,7 @@ use workspace::{
 
 struct Args {
     dir: PathBuf,
-    /// `--theme <name>`, else `$PANE_THEME`, else the default dark theme.
+    /// `--theme <name>`, else `$HOJA_THEME`, else the default dark theme.
     theme: Option<String>,
     list_themes: bool,
 }
@@ -50,7 +50,7 @@ struct Args {
 /// Usage: `pane [DIR] [--theme NAME] [--list-themes]`
 fn parse_args() -> Args {
     let mut dir = None;
-    let mut theme = std::env::var("PANE_THEME").ok();
+    let mut theme = std::env::var("HOJA_THEME").ok();
     let mut list_themes = false;
     let mut args = std::env::args().skip(1);
 
@@ -89,7 +89,7 @@ fn main() {
         // that's the two calls below.
         theme::init(LoadThemes::All(Box::new(Assets)), cx);
         if let Err(err) = theming::load_bundled_themes(cx) {
-            eprintln!("[pane] bundled themes failed to load: {err:#}");
+            eprintln!("[hoja] bundled themes failed to load: {err:#}");
         }
         theming::load_user_themes(cx);
 
@@ -105,7 +105,7 @@ fn main() {
         if let Some(name) = &args.theme {
             match theming::apply(name, cx) {
                 Ok(()) => theming::watch_user_themes(name.clone(), cx),
-                Err(err) => eprintln!("[pane] theme {name:?} not available: {err}"),
+                Err(err) => eprintln!("[hoja] theme {name:?} not available: {err}"),
             }
         }
 
@@ -215,7 +215,7 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 // Lets Hyprland window rules target this app.
-                app_id: Some("pane".into()),
+                app_id: Some("hoja".into()),
                 ..Default::default()
             },
             |window, cx| cx.new(|cx| Workspace::new(args.dir.clone(), window, cx)),
