@@ -99,10 +99,10 @@ impl Modal {
 ///
 /// One per file, and a job can fail on every file it touches: copying a source
 /// tree onto exFAT produced 2,619, one for each symlink the filesystem cannot
-/// represent. Past a screenful the list stops answering "which files?" and
-/// starts answering "what went wrong?", which the first thousand answer just as
-/// well. The count above the list stays exact.
-const MAX_RETAINED_FAILURES: usize = 1000;
+/// represent. Set well above that so the per-reason counts in the report are
+/// the real ones rather than a sample — at roughly 140 bytes each this is under
+/// 1.5 MB, and it is a backstop against a pathological job rather than a budget.
+const MAX_RETAINED_FAILURES: usize = 10_000;
 
 struct PendingConflict {
     job: JobId,

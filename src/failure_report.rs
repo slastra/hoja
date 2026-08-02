@@ -1,15 +1,22 @@
-//! What a transfer could not do, listed in full.
+//! What a transfer could not do, grouped by why.
 //!
 //! The job strip has one line, so a failed transfer could only ever say how
 //! many files failed and name the first. That is the wrong one to name: the
 //! first error is rarely the interesting one, and a job can fail in several
 //! ways at once — a directory that is unreadable, a filesystem that refuses
-//! symlinks, a disk that filled up halfway. This is the whole list.
+//! symlinks, a disk that filled up halfway.
+//!
+//! Listing each failure with its own reason attached reads badly at the scale
+//! failures actually arrive: copying a source tree onto exFAT produced 2,619 of
+//! them, every one saying "Operation not permitted", and the answer the list was
+//! being asked for — *what went wrong* — was buried under 2,619 repetitions of
+//! itself. So the reason is the heading and the files sit under it.
 
 use gpui::{
     App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Window, actions, div,
     prelude::*, px, uniform_list,
 };
+use std::collections::HashMap;
 use std::path::PathBuf;
 use theme::ActiveTheme;
 
@@ -20,8 +27,21 @@ actions!(failures, [Dismiss]);
 /// The key context the modal declares, so escape reaches it.
 pub const KEY_CONTEXT: &str = "failures";
 
-const ROW_HEIGHT: f32 = 40.;
-const MAX_VISIBLE_ROWS: f32 = 12.;
+const LINE_HEIGHT: f32 = 22.;
+const MAX_VISIBLE_LINES: f32 = 18.;
+const MODAL_W: f32 = 780.;
+
+/// Files listed under one reason before the rest become a count.
+///
+/// Without a per-group cap the largest group buries every other one: a job that
+/// fails 2,000 times on symlinks and once on a full disk would need two thousand
+/// lines of scrolling before the disk was mentioned, and the disk is the one
+/// worth knowing about.
+///
+/// Small, because this is a diagnosis and not an inventory. Eight names are
+/// enough to recognise which files a reason is catching; the heading's count
+/// carries the rest, and every other reason stays on the same screen.
+const MAX_FILES_PER_GROUP: usize = 8;
 
 /// One thing that went wrong, as the strip collected it.
 #[derive(Clone, Debug)]
@@ -30,6 +50,30 @@ pub struct Failure {
     /// Already rendered by the engine's `Display`, which reads
     /// "Symlink: Operation not permitted".
     pub reason: String,
+}
+
+/// A reason with the files it accounts for, ready to lay out as flat lines.
+///
+/// Flat because `uniform_list` virtualizes on a single row height, and a job
+/// with thousands of failures is exactly the one that needs virtualizing.
+enum Line {
+    Reason { text: String, count: usize },
+    File(String),
+    /// The tail of a group that ran past `MAX_FILES_PER_GROUP`.
+    More(usize),
+}
+
+/// Drop the errno that `io::Error` prints after its own message.
+///
+/// "File name too long (os error 36)" is the same fact twice, and the half in
+/// parentheses is the half nobody reads. It also keeps the parenthetical out of
+/// the grouping key, where it would have been a silent way to split one reason
+/// into two.
+fn tidy(reason: &str) -> &str {
+    match reason.rfind(" (os error ") {
+        Some(ix) if reason.ends_with(')') => &reason[..ix],
+        _ => reason,
+    }
 }
 
 /// The deepest directory every failure sits under, so the rows can drop it.
@@ -60,11 +104,12 @@ fn common_root(failures: &[Failure]) -> Option<PathBuf> {
 pub struct FailureReport {
     /// The job's own label, so the modal says which transfer this was.
     label: String,
-    failures: Vec<Failure>,
-    /// How many there were in total, which is more than `failures` holds when a
-    /// job failed thousands of times — see `MAX_RETAINED_FAILURES`.
+    /// The whole report, pre-laid-out: reasons with their files beneath them.
+    lines: Vec<Line>,
+    /// How many failed in total, which exceeds what `lines` accounts for only
+    /// when a job blew past `MAX_RETAINED_FAILURES`.
     total: usize,
-    /// Trimmed off the front of every row, and shown once instead.
+    /// Held back from every path below, and shown once instead.
     root: Option<PathBuf>,
     scroll: gpui::UniformListScrollHandle,
     focus_handle: FocusHandle,
@@ -72,11 +117,12 @@ pub struct FailureReport {
 
 impl FailureReport {
     pub fn new(label: String, failures: Vec<Failure>, total: usize, cx: &mut Context<Self>) -> Self {
+        let root = common_root(&failures);
         Self {
             label,
-            root: common_root(&failures),
-            failures,
+            lines: group(&failures, root.as_deref()),
             total,
+            root,
             scroll: gpui::UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
         }
@@ -86,40 +132,52 @@ impl FailureReport {
         cx.emit(DismissEvent);
     }
 
-    fn render_row(&self, ix: usize, cx: &Context<Self>) -> gpui::AnyElement {
+    fn render_line(&self, ix: usize, cx: &Context<Self>) -> gpui::AnyElement {
         let colors = cx.theme().colors();
-        let Some(failure) = self.failures.get(ix) else {
-            return div().into_any_element();
-        };
-        let path = match &self.root {
-            Some(root) => failure.path.strip_prefix(root).unwrap_or(&failure.path),
-            None => &failure.path,
-        };
-        div()
-            .h(px(ROW_HEIGHT))
-            .w_full()
-            .px_3()
-            .flex()
-            .flex_col()
-            .justify_center()
-            .gap_0p5()
-            .child(
-                div()
-                    .truncate()
-                    .text_sm()
-                    .text_color(colors.text)
-                    // The path is what identifies the file; it goes first and
-                    // gets the readable colour.
-                    .child(path.display().to_string()),
-            )
-            .child(
-                div()
-                    .truncate()
-                    .text_xs()
-                    .text_color(colors.text_muted)
-                    .child(failure.reason.clone()),
-            )
-            .into_any_element()
+        let line = div().h(px(LINE_HEIGHT)).w_full().flex().items_center();
+        match self.lines.get(ix) {
+            // Flush left and at full strength against indented, muted files:
+            // in a grouped report the reason is the finding and the names under
+            // it are the evidence. A background band said this more quietly —
+            // and in themes where the two surface colours are close, not at all.
+            Some(Line::Reason { text, count }) => line
+                .px_3()
+                .gap_2()
+                .text_sm()
+                .text_color(colors.text)
+                // Every heading but the first, which already has the header's.
+                .when(ix > 0, |el| el.border_t_1().border_color(colors.border))
+                .child(div().flex_1().truncate().child(text.clone()))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(colors.text_muted)
+                        .child(match count {
+                            1 => "1 file".to_string(),
+                            n => format!("{} files", crate::notifications::count(*n as u64)),
+                        }),
+                )
+                .into_any_element(),
+            Some(Line::File(path)) => line
+                .pl_6()
+                .pr_3()
+                .text_sm()
+                .text_color(colors.text_muted)
+                .child(div().truncate().child(path.clone()))
+                .into_any_element(),
+            Some(Line::More(n)) => line
+                .pl_6()
+                .pr_3()
+                .text_xs()
+                .text_color(colors.text_muted)
+                .child(format!(
+                    "and {} more",
+                    crate::notifications::count(*n as u64)
+                ))
+                .into_any_element(),
+            None => line.into_any_element(),
+        }
     }
 }
 
@@ -134,7 +192,6 @@ impl EventEmitter<DismissEvent> for FailureReport {}
 impl Render for FailureReport {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors();
-        let shown = self.failures.len();
         let heading = match self.total {
             1 => "1 file could not be transferred".to_string(),
             n => format!(
@@ -142,25 +199,33 @@ impl Render for FailureReport {
                 crate::notifications::count(n as u64)
             ),
         };
+        let listed: usize = self
+            .lines
+            .iter()
+            .map(|line| match line {
+                Line::Reason { count, .. } => *count,
+                _ => 0,
+            })
+            .sum();
 
         let list = uniform_list(
             "failures",
-            shown,
+            self.lines.len(),
             cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
-                range.map(|ix| this.render_row(ix, cx)).collect::<Vec<_>>()
+                range.map(|ix| this.render_line(ix, cx)).collect::<Vec<_>>()
             }),
         )
         .track_scroll(&self.scroll)
         // On the list itself, never a parent: it virtualizes, so it builds
         // however many rows fit *its own* height and a height on an ancestor
         // tells it nothing.
-        .h(px(ROW_HEIGHT * (shown as f32).min(MAX_VISIBLE_ROWS)));
+        .h(px(LINE_HEIGHT * (self.lines.len() as f32).min(MAX_VISIBLE_LINES)));
 
         div()
             .occlude()
             .flex()
             .flex_col()
-            .w(px(720.))
+            .w(px(MODAL_W))
             .rounded_lg()
             .border_1()
             .border_color(colors.border)
@@ -176,58 +241,120 @@ impl Render for FailureReport {
                     .py_2()
                     .flex()
                     .flex_row()
-                    .items_center()
+                    .items_start()
                     .gap_2()
                     .border_b_1()
                     .border_color(colors.border)
-                    .child(Icon::from_path(
+                    .child(div().flex_none().pt_0p5().child(Icon::from_path(
                         "icons/file_icons/warning.svg",
                         cx.theme().status().error,
-                    ))
-                    .child(div().flex_1().text_sm().text_color(colors.text).child(heading))
+                    )))
                     .child(
+                        // Stacked, not side by side: a transfer to a freshly
+                        // mounted volume is labelled with its UUID, and across
+                        // one line that squeezed the heading to nothing.
                         div()
-                            .flex_none()
-                            .text_xs()
-                            .text_color(colors.text_muted)
-                            .child(self.label.clone()),
+                            .flex_1()
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_sm().text_color(colors.text).child(heading))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(colors.text_muted)
+                                    .child(self.label.clone()),
+                            ),
                     ),
             )
-            .when_some(self.root.clone(), |el, root| {
-                // Said once, since every row below had it removed.
-                el.child(
-                    div()
-                        .flex_none()
-                        .px_3()
-                        .py_1()
-                        .truncate()
-                        .text_xs()
-                        .text_color(colors.text_muted)
-                        .border_b_1()
-                        .border_color(colors.border)
-                        .child(format!("in {}", root.display())),
-                )
-            })
             .child(list)
-            .when(shown < self.total, |el| {
-                // The strip stops collecting past a cap, so say so rather than
-                // letting the list imply it is the whole story.
+            .when(self.root.is_some() || listed < self.total, |el| {
                 el.child(
                     div()
                         .flex_none()
                         .px_3()
                         .py_1()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
                         .border_t_1()
                         .border_color(colors.border)
                         .text_xs()
                         .text_color(colors.text_muted)
-                        .child(format!(
-                            "and {} more",
-                            crate::notifications::count((self.total - shown) as u64)
-                        )),
+                        .when_some(self.root.clone(), |el, root| {
+                            // Said once here, since every path above had it cut.
+                            el.child(
+                                div()
+                                    .flex_1()
+                                    .truncate()
+                                    .child(format!("in {}", root.display())),
+                            )
+                        })
+                        .when(listed < self.total, |el| {
+                            el.child(
+                                div()
+                                    .flex_none()
+                                    .child(format!(
+                                        "{} not listed",
+                                        crate::notifications::count((self.total - listed) as u64)
+                                    )),
+                            )
+                        }),
                 )
             })
     }
+}
+
+/// Lay the failures out as reason headings with their files beneath.
+///
+/// Biggest group first, because the reason that accounts for most of a failed
+/// transfer is the one that explains it. Ties break on the reason text so the
+/// order does not shuffle between two renders of the same report.
+fn group(failures: &[Failure], root: Option<&std::path::Path>) -> Vec<Line> {
+    let mut order: Vec<&str> = Vec::new();
+    let mut by_reason: HashMap<&str, Vec<String>> = HashMap::new();
+    for failure in failures {
+        let reason = tidy(&failure.reason);
+        let path = match root {
+            Some(root) => failure.path.strip_prefix(root).unwrap_or(&failure.path),
+            None => &failure.path,
+        };
+        by_reason.entry(reason).or_insert_with(|| {
+            order.push(reason);
+            Vec::new()
+        });
+        by_reason
+            .get_mut(reason)
+            .expect("just inserted")
+            .push(path.display().to_string());
+    }
+
+    order.sort_by(|a, b| {
+        by_reason[b]
+            .len()
+            .cmp(&by_reason[a].len())
+            .then_with(|| a.cmp(b))
+    });
+
+    let mut lines = Vec::new();
+    for reason in order {
+        let files = &by_reason[reason];
+        lines.push(Line::Reason {
+            text: reason.to_string(),
+            count: files.len(),
+        });
+        lines.extend(
+            files
+                .iter()
+                .take(MAX_FILES_PER_GROUP)
+                .map(|path| Line::File(path.clone())),
+        );
+        if files.len() > MAX_FILES_PER_GROUP {
+            lines.push(Line::More(files.len() - MAX_FILES_PER_GROUP));
+        }
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -287,5 +414,114 @@ mod tests {
         // of it; strip_prefix would fail on the second and print it whole.
         let root = common_root(&failed(&["/src/tree/a.bin", "/src/treehouse/b.bin"]));
         assert_eq!(root, Some(PathBuf::from("/src")));
+    }
+}
+
+#[cfg(test)]
+mod grouping_tests {
+    use super::*;
+    use std::path::Path;
+
+    fn failed(pairs: &[(&str, &str)]) -> Vec<Failure> {
+        pairs
+            .iter()
+            .map(|(path, reason)| Failure {
+                path: PathBuf::from(path),
+                reason: (*reason).to_string(),
+            })
+            .collect()
+    }
+
+    fn reasons(lines: &[Line]) -> Vec<(String, usize)> {
+        lines
+            .iter()
+            .filter_map(|line| match line {
+                Line::Reason { text, count } => Some((text.clone(), *count)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_errno_in_parentheses_is_dropped() {
+        assert_eq!(tidy("Open: File name too long (os error 36)"), "Open: File name too long");
+    }
+
+    #[test]
+    fn a_reason_that_never_had_an_errno_is_untouched() {
+        assert_eq!(tidy("Open: special files are not copied"), "Open: special files are not copied");
+    }
+
+    #[test]
+    fn the_same_reason_with_different_errnos_still_groups_as_one() {
+        // Only reachable if two errno values ever print the same message, but
+        // the point is that the grouping key is the message and not the number.
+        let lines = group(
+            &failed(&[
+                ("/a", "Open: Permission denied (os error 13)"),
+                ("/b", "Open: Permission denied (os error 1)"),
+            ]),
+            None,
+        );
+        assert_eq!(reasons(&lines), vec![("Open: Permission denied".into(), 2)]);
+    }
+
+    #[test]
+    fn the_reason_accounting_for_most_failures_comes_first() {
+        // The disk filling up is one line and the symlinks are three; the
+        // heading order is what tells you which one explains the transfer.
+        let lines = group(
+            &failed(&[
+                ("/t/a", "Symlink: Operation not permitted"),
+                ("/t/full", "Write: No space left on device"),
+                ("/t/b", "Symlink: Operation not permitted"),
+                ("/t/c", "Symlink: Operation not permitted"),
+            ]),
+            None,
+        );
+        assert_eq!(
+            reasons(&lines),
+            vec![
+                ("Symlink: Operation not permitted".into(), 3),
+                ("Write: No space left on device".into(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_group_past_the_cap_ends_in_a_count_of_the_rest() {
+        let many: Vec<(String, &str)> = (0..MAX_FILES_PER_GROUP + 5)
+            .map(|i| (format!("/t/f{i}"), "Open: Permission denied"))
+            .collect();
+        let lines = group(
+            &failed(
+                &many
+                    .iter()
+                    .map(|(p, r)| (p.as_str(), *r))
+                    .collect::<Vec<_>>(),
+            ),
+            None,
+        );
+        let files = lines.iter().filter(|l| matches!(l, Line::File(_))).count();
+        assert_eq!(files, MAX_FILES_PER_GROUP, "files shown");
+        assert!(
+            matches!(lines.last(), Some(Line::More(5))),
+            "the rest are counted, not dropped silently"
+        );
+        // The heading still reports every one of them.
+        assert_eq!(reasons(&lines)[0].1, MAX_FILES_PER_GROUP + 5);
+    }
+
+    #[test]
+    fn paths_are_shown_relative_to_the_root_that_was_lifted_out() {
+        let lines = group(
+            &failed(&[("/t/one/a.bin", "Open: Permission denied")]),
+            Some(Path::new("/t")),
+        );
+        assert!(
+            matches!(&lines[1], Line::File(p) if p == "one/a.bin"),
+            "{:?}",
+            lines.get(1).map(|_| "not a file line")
+        );
     }
 }
