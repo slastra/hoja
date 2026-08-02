@@ -1,6 +1,6 @@
 pkgbase = hoja-git
 	pkgdesc = GPU-accelerated file manager with splittable panes, built on GPUI
-	pkgver = r42.bf2e6cc
+	pkgver = r0.0000000
 	pkgrel = 1
 	url = https://github.com/slastra/hoja
 	arch = x86_64
@@ -15,7 +15,6 @@ pkgbase = hoja-git
 	depends = freetype2
 	depends = libxkbcommon
 	depends = libxkbcommon-x11
-	depends = hicolor-icon-theme
 	depends = vulkan-icd-loader
 	optdepends = git: colour file names by version control status
 	optdepends = xdg-utils: open files with their default application

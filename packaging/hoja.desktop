@@ -5,7 +5,12 @@ Name=hoja
 GenericName=File Manager
 Comment=Browse files in splittable panes
 Exec=hoja %u
-Icon=hoja
+# The freedesktop generic name for a file manager, so the icon comes from
+# whatever theme is in use and matches the rest of the desktop. Every real
+# theme carries it — Adwaita through AdwaitaLegacy, and Papirus, breeze and
+# their forks directly. Only bare hicolor lacks it, and hicolor is the
+# fallback of last resort rather than anybody's chosen theme.
+Icon=system-file-manager
 Terminal=false
 Categories=System;FileTools;FileManager;
 MimeType=inode/directory;

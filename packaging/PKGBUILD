@@ -16,14 +16,12 @@ depends=(
   'freetype2'
   'libxkbcommon'
   'libxkbcommon-x11'
-  # Owns the icon theme directory the .desktop entry's icon is installed into.
-  'hicolor-icon-theme'
   # Loaded at run time by the renderer rather than linked, so it is invisible
   # to ldd. Without it the window never opens.
   'vulkan-icd-loader'
 )
 
-# pane shells out for these, and works without each one: no git means no
+# hoja shells out for these, and works without each one: no git means no
 # version-control colouring, no udisks means drives can be listed but not
 # mounted, and so on. None is required to start.
 optdepends=(
@@ -86,8 +84,6 @@ package() {
   install -Dm755 target/release/hoja "$pkgdir/usr/bin/hoja"
   install -Dm644 packaging/hoja.desktop \
     "$pkgdir/usr/share/applications/hoja.desktop"
-  install -Dm644 packaging/hoja.svg \
-    "$pkgdir/usr/share/icons/hicolor/scalable/apps/hoja.svg"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$_pkgname/README.md"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
