@@ -1,1 +1,8 @@
 /target
+
+# makepkg works in place: it clones the source into src/, stages the package
+# under pkg/, and leaves the built tarballs beside the PKGBUILD.
+/packaging/src/
+/packaging/pkg/
+/packaging/*.pkg.tar.zst
+/packaging/*.log
