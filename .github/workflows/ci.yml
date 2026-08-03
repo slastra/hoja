@@ -25,7 +25,7 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -35,17 +35,21 @@ jobs:
     name: clippy and tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # gpui builds against these. The set is derived from what the binary
       # actually links (fontconfig, freetype, xcb, xkbcommon) plus the headers
       # the build needs for backends it loads at runtime rather than links:
       # wayland and vulkan. `README.md` carries the Arch names.
+      #
+      # clang and mold are not gpui's: `.cargo/config.toml` selects them as the
+      # linker for this target, so a runner without them cannot link anything at
+      # all, down to the first proc-macro build script.
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            clang cmake pkg-config \
+            clang mold cmake pkg-config \
             libfontconfig1-dev libfreetype6-dev \
             libwayland-dev wayland-protocols \
             libxkbcommon-dev libxkbcommon-x11-dev \
