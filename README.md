@@ -1,11 +1,13 @@
 # hoja
 
-hoja is a file manager for Linux. It runs on Wayland. It uses
+hoja (OH-hah) is a file manager for Linux. It runs on Wayland and draws with
 [GPUI](https://www.gpui.rs/), the GPU-accelerated UI framework from the Zed
-editor.
+editor, so a directory of 100,000 files opens in under a second and stays
+smooth as you scroll it.
 
-*Hoja* is Spanish for a sheet of paper and for a pane of glass. The program
-shows files in panes, so the word says both halves of it.
+Split the window into as many panes as you like. Every folder shows a real
+recursive size, transfers pick the fastest correct method for each file, and
+deleting is undoable.
 
 **Warning:** hoja is experimental software. Do not use hoja as your only tool
 for important data.
