@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # A backtrace costs nothing until something fails, and when something does
+  # fail here it is on a machine nobody can attach a debugger to.
+  RUST_BACKTRACE: 1
+
+# A second push supersedes the first. gpui is a large git dependency and a
+# queued run of a commit nobody is waiting on is half an hour of nothing.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Its own job because it needs no dependencies and no build: it answers in
+  # seconds while the job below is still resolving the registry.
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  build:
+    name: clippy and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # gpui builds against these. The set is derived from what the binary
+      # actually links (fontconfig, freetype, xcb, xkbcommon) plus the headers
+      # the build needs for backends it loads at runtime rather than links:
+      # wayland and vulkan. `README.md` carries the Arch names.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            clang cmake pkg-config \
+            libfontconfig1-dev libfreetype6-dev \
+            libwayland-dev wayland-protocols \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb1-dev libxcb-xkb-dev \
+            libvulkan-dev libasound2-dev libssl-dev libzstd-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Keyed on the lockfile, and it caches the git checkout of the pinned zed
+      # revision too, which is the expensive part of a cold build.
+      - uses: Swatinem/rust-cache@v2
+
+      # Before the tests, so a lint failure is reported without waiting for a
+      # suite that was going to pass anyway.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      # Release is a separate compilation, and dead code is the one class this
+      # catches that debug does not: a method used only from a debug assertion
+      # is live in one profile and not the other.
+      - name: Clippy (release)
+        run: cargo clippy --workspace --all-targets --release -- -D warnings

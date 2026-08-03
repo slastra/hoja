@@ -268,6 +268,21 @@ because they are rare.
 Note: Cargo compiles GPUI with your local toolchain. The toolchain file in the
 Zed repository does not apply to git dependencies.
 
+## Checks
+
+CI runs on every push and pull request, and the same three commands run
+locally:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+Clippy runs again in release, which is the one profile where dead code shows
+up differently: a method reached only from a debug assertion is live in one and
+not the other.
+
 ## Testing the interface
 
 Two harnesses run hoja in a compositor of its own, so a test of the interface
