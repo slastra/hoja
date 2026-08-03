@@ -241,9 +241,15 @@ fn member_of<R: Read>(entry: &tar::Entry<'_, R>) -> Option<Member> {
             Link::Hard(tidy(&target)?)
         })
     } else {
-        // A device, a fifo or a socket. There is a name and there is nothing
-        // behind it, and hoja is not going to mknod.
-        if !kind.is_file() && !is_dir && !kind.is_contiguous() {
+        // A GNU sparse entry (a disk image, a database file, a core dump: any
+        // large file with long runs of zeros) is a regular file as far as
+        // anything here is concerned. The crate already resolves its sparse
+        // map into a `Read` that yields the full, hole-filled content and an
+        // `entry.size()` that already accounts for it, so nothing downstream
+        // has to know the difference. A device, a fifo or a socket is not:
+        // there is a name and nothing behind it, and hoja is not going to
+        // mknod.
+        if !kind.is_file() && !kind.is_gnu_sparse() && !is_dir && !kind.is_contiguous() {
             return None;
         }
         None
@@ -302,30 +308,40 @@ impl Format for Tar {
         progress: &Progress,
         cancel: &Cancel,
     ) -> anyhow::Result<Vec<Failure>> {
-        // By path rather than by index: the listing has had refused names
-        // dropped out of it, so its numbering is not the archive's. One pass
-        // matches as it walks, which is the whole reason this takes a set.
-        let by_path: std::collections::HashSet<&str> = wanted
+        // A mutable set, removed from as each path is matched, not a count
+        // sized off it. `listing` has already been deduplicated by
+        // `Index::build`, which keeps the *first* physical occurrence of a
+        // repeated name and drops the rest, so a name a tarball repeats (GNU
+        // `tar --append`, concatenated segments, and Docker layer tars all do
+        // this) still appears only once here. The raw stream below still
+        // holds every physical entry, though, and a plain counter decremented
+        // once per *stream* match for a name worth only one *listing* entry
+        // reached zero one file early, silently dropping everything wanted
+        // after it. Removing the path on its first match instead makes
+        // `remaining.is_empty()` mean what it says, and it also means
+        // extraction takes the same occurrence the listing's size and
+        // modified time already promised, rather than whichever the stream
+        // happens to reach last.
+        let mut remaining: std::collections::HashSet<&str> = wanted
             .iter()
             .filter_map(|ix| listing.members.get(*ix))
             .map(|member| member.path.as_str())
             .collect();
-        if by_path.is_empty() {
+        if remaining.is_empty() {
             return Ok(Vec::new());
         }
 
         let mut failures = Vec::new();
-        let mut left = by_path.len();
         let mut archive = tar::Archive::new(self.stream(None)?);
 
         for entry in archive.entries()? {
             if cancel.stopped() {
                 anyhow::bail!("cancelled");
             }
-            // Everything asked for has been handed over, and the rest of the
+            // Everything asked for has been captured once, and the rest of the
             // stream is of no interest. Stopping here is what makes taking one
             // file out of the front of a large tarball quick.
-            if left == 0 {
+            if remaining.is_empty() {
                 break;
             }
 
@@ -333,10 +349,12 @@ impl Format for Tar {
             let Some(member) = member_of(&entry) else {
                 continue;
             };
-            if !by_path.contains(member.path.as_str()) {
+            // A later entry sharing this path is a physical repeat the
+            // listing already dropped, so it is skipped here too rather than
+            // overwriting what was already extracted.
+            if !remaining.remove(member.path.as_str()) {
                 continue;
             }
-            left -= 1;
 
             let result = if member.is_dir {
                 sink.dir(&member)
@@ -641,6 +659,121 @@ mod tests {
         assert_eq!(listing.skipped, 1);
     }
 
+    #[test]
+    fn a_repeated_name_extracts_its_first_occurrence_and_does_not_drop_what_follows() {
+        // GNU `tar --append`, concatenated tar segments and Docker layer tars
+        // all produce a name more than once. `Index::build` already collapses
+        // that to one listing row, keeping the first occurrence's metadata;
+        // extraction has to agree with the row it came from, and it must not
+        // let a repeat anywhere in the stream cut the pass short for
+        // everything asked for after it.
+        let mut raw = raw_entry("dup.txt", b"AAA");
+        raw.extend(raw_entry("dup.txt", b"BBBBB"));
+        raw.extend(raw_entry("other.txt", b"clearly after the duplicate"));
+        raw.extend([0u8; 1024]);
+
+        let file = tempfile::Builder::new().suffix(".tar").tempfile().unwrap();
+        std::fs::write(file.path(), &raw).unwrap();
+        let dest = tempfile::tempdir().unwrap();
+
+        // Through the public entry point, which is what actually runs
+        // `Index::build`'s dedup before calling into `Format::extract`: a test
+        // built on `listing_of` alone would see the raw, undeduplicated
+        // listing and never exercise the mismatch this guards against.
+        let failures = crate::archive::extract(
+            file.path(),
+            Path::new(""),
+            &["dup.txt".to_string(), "other.txt".to_string()],
+            dest.path(),
+            &Progress::default(),
+            &Cancel::new(),
+        )
+        .unwrap();
+
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(
+            std::fs::read(dest.path().join("dup.txt")).unwrap(),
+            b"AAA",
+            "the first occurrence, matching what Index::build shows as its size"
+        );
+        assert_eq!(
+            std::fs::read(dest.path().join("other.txt")).unwrap(),
+            b"clearly after the duplicate",
+            "not silently dropped by an early stop over the duplicate"
+        );
+    }
+
+    #[test]
+    fn a_gnu_sparse_entry_lists_and_extracts_as_a_regular_file() {
+        // Built with the system `tar`, not the crate's own writer: the `tar`
+        // crate cannot produce a GNU sparse header, which is exactly the
+        // codec `write()` above already defers to real tools for. A default
+        // `tar --sparse` on this machine writes the legacy `S` typeflag
+        // (`EntryType::GNUSparse`) rather than the newer PAX sparse keys, and
+        // that is the shape a VM disk image, a database file, or a core dump
+        // actually arrives in.
+        let Ok(version) = std::process::Command::new("tar").arg("--version").output() else {
+            eprintln!("no tar binary, skipping");
+            return;
+        };
+        if !version.status.success() {
+            eprintln!("tar --version failed, skipping");
+            return;
+        }
+
+        let work = tempfile::tempdir().unwrap();
+        let sparse_path = work.path().join("sparse.bin");
+        let hole: u64 = 1 << 20;
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut f = std::fs::File::create(&sparse_path).unwrap();
+            f.write_all(b"head").unwrap();
+            // Seeking past the end and writing again leaves the gap
+            // unallocated on ext4 and btrfs, which is what makes this sparse
+            // rather than merely long.
+            f.seek(SeekFrom::Start(hole)).unwrap();
+            f.write_all(b"tail").unwrap();
+        }
+
+        let archive_path = work.path().join("sparse.tar");
+        let status = std::process::Command::new("tar")
+            .arg("--sparse")
+            .arg("-cf")
+            .arg(&archive_path)
+            .arg("-C")
+            .arg(work.path())
+            .arg("sparse.bin")
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let listing = listing_of(&archive_path, Codec::Plain);
+        assert_eq!(listing.skipped, 0, "{:?}", shape(&listing));
+        let member = listing
+            .members
+            .iter()
+            .find(|m| m.path == "sparse.bin")
+            .expect("a sparse file must be listed, not silently dropped");
+        assert_eq!(member.size, hole + 4, "the logical size, holes included");
+
+        let dest = tempfile::tempdir().unwrap();
+        let failures = crate::archive::extract(
+            &archive_path,
+            Path::new(""),
+            &["sparse.bin".to_string()],
+            dest.path(),
+            &Progress::default(),
+            &Cancel::new(),
+        )
+        .unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+
+        let out = std::fs::read(dest.path().join("sparse.bin")).unwrap();
+        assert_eq!(out.len() as u64, hole + 4);
+        assert_eq!(&out[..4], b"head");
+        assert_eq!(&out[out.len() - 4..], b"tail");
+    }
+
     /// The one codec whose crate cannot write.
     ///
     /// `ruzstd` decodes only, so this fixture is committed rather than built:
@@ -848,6 +981,56 @@ mod tests {
         assert_eq!(
             std::fs::read_link(dest.path().join("bin/soft")).unwrap(),
             Path::new("real")
+        );
+    }
+
+    #[test]
+    fn a_hard_link_target_that_only_shares_a_prefix_is_not_stripped() {
+        // Browsing "bin" and copying out "link", whose recorded target is
+        // "bin2/other": "bin2" is a sibling that merely starts with "bin", not
+        // a name under it. A plain `strip_prefix` would turn "bin2/other" into
+        // "2/other", and if that path happened to already exist in the
+        // destination from something unrelated, the hard link would silently
+        // land on the wrong file's content instead of failing.
+        let file = tempfile::Builder::new().suffix(".tar").tempfile().unwrap();
+        let mut out = file.reopen().unwrap();
+        {
+            let mut builder = tar::Builder::new(&mut out);
+            let mut hard = tar::Header::new_gnu();
+            hard.set_entry_type(tar::EntryType::Link);
+            hard.set_size(0);
+            hard.set_mtime(1_700_000_000);
+            hard.set_cksum();
+            builder
+                .append_link(&mut hard, "bin/link", "bin2/other")
+                .unwrap();
+            builder.finish().unwrap();
+        }
+        out.flush().unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        // Both pre-exist, standing in for two things extracted at different
+        // times into the same destination: the wrong path a boundary-unaware
+        // strip would compute, and the right one.
+        std::fs::create_dir(dest.path().join("2")).unwrap();
+        std::fs::write(dest.path().join("2/other"), b"WRONG").unwrap();
+        std::fs::create_dir(dest.path().join("bin2")).unwrap();
+        std::fs::write(dest.path().join("bin2/other"), b"RIGHT").unwrap();
+
+        let failures = crate::archive::extract(
+            file.path(),
+            Path::new("bin"),
+            &["bin/link".to_string()],
+            dest.path(),
+            &Progress::default(),
+            &Cancel::new(),
+        )
+        .expect("the pass itself succeeds");
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(
+            std::fs::read(dest.path().join("link")).unwrap(),
+            b"RIGHT",
+            "linked to the real sibling, not to whatever a bad strip landed on"
         );
     }
 

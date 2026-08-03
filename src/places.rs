@@ -22,6 +22,11 @@ pub enum Place {
         label: String,
         detail: String,
         path: PathBuf,
+        /// `Some` only for a mounted, hotplug device: the one kind of
+        /// directory here that can be handed back to the drive it came from.
+        /// Home and a bookmark are never one, however removable the disk
+        /// under them turns out to be, so this is `None` for both.
+        device: Option<PathBuf>,
     },
     /// Attached but not mounted. Choosing it mounts first, then navigates.
     Volume {
@@ -43,6 +48,17 @@ impl Place {
             Place::Dir { detail, .. } | Place::Volume { detail, .. } => detail,
         }
     }
+
+    /// The device behind this place, when unmounting it means anything.
+    pub fn removable(&self) -> Option<&std::path::Path> {
+        match self {
+            Place::Dir {
+                device: Some(device),
+                ..
+            } => Some(device),
+            _ => None,
+        }
+    }
 }
 
 /// Home and bookmarks: a file read, cheap enough to do while opening the
@@ -58,6 +74,7 @@ pub fn local() -> Vec<Place> {
             label: "Home".to_string(),
             detail: home.display().to_string(),
             path: home,
+            device: None,
         });
     }
     places.extend(bookmarks());
@@ -101,6 +118,7 @@ fn parse_bookmarks(text: &str) -> Vec<Place> {
                 detail: path.display().to_string(),
                 label,
                 path,
+                device: None,
             })
         })
         .collect()
@@ -161,6 +179,10 @@ fn parse_volumes(json: &str) -> Vec<Place> {
                 label,
                 detail: format!("{size}  {mount}"),
                 path: PathBuf::from(mount),
+                // Every place this branch builds came from the hotplug
+                // filter above, so the device behind it is always fair game
+                // to offer unmounting.
+                device: Some(PathBuf::from(device)),
             }),
             _ => places.push(Place::Volume {
                 label,
@@ -208,6 +230,27 @@ fn parse_mount_output(stdout: &str) -> Option<PathBuf> {
     (!mount.is_empty()).then(|| PathBuf::from(mount))
 }
 
+/// Unmount a volume.
+///
+/// The other half of `mount`, through the same tool for the same reason: it
+/// routes through polkit and udisks rather than a raw `umount`, so it asks for
+/// nothing this user was not already allowed to do themselves.
+pub fn unmount(device: &std::path::Path) -> std::io::Result<()> {
+    let out = Command::new("udisksctl")
+        .args(["unmount", "-b"])
+        .arg(device)
+        .output()?;
+    if !out.status.success() {
+        let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(std::io::Error::other(if detail.is_empty() {
+            format!("could not unmount {}", device.display())
+        } else {
+            detail
+        }));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,14 +294,20 @@ sftp://elsewhere/remote Remote
             "the internal disk is not a place: {places:?}"
         );
 
-        // Mounted: offered as a directory, named from the device when unlabelled.
+        // Mounted: offered as a directory, named from the device when
+        // unlabelled, and with a device to hand back to for unmounting.
         assert_eq!(
             places[0],
             Place::Dir {
                 label: "sda1".to_string(),
                 detail: "931.5G  /run/media/shaun/F109-1E1F".to_string(),
                 path: PathBuf::from("/run/media/shaun/F109-1E1F"),
+                device: Some(PathBuf::from("/dev/sda1")),
             }
+        );
+        assert_eq!(
+            places[0].removable(),
+            Some(std::path::Path::new("/dev/sda1"))
         );
         // Unmounted: offered as a volume to mount, named from its label.
         assert_eq!(
@@ -278,5 +327,34 @@ sftp://elsewhere/remote Remote
             Some(PathBuf::from("/run/media/shaun/Backup"))
         );
         assert_eq!(parse_mount_output("something went wrong\n"), None);
+    }
+
+    #[test]
+    fn only_a_mounted_device_is_removable() {
+        let mounted = Place::Dir {
+            label: "Backup".to_string(),
+            detail: String::new(),
+            path: PathBuf::from("/run/media/shaun/Backup"),
+            device: Some(PathBuf::from("/dev/sdc1")),
+        };
+        assert_eq!(mounted.removable(), Some(std::path::Path::new("/dev/sdc1")));
+
+        // Home, a bookmark, and an unmounted volume all have nothing to
+        // offer unmounting: the first two are never a device at all, and the
+        // third has no mount to walk away from yet.
+        let home = Place::Dir {
+            label: "Home".to_string(),
+            detail: String::new(),
+            path: PathBuf::from("/home/shaun"),
+            device: None,
+        };
+        assert_eq!(home.removable(), None);
+
+        let unmounted = Place::Volume {
+            label: "Backup".to_string(),
+            detail: String::new(),
+            device: PathBuf::from("/dev/sdc1"),
+        };
+        assert_eq!(unmounted.removable(), None);
     }
 }

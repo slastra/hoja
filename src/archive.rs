@@ -530,13 +530,24 @@ pub fn index(path: &Path, cancel: &Cancel) -> anyhow::Result<Arc<Index>> {
 }
 
 /// What is remembered about `path`, if it is still what is on the disk.
+///
+/// A hit is moved to the back of the cache, which is what makes `remember`'s
+/// eviction from the front an actual LRU rather than plain insertion order.
+/// Without this, an archive a pane is sitting in right now could still be the
+/// one dropped, because nothing ever recorded that navigating between its own
+/// folders had touched it since it was first read.
 fn cached(path: &Path) -> Option<Arc<Index>> {
     let stamp = stamp(path)?;
-    CACHE
-        .lock()
-        .iter()
-        .find(|(known, _)| *known == stamp)
-        .map(|(_, index)| Arc::clone(index))
+    touch(&mut CACHE.lock(), &stamp)
+}
+
+/// Moves the entry matching `stamp`, if any, to the end of `cache`.
+fn touch(cache: &mut Vec<(Stamp, Arc<Index>)>, stamp: &Stamp) -> Option<Arc<Index>> {
+    let at = cache.iter().position(|(known, _)| known == stamp)?;
+    let hit = cache.remove(at);
+    let index = Arc::clone(&hit.1);
+    cache.push(hit);
+    Some(index)
 }
 
 /// Remember an index, and hand back the shared copy of it.
@@ -711,11 +722,17 @@ pub fn spawn_read(archive: &Path, cancel: Cancel) -> Reading {
 /// Split out so that a reading still in progress can build rows from the
 /// members it has, which is what makes a tarball's listing appear while it is
 /// still being read rather than a minute later.
-pub fn rows_in(index: &Index, archive: &Path, inside: &Path) -> Option<Rows> {
+pub fn rows_in(index: &Index, archive: &Path, inside: &Path, show_hidden: bool) -> Option<Rows> {
     let rows = index.rows(inside)?;
     let shared: Arc<Path> = Arc::from(archive);
     let entries = rows
         .iter()
+        // The same convention `fs::read_dir` uses for a real directory: a
+        // leading `.` hides a row unless the setting says otherwise. Nothing
+        // here subsumes an in-progress-transfer temp name the way that
+        // function also does, because nothing writes into an archive, so that
+        // name can never arise.
+        .filter(|row| show_hidden || !row.name.starts_with('.'))
         .map(|row| {
             let mut entry =
                 crate::fs::DirEntry::in_archive(&shared, inside, &row.name, row.is_dir, row.member);
@@ -780,16 +797,26 @@ impl Extract {
     /// what keeps this `join` from being the classic way out of a destination
     /// directory.
     fn target(&self, member: &Member) -> Option<PathBuf> {
-        let relative = if self.strip.is_empty() {
-            member.path.as_str()
-        } else {
-            member
-                .path
-                .strip_prefix(&self.strip)?
-                .strip_prefix('/')
-                .unwrap_or_default()
-        };
+        let relative = under_strip(&member.path, &self.strip)?;
         (!relative.is_empty()).then(|| self.dest.join(relative))
+    }
+}
+
+/// Whether `path` sits under `strip`, and what is left of it once `strip` is
+/// removed.
+///
+/// A plain `str::strip_prefix` is not enough: it would accept `ttfx` for a
+/// `strip` of `ttf`, since a common start is not the same thing as a shared
+/// parent directory. The boundary right after the prefix has to be either the
+/// end of the string or a `/`, or the two are only siblings that happen to
+/// share a name.
+fn under_strip<'a>(path: &'a str, strip: &str) -> Option<&'a str> {
+    if strip.is_empty() {
+        return Some(path);
+    }
+    match path.strip_prefix(strip)? {
+        "" => Some(""),
+        rest => rest.strip_prefix('/'),
     }
 }
 
@@ -842,13 +869,16 @@ impl Sink for Extract {
             Link::Hard(target) => {
                 // Resolved against the destination, not the archive: the
                 // target is a member path, and `tidy` has already refused
-                // anything that could point out of it.
-                let from = self.dest.join(
-                    target
-                        .strip_prefix(&self.strip)
-                        .unwrap_or(target)
-                        .trim_start_matches('/'),
-                );
+                // anything that could point out of it. Boundary-aware in the
+                // same way `target()` is, and for the same reason: a plain
+                // `strip_prefix` would also accept a target like `bin2/other`
+                // when the directory browsed was `bin`, joining onto a name
+                // nobody selected instead of leaving it relative to the
+                // archive's own root, where it belongs if `bin2` was ever
+                // extracted alongside it.
+                let from = self
+                    .dest
+                    .join(under_strip(target, &self.strip).unwrap_or(target));
                 std::fs::hard_link(from, at)
             }
         }
@@ -954,6 +984,32 @@ mod tests {
         assert_eq!(tidy("a//b.txt").as_deref(), Some("a/b.txt"));
         // A backslash is a character in a name on Unix, not a separator.
         assert_eq!(tidy(r"a\b.txt").as_deref(), Some(r"a\b.txt"));
+    }
+
+    #[test]
+    fn rows_in_hides_dot_names_unless_asked_to_show_them() {
+        // The same rows a real directory would hide: a `.git` folder or a
+        // `.env` file bundled into a zip or a tarball, which `fs::read_dir`
+        // already refuses to show when the setting is off.
+        let index = Index::build(Listing {
+            members: vec![
+                file("README", 5),
+                file(".env", 3),
+                dir(".git"),
+                file(".git/config", 7),
+            ],
+            skipped: 0,
+        });
+        let archive = Path::new("/home/x/pack.zip");
+        let inside = Path::new("");
+
+        let hidden = rows_in(&index, archive, inside, false).unwrap();
+        let visible: Vec<&str> = hidden.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(visible, ["README"], "the dotted rows are the ones missing");
+
+        let shown = rows_in(&index, archive, inside, true).unwrap();
+        let all: Vec<&str> = shown.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(all, [".env", ".git", "README"]);
     }
 
     #[test]
@@ -1119,5 +1175,53 @@ mod tests {
             from_civil(2024, 2, 29, 12, 0, 0),
             SystemTime::UNIX_EPOCH + Duration::from_secs(1_709_208_000)
         );
+    }
+
+    fn stamp_for(path: &str) -> Stamp {
+        Stamp {
+            path: PathBuf::from(path),
+            len: 0,
+            modified: None,
+        }
+    }
+
+    /// Tests the reordering directly, on a `Vec` of its own, rather than
+    /// through `cached`/`remember` and the real `CACHE`: that static is
+    /// shared by every test in this binary, including the several archive
+    /// tests elsewhere that call `extract` and so populate it, and asserting
+    /// on its exact contents while they run alongside this one in parallel
+    /// would be asserting on a race, not on the logic.
+    #[test]
+    fn touching_an_entry_moves_it_to_the_back() {
+        let a = Arc::new(Index::build(Listing::default()));
+        let b = Arc::new(Index::build(Listing::default()));
+        let mut cache = vec![
+            (stamp_for("/a"), Arc::clone(&a)),
+            (stamp_for("/b"), Arc::clone(&b)),
+        ];
+
+        // `/a` is the archive a pane is sitting in; `/b` was only passed
+        // through. Touching `/a` has to move it to the back, or the eviction
+        // `remember` does next would take the wrong one.
+        let hit = touch(&mut cache, &stamp_for("/a"));
+        assert!(Arc::ptr_eq(&hit.unwrap(), &a));
+        assert_eq!(cache[0].0.path, PathBuf::from("/b"));
+        assert_eq!(cache[1].0.path, PathBuf::from("/a"));
+
+        // The front is now the one `remember`'s `cache.remove(0)` would drop
+        // when the cache is over capacity, and it is the right one: the
+        // archive nothing has touched since it was first read, not the one
+        // still open.
+        cache.remove(0);
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache[0].0.path, PathBuf::from("/a"));
+    }
+
+    #[test]
+    fn touching_an_absent_stamp_changes_nothing() {
+        let mut cache = vec![(stamp_for("/a"), Arc::new(Index::build(Listing::default())))];
+        assert!(touch(&mut cache, &stamp_for("/nowhere")).is_none());
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache[0].0.path, PathBuf::from("/a"));
     }
 }

@@ -23,6 +23,7 @@ use crate::fs::ViewSettings;
 use crate::icon::Icon;
 use crate::location::Location;
 use crate::notifications;
+use crate::open_prompt::{OpenPrompt, OpenPromptEvent};
 use crate::pane_group::{PaneGroup, SplitDirection};
 use crate::place_finder::{self, PlaceEvent, PlaceFinder};
 
@@ -126,7 +127,38 @@ enum Stash {
         inside: PathBuf,
         /// Member paths, files and folders alike.
         roots: Vec<String>,
+        /// What the system clipboard held at the moment of the copy.
+        ///
+        /// Never written to, but still read at paste time: if it comes back
+        /// unchanged, nothing else has claimed the clipboard since, and this
+        /// selection is still the most recent thing asked for. If it comes
+        /// back different, a real file was copied somewhere else afterward,
+        /// and that copy wins, the same as it would over a stale copy of real
+        /// files.
+        baseline: Option<ClipboardSet>,
     },
+}
+
+/// Whether a freshly read external clipboard should win over an archive
+/// selection that was made when the clipboard looked like `baseline`.
+///
+/// Pulled out on its own because it is the entire decision, and because it is
+/// the one part of pasting an archive selection that a test can exercise at
+/// all: the sway harness has no second application to copy from, so external
+/// clipboard interop cannot be driven through it, only through this.
+fn superseded(external: &Option<ClipboardSet>, baseline: &Option<ClipboardSet>) -> bool {
+    match (external, baseline) {
+        // Different from what was there at copy time: something real was
+        // copied elsewhere since, and that is the more recent, more explicit
+        // action.
+        (Some(ext), Some(base)) => ext.paths != base.paths,
+        // There was nothing to compare against, and now there is something:
+        // the same case, since a previously empty clipboard is also a
+        // baseline the read has moved past.
+        (Some(_), None) => true,
+        // Nothing external to prefer.
+        (None, _) => false,
+    }
 }
 
 /// A running or finished transfer job as the UI tracks it.
@@ -365,6 +397,10 @@ pub struct Workspace {
     /// can drop the ones whose worker is gone.
     pending_conflicts: VecDeque<PendingConflict>,
     conflict_dialog: Option<Entity<ConflictDialog>>,
+    /// The one at a time a pane can ask "open this?" about. A second archive
+    /// file activated while one is up would have nowhere sensible to queue,
+    /// so `confirm_extract_and_open` just refuses while this is `Some`.
+    open_prompt: Option<Entity<OpenPrompt>>,
 }
 
 impl Workspace {
@@ -403,6 +439,7 @@ impl Workspace {
             poll_task: None,
             pending_conflicts: VecDeque::new(),
             conflict_dialog: None,
+            open_prompt: None,
             _lifecycle: vec![
                 // `state.window` was read at startup and never written, so the
                 // size was promised and never remembered. The observer fires on
@@ -457,6 +494,32 @@ impl Workspace {
             PaneEvent::Transfer { op, sources, dest } => {
                 this.spawn_transfer(*op, sources.clone(), dest.clone(), window, cx)
             }
+            PaneEvent::ConfirmExtractAndOpen {
+                archive,
+                inside,
+                member,
+                name,
+            } => this.confirm_extract_and_open(
+                archive.clone(),
+                inside.clone(),
+                member.clone(),
+                name.clone(),
+                window,
+                cx,
+            ),
+            PaneEvent::ExtractDrop {
+                archive,
+                inside,
+                roots,
+                dest,
+            } => this.extract_into(
+                archive.clone(),
+                inside.clone(),
+                roots.clone(),
+                dest.clone(),
+                window,
+                cx,
+            ),
         })
     }
 
@@ -578,12 +641,23 @@ impl Workspace {
             }
             // Not mirrored to the system clipboard: `wl-copy` publishes
             // `file://` URIs, and there is no file for another application to
-            // open at the other end of one of these.
-            self.clipboard = Some(Stash::Members {
-                archive,
-                inside,
-                roots,
-            });
+            // open at the other end of one of these. Reading it, though, is
+            // what lets paste later tell "nothing has claimed the clipboard
+            // since" from "something else has": see `Stash::Members::baseline`.
+            cx.spawn(async move |this, cx| {
+                let baseline = cx
+                    .background_spawn(async move { clipboard::read_external() })
+                    .await;
+                let _ = this.update(cx, |this, _cx| {
+                    this.clipboard = Some(Stash::Members {
+                        archive,
+                        inside,
+                        roots,
+                        baseline,
+                    });
+                });
+            })
+            .detach();
             return;
         }
 
@@ -624,55 +698,80 @@ impl Workspace {
             );
             return;
         };
-        // Members of an archive were never on the system clipboard, so there is
-        // nothing to consult and no other application to lose a race with.
-        if let Some(Stash::Members {
-            archive,
-            inside,
-            roots,
-        }) = self.clipboard.clone()
-        {
-            self.extract_into(archive, inside, roots, dest_dir, window, cx);
-            return;
-        }
-        let internal = match self.clipboard.clone() {
-            Some(Stash::Paths(set)) => Some(set),
-            _ => None,
-        };
+        let internal = self.clipboard.clone();
 
         // The external read shells out to wl-paste, which blocks on the current
         // clipboard owner, so it runs on the background executor. External
-        // content wins when another app owns the selection; internal otherwise.
+        // content wins when it looks like a newer, different copy; the
+        // internal clipboard otherwise, whichever kind that is.
         let task = cx.spawn_in(window, async move |this, cx| {
             let external = cx
                 .background_spawn(async move { clipboard::read_external() })
                 .await;
 
-            let set = match (external, internal) {
-                // Our own mirror read back through wl-paste is not "another app".
-                (Some(ext), Some(int)) if ext.paths == int.paths => Some(int),
-                (Some(ext), _) => Some(ext),
-                (None, int) => int,
-            };
-            let Some(set) = set else { return };
-
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.spawn_transfer(
-                    if set.cut {
-                        Operation::Move
+            match internal {
+                Some(Stash::Members {
+                    archive,
+                    inside,
+                    roots,
+                    baseline,
+                }) => {
+                    if superseded(&external, &baseline) {
+                        // Something real was copied elsewhere after the
+                        // archive selection was made, and that is the more
+                        // recent, more explicit action.
+                        let Some(set) = external else { return };
+                        let _ = this.update_in(cx, |this, window, cx| {
+                            this.spawn_transfer(
+                                if set.cut {
+                                    Operation::Move
+                                } else {
+                                    Operation::Copy
+                                },
+                                set.paths.clone(),
+                                dest_dir,
+                                window,
+                                cx,
+                            );
+                        });
                     } else {
-                        Operation::Copy
-                    },
-                    set.paths.clone(),
-                    dest_dir,
-                    window,
-                    cx,
-                );
-                // A cut pastes once; a copy pastes repeatedly.
-                if set.cut {
-                    this.clipboard = None;
+                        let _ = this.update_in(cx, |this, window, cx| {
+                            this.extract_into(archive, inside, roots, dest_dir, window, cx);
+                        });
+                    }
                 }
-            });
+                other => {
+                    let internal = match other {
+                        Some(Stash::Paths(set)) => Some(set),
+                        _ => None,
+                    };
+                    let set = match (external, internal) {
+                        // Our own mirror read back through wl-paste is not "another app".
+                        (Some(ext), Some(int)) if ext.paths == int.paths => Some(int),
+                        (Some(ext), _) => Some(ext),
+                        (None, int) => int,
+                    };
+                    let Some(set) = set else { return };
+
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.spawn_transfer(
+                            if set.cut {
+                                Operation::Move
+                            } else {
+                                Operation::Copy
+                            },
+                            set.paths.clone(),
+                            dest_dir,
+                            window,
+                            cx,
+                        );
+                        // A cut pastes once; a copy pastes repeatedly.
+                        if set.cut {
+                            this.clipboard = None;
+                        }
+                    });
+                }
+            }
         });
         task.detach();
     }
@@ -765,6 +864,113 @@ impl Workspace {
                 }
                 Err(err) => {
                     let _ = std::fs::remove_dir_all(&temp);
+                    this.set_notice(Some(Notice::Problem(err.to_string())), cx);
+                }
+            });
+        });
+        task.detach();
+    }
+
+    /// Ask before opening a file that lives inside an archive.
+    ///
+    /// One at a time: a second file activated while the dialog is up is
+    /// dropped rather than queued, the same call `maybe_show_conflict` makes
+    /// for conflicts, and for the same reason. Nothing here is destructive
+    /// enough to be worth remembering past this session.
+    fn confirm_extract_and_open(
+        &mut self,
+        archive: PathBuf,
+        inside: PathBuf,
+        member: String,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.open_prompt.is_some() {
+            return;
+        }
+
+        let dialog = cx.new(|cx| OpenPrompt::new(name, window, cx));
+        cx.subscribe_in(&dialog, window, move |this, _, event, window, cx| {
+            this.open_prompt = None;
+            window.focus(&this.active_pane.focus_handle(cx), cx);
+            if matches!(event, OpenPromptEvent::Confirmed) {
+                this.extract_and_open(archive.clone(), inside.clone(), member.clone(), window, cx);
+            }
+            cx.notify();
+        })
+        .detach();
+
+        window.focus(&dialog.focus_handle(cx), cx);
+        self.open_prompt = Some(dialog);
+        cx.notify();
+    }
+
+    /// Extract one file from an archive into a fresh directory under the
+    /// system temp dir, then hand it to the desktop's default opener.
+    ///
+    /// Nowhere near the archive and nowhere near anything the pane is
+    /// showing: this is a throwaway copy, not a destination, and `OpenPrompt`
+    /// already said so before this ran.
+    fn extract_and_open(
+        &mut self,
+        archive: PathBuf,
+        inside: PathBuf,
+        member: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        static SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dest = std::env::temp_dir().join(format!("hoja-open-{}-{n}", std::process::id()));
+
+        self.set_notice(Some(Notice::Info("Extracting…".to_string())), cx);
+
+        let cancel = crate::archive::Cancel::new();
+        let roots = vec![member];
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let out = dest.clone();
+            let result = cx
+                .background_spawn(async move {
+                    std::fs::create_dir_all(&out)?;
+                    let failures = crate::archive::extract(
+                        &archive,
+                        &inside,
+                        &roots,
+                        &out,
+                        &crate::archive::Progress::default(),
+                        &cancel,
+                    )?;
+                    // What actually landed, the same reasoning `extract_into`
+                    // follows: a member that failed left nothing behind, so
+                    // this is what there is to open rather than what was asked
+                    // for.
+                    let opened: Vec<PathBuf> = std::fs::read_dir(&out)?
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.path())
+                        .collect();
+                    anyhow::Ok((opened, failures))
+                })
+                .await;
+
+            let _ = this.update(cx, |this, cx| match result {
+                Ok((opened, failures)) if opened.is_empty() || !failures.is_empty() => {
+                    let _ = std::fs::remove_dir_all(&dest);
+                    this.set_notice(
+                        Some(Notice::Problem("Could not extract that file".to_string())),
+                        cx,
+                    );
+                }
+                Ok((opened, _)) => {
+                    this.set_notice(None, cx);
+                    if let Some(path) = opened.first()
+                        && let Err(err) = crate::opener::open(path)
+                    {
+                        this.set_notice(Some(Notice::Problem(err.to_string())), cx);
+                    }
+                }
+                Err(err) => {
+                    let _ = std::fs::remove_dir_all(&dest);
                     this.set_notice(Some(Notice::Problem(err.to_string())), cx);
                 }
             });
@@ -1274,6 +1480,11 @@ impl Workspace {
                 PlaceEvent::Mount { device, label } => {
                     this.mount_and_open(device.clone(), label.clone(), cx)
                 }
+                PlaceEvent::Unmount {
+                    device,
+                    label,
+                    mount,
+                } => this.unmount(device.clone(), label.clone(), mount.clone(), cx),
             },
         )
         .detach();
@@ -1305,6 +1516,46 @@ impl Workspace {
                 }
                 Err(err) => this.set_notice(
                     Some(Notice::Problem(format!("Could not mount {label}: {err}"))),
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
+    /// Unmount a volume, then bounce any pane that was sitting under it.
+    ///
+    /// The other half of `mount_and_open`, for the same reason: `udisksctl`
+    /// can take a moment, so the call goes to the background and the strip
+    /// says what is happening meanwhile.
+    fn unmount(&mut self, device: PathBuf, label: String, mount: PathBuf, cx: &mut Context<Self>) {
+        self.set_notice(Some(Notice::Info(format!("Ejecting {label}…"))), cx);
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { crate::places::unmount(&device) })
+                .await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(()) => {
+                    this.set_notice(None, cx);
+                    // The directory under every one of these just stopped
+                    // existing. `refresh` re-reads it, and `reload_inner`'s own
+                    // "gone" fallback (the same one a deleted folder hits)
+                    // walks each pane up to the nearest ancestor still there,
+                    // which is the containing directory once the mount point
+                    // itself is gone too.
+                    for pane in &this.panes {
+                        let under = pane
+                            .read(cx)
+                            .disk_dir()
+                            .is_some_and(|dir| dir.starts_with(&mount));
+                        if under {
+                            pane.update(cx, |pane, cx| pane.refresh(cx));
+                        }
+                    }
+                }
+                Err(err) => this.set_notice(
+                    Some(Notice::Problem(format!("Could not eject {label}: {err}"))),
                     cx,
                 ),
             });
@@ -1533,11 +1784,20 @@ impl Workspace {
                 errors: job.errors,
             })
             .collect();
-        let modal = self.modal.as_ref().map(|modal| match modal {
-            Modal::Palette(_) => "palette",
-            Modal::Places(_) => "places",
-            Modal::Failures(_) => "failures",
-        });
+        // `conflict_dialog` and `open_prompt` sit outside `Modal` (see its own
+        // doc comment), so a test that needs to know one is up reads it from
+        // here rather than from a field that only ever answers for the three
+        // the enum names.
+        let modal = self
+            .modal
+            .as_ref()
+            .map(|modal| match modal {
+                Modal::Palette(_) => "palette",
+                Modal::Places(_) => "places",
+                Modal::Failures(_) => "failures",
+            })
+            .or(self.conflict_dialog.is_some().then_some("conflict"))
+            .or(self.open_prompt.is_some().then_some("open-prompt"));
         let notice = self.notice.as_ref().map(|n| n.text().to_string());
         window.on_next_frame(move |_, cx| {
             // One reading for every pane, so two cannot disagree about how long
@@ -2055,12 +2315,50 @@ impl Render for Workspace {
                         .child(dialog),
                 )
             })
+            .when_some(self.open_prompt.clone(), |el, dialog| {
+                el.child(
+                    div()
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(hsla(0., 0., 0., 0.45))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(dialog),
+                )
+            })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn set(paths: &[&str]) -> ClipboardSet {
+        ClipboardSet {
+            paths: paths.iter().map(PathBuf::from).collect(),
+            cut: false,
+        }
+    }
+
+    #[test]
+    fn external_wins_only_when_it_has_moved_on_from_the_baseline() {
+        let a = Some(set(&["/a"]));
+        let b = Some(set(&["/b"]));
+
+        // Unchanged since the archive copy: nothing else has claimed the
+        // clipboard, so the archive selection is still what was asked for.
+        assert!(!superseded(&a, &a));
+        // A real copy happened somewhere else afterward.
+        assert!(superseded(&b, &a));
+        // The clipboard was empty at copy time and now holds something: the
+        // same case, an empty clipboard is a baseline too.
+        assert!(superseded(&a, &None));
+        // Nothing external now, whatever the baseline was.
+        assert!(!superseded(&None, &a));
+        assert!(!superseded(&None, &None));
+    }
 
     #[test]
     fn a_figure_keeps_its_unit_separate() {

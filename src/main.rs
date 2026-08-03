@@ -15,6 +15,7 @@ mod location;
 mod measure;
 mod notifications;
 mod opener;
+mod open_prompt;
 mod owners;
 mod pane_group;
 mod path_editor;
@@ -194,6 +195,9 @@ fn main() {
             // Committed and Cancelled instead.
             KeyBinding::new("down", picker::SelectNext, Some("picker")),
             KeyBinding::new("up", picker::SelectPrevious, Some("picker")),
+            // The places finder only: nothing else in the shared "picker"
+            // context has a handler for it, so it is inert everywhere else.
+            KeyBinding::new("ctrl-e", places_finder::Eject, Some("picker")),
             // Address-bar editing. Every binding here MUST have a matching
             // on_action listener on the editor div, or it silently falls
             // through to the (now-guarded) DirPane binding.

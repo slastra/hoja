@@ -48,13 +48,16 @@ for important data.
   decompressing all of it: the rows go up as they are found rather than after,
   and the footer says how far through it has got. Measured here, the largest
   `.tar.bz2` on this machine takes a minute to read and shows its first rows in
-  under a second. Copy out with `ctrl-c` and `ctrl-v`: the
-  members are extracted and then moved into place by the same engine as any
-  other transfer, so conflicts, progress and errors all behave the way they do
-  everywhere else. Symlinks come out as symlinks. Nothing writes to an archive,
-  so rename, delete and paste say so rather than half working, and the document
-  formats that are zip files underneath are deliberately left alone: a `.docx`
-  opens in a word processor, not in a pane.
+  under a second. Copy out with `ctrl-c` and `ctrl-v`, the context menu, or by
+  dragging a row onto another pane: the members are extracted and then moved
+  into place by the same engine as any other transfer, so conflicts, progress
+  and errors all behave the way they do everywhere else. Symlinks come out as
+  symlinks. Nothing writes to an archive, so rename, delete and cut say so
+  rather than half working, and the document formats that are zip files
+  underneath are deliberately left alone: a `.docx` opens in a word processor,
+  not in a pane. Opening a file that lives inside one asks first: opening means
+  extracting a temporary copy, and anything written back to that copy never
+  reaches the archive.
 - **Live listings.** hoja watches the directory it shows. If another program
   adds, removes, or changes a file, the pane re-lists and keeps your selection.
   If the directory itself goes away, the pane moves to the nearest directory
@@ -106,6 +109,8 @@ for important data.
   attached drive. hoja reads the same bookmarks file the GTK file dialogs use,
   so what you bookmark in Files appears here with no setup. A drive that is
   plugged in but not mounted is listed too; choosing it mounts the drive first.
+  Highlight a mounted, removable drive and press `ctrl-e` to eject it; any pane
+  sitting inside it moves to the directory that held it.
 - **Command palette.** Press `ctrl-shift-p`, type part of a command name, and
   press enter. The list shows only the commands that apply right now, with
   their keys. Commands you use often move to the top.
@@ -236,6 +241,7 @@ because they are rare.
 | `ctrl-shift-d` | Dismiss finished transfers |
 | `ctrl-shift-p` | Open the command palette |
 | `ctrl-p` | Go to a place: home, a bookmark, or a drive |
+| `ctrl-e` | In that list, eject the highlighted drive |
 
 **Mouse**
 
@@ -326,7 +332,7 @@ the window is, and everything after it is keystrokes sent somewhere unverified.
 An earlier version carried on, walked a pane up to the root of the filesystem
 and pressed paste there; nothing was written only because root is not writable.
 
-There are three suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
+There are five suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
 `archive.sh` and `tar.sh` need fixtures, which `scripts/tests/setup-archives.sh`
 builds and prints the path of:
 
@@ -334,6 +340,17 @@ builds and prints the path of:
 FIX=$(scripts/tests/setup-archives.sh)
 scripts/sway-harness.sh "$FIX" scripts/tests/archive.sh
 scripts/sway-harness.sh "$FIX" scripts/tests/tar.sh
+```
+
+`resort-while-reading.sh` and `interrupt-archive-read.sh` need a fixture of
+their own, `setup-slow-archive.sh`, kept separate so a ~15 MB member genuinely
+slow enough to read (bzip2, real pseudo-random content) does not change the row
+count the other two assert on:
+
+```sh
+SLOW=$(scripts/tests/setup-slow-archive.sh)
+scripts/sway-harness.sh "$SLOW" scripts/tests/resort-while-reading.sh
+scripts/sway-harness.sh "$SLOW" scripts/tests/interrupt-archive-read.sh
 ```
 
 Two things it cannot do. It cannot synthesise a drag: `wlrctl` only clicks, and

@@ -106,9 +106,9 @@ pub enum PaneEvent {
     Remove,
     /// Something worth saying that has no job to attach to.
     ///
-    /// `problem` because these are not all failures. "Extract it first to open
-    /// it" is an answer to a question, and colouring it like a broken transfer
-    /// says the wrong thing about it.
+    /// `problem` because these are not all failures. "N names could not be
+    /// shown" is an answer to a question, and colouring it like a broken
+    /// transfer says the wrong thing about it.
     Notice {
         message: String,
         problem: bool,
@@ -120,6 +120,24 @@ pub enum PaneEvent {
     Transfer {
         op: Operation,
         sources: Vec<PathBuf>,
+        dest: PathBuf,
+    },
+    /// A file inside an archive was activated. Opening it means extracting a
+    /// temporary copy first, which needs the user's say-so: the workspace owns
+    /// the dialog that asks.
+    ConfirmExtractAndOpen {
+        archive: PathBuf,
+        inside: PathBuf,
+        /// The member's own path, relative to the archive's root.
+        member: String,
+        name: String,
+    },
+    /// Archive members were dropped onto a real directory. The workspace runs
+    /// the same extract-then-move `extract_into` already does for a paste.
+    ExtractDrop {
+        archive: PathBuf,
+        inside: PathBuf,
+        roots: Vec<String>,
         dest: PathBuf,
     },
 }
@@ -137,7 +155,11 @@ fn drop_allowed(dragged: &dyn std::any::Any, target: &Path) -> bool {
     if let Some(paths) = dragged.downcast_ref::<ExternalPaths>() {
         return fs::is_valid_drop(paths.paths(), target);
     }
-    false
+    // An archive member has no path of its own for `is_valid_drop`'s
+    // not-into-itself check to run against, and every real directory this was
+    // ever offered to (the row-level and pane-level targets both already
+    // require one) is a legal place to copy one out to.
+    dragged.downcast_ref::<DraggedMembers>().is_some()
 }
 
 /// An open rename editor, anchored by name rather than by row.
@@ -161,9 +183,15 @@ struct ActiveSearch {
     /// Put back when the search ends. Held rather than re-read, since a second
     /// copy of a large directory is not free but a second `read_dir` is worse.
     listing: Vec<DirEntry>,
-    /// Dropping this stops the walk.
+    /// Dropping this stops the walk. Always `None` for an archive filter,
+    /// which has no walk to hold a handle to.
     handle: Option<crate::search::Search>,
-    _poll: Task<()>,
+    /// Dropping this stops the poll that drives `handle`. `None` for an
+    /// archive filter: it is done, synchronously, before `set_filter`
+    /// returns, so there is nothing left to poll. This is also what
+    /// `search_status` reads to tell the two apart, since both start out with
+    /// `handle: None` too.
+    poll: Option<Task<()>>,
 }
 
 /// What the address bar is being used for. Search reuses the same field
@@ -317,6 +345,48 @@ impl DraggedPaths {
     /// left to read. The fallback cannot be reached through gpui's own drag
     /// path, and dragging the one row you grabbed is the safe reading of it.
     pub fn paths(&self) -> Vec<PathBuf> {
+        self.resolved
+            .get()
+            .cloned()
+            .unwrap_or_else(|| vec![self.anchor.clone()])
+    }
+}
+
+/// The archive-member counterpart to `DraggedPaths`, for a row with no real
+/// path at all.
+///
+/// A separate type rather than a variant of `DraggedPaths`: that one exists to
+/// be promoted into a native drag when it leaves the window
+/// (`external_drag_payload`, below), and a member has no file to hand another
+/// application before it has been extracted. So this carries archive-relative
+/// names instead of paths, is never promoted, and only ever lands on a drop
+/// handler inside this app, which extracts on the way in exactly as a paste
+/// does.
+#[derive(Clone)]
+pub struct DraggedMembers {
+    /// Filled by `resolve`, same timing as `DraggedPaths` and for the same
+    /// reasons.
+    resolved: std::cell::OnceCell<Vec<String>>,
+    pane: Entity<DirPane>,
+    archive: PathBuf,
+    inside: PathBuf,
+    /// The row the drag started on, relative to the archive's root.
+    anchor: String,
+    whole_selection: bool,
+}
+
+impl DraggedMembers {
+    fn resolve(&self, cx: &App) {
+        self.resolved.get_or_init(|| {
+            self.whole_selection
+                .then(|| self.pane.read(cx).selected_in_archive())
+                .flatten()
+                .map(|(_, _, roots)| roots)
+                .unwrap_or_else(|| vec![self.anchor.clone()])
+        });
+    }
+
+    fn roots(&self) -> Vec<String> {
         self.resolved
             .get()
             .cloned()
@@ -1030,6 +1100,17 @@ impl DirPane {
                     "Copy",
                     dispatch(Box::new(workspace::Copy)),
                 ));
+            } else {
+                // Copying out is the one selection-acting operation that
+                // works on an archive; rename, delete and cut would all just
+                // refuse (`stash_selection` says so explicitly for cut), so
+                // they stay absent, matching the rule above, rather than
+                // present and refusing.
+                items.push(MenuItem::Separator);
+                items.push(MenuItem::action(
+                    "Copy",
+                    dispatch(Box::new(workspace::Copy)),
+                ));
             }
         }
         if writable {
@@ -1402,6 +1483,13 @@ impl DirPane {
         if let Some(previous) = self.reading.replace(cancel.clone()) {
             previous.stop();
         }
+        // Reset here, not left for the old read's own "finished" branch to
+        // clear: navigating away drops that task before it ever reaches it,
+        // abandoned mid-loop rather than completed, so nothing else would ever
+        // set this back to `None`. Left stuck at a stale `Some`, it would keep
+        // this and every later directory's footer reading "reading… N items"
+        // forever, for a load that has nothing to do with any archive.
+        self.reading_bytes = None;
 
         // An archive is read a piece at a time, because reading one can take a
         // minute and a pane showing nothing for a minute looks broken. See
@@ -1561,6 +1649,29 @@ impl DirPane {
         cx.emit(PaneEvent::Transfer { op, sources, dest });
     }
 
+    /// Archive members dropped onto a real directory. Always a copy, the same
+    /// as `Cut` being refused for a member: nothing here writes to the
+    /// archive, so there is no move to offer regardless of what the modifiers
+    /// say.
+    fn accept_extract_drop(
+        &mut self,
+        archive: PathBuf,
+        inside: PathBuf,
+        roots: Vec<String>,
+        dest: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if roots.is_empty() {
+            return;
+        }
+        cx.emit(PaneEvent::ExtractDrop {
+            archive,
+            inside,
+            roots,
+            dest,
+        });
+    }
+
     /// Re-list when something other than pane changes this directory.
     ///
     /// Without this the listing goes quietly stale: a file dragged out to
@@ -1708,8 +1819,6 @@ impl DirPane {
         cx: &mut Context<Self>,
     ) -> Task<()> {
         let reading = crate::archive::spawn_read(&archive, cancel);
-        let sort = self.view.sort;
-        let folders_first = self.view.folders_first;
 
         cx.spawn(async move |this, cx| {
             let mut members: Vec<crate::archive::Member> = Vec::new();
@@ -1754,7 +1863,6 @@ impl DirPane {
                     skipped: reading.skipped(),
                 };
                 let index = crate::archive::Index::build(listing);
-                let rows = crate::archive::rows_in(&index, &archive, &inside);
 
                 let alive = this.update(cx, |this, cx| {
                     if let Some(fault) = reading.fault() {
@@ -1768,10 +1876,21 @@ impl DirPane {
                         return false;
                     }
 
+                    // Read fresh on every tick, for the same reason the sort
+                    // below is: toggling hidden files mid-read must take
+                    // effect on the next batch, not wait for a stale value
+                    // captured before this task's loop even started.
+                    let rows =
+                        crate::archive::rows_in(&index, &archive, &inside, this.view.show_hidden);
                     match rows {
                         Some(rows) => {
                             let mut entries = rows.entries;
-                            fs::sort_entries(&mut entries, sort, folders_first);
+                            // Read fresh on every tick, not captured once at
+                            // the top of this task: a header clicked mid-read
+                            // updates `self.view.sort` right away, and a
+                            // stale copy here would silently overwrite that
+                            // resort on the very next batch.
+                            fs::sort_entries(&mut entries, this.view.sort, this.view.folders_first);
                             this.entries = entries;
                             this.error = None;
                             if finished && rows.skipped > 0 {
@@ -2187,9 +2306,32 @@ impl DirPane {
         self.error = None;
 
         // The walker reads directories off the disk, so there is nothing for
-        // it to walk inside an archive. Filtering the rows already listed still
-        // works, and that is a different code path.
+        // it to walk inside an archive. The archive's whole listing for this
+        // directory is already sitting in `listing`, though, so this filters
+        // it in place instead: no walk, no debounce, done by the time this
+        // returns. `end_search`'s restore path above needs nothing extra to
+        // put it back, since it only ever looks at `previous.listing`.
         let Some(dir) = self.dir.disk().map(Path::to_path_buf) else {
+            self.entries = listing
+                .iter()
+                .filter(|entry| fs::matches_filter(&entry.name, &query))
+                .cloned()
+                .collect();
+            self.listing_moved += 1;
+            // Aim at the first hit as soon as there is one, matching the
+            // disk-search behaviour below: enter opens it without arrowing
+            // down first.
+            if self.cursor_ix.is_none() && !self.entries.is_empty() {
+                self.selected.only(0);
+                self.place_cursor(0);
+            }
+            self.search = Some(ActiveSearch {
+                query,
+                listing,
+                handle: None,
+                poll: None,
+            });
+            cx.notify();
             return;
         };
         let show_hidden = self.view.show_hidden;
@@ -2251,7 +2393,7 @@ impl DirPane {
             query,
             listing,
             handle: None,
-            _poll: poll,
+            poll: Some(poll),
         });
         cx.notify();
     }
@@ -2578,6 +2720,16 @@ impl DirPane {
     pub fn search_status(&self) -> Option<String> {
         let search = self.search.as_ref()?;
         let found = self.entries.len();
+        // An archive filter has no poll at all: it finished, synchronously,
+        // before `set_filter` returned, so there is no "searching…" state to
+        // report, only the count.
+        if search.poll.is_none() {
+            return Some(match found {
+                0 => "no matches".to_string(),
+                1 => "1 match".to_string(),
+                n => format!("{n} matches"),
+            });
+        }
         // No handle yet means the debounce has not elapsed.
         let Some(handle) = search.handle.as_ref() else {
             return Some("searching…".to_string());
@@ -2595,13 +2747,6 @@ impl DirPane {
         })
     }
 
-    /// The footer line while an archive is being read, which for a tarball can
-    /// be the best part of a minute.
-    ///
-    /// Says the same two things the settled line does, so the numbers do not
-    /// jump around when it lands: what is here, and how much of it. The
-    /// ellipsis marks them as still climbing, which is the shape the job strip
-    /// already uses for a total it does not have yet.
     /// The line the footer actually shows.
     ///
     /// Resolved in one place because the probe has to report what a person is
@@ -2614,6 +2759,13 @@ impl DirPane {
             .unwrap_or_else(|| self.footer.text.clone())
     }
 
+    /// The footer line while an archive is being read, which for a tarball can
+    /// be the best part of a minute.
+    ///
+    /// Says the same two things the settled line does, so the numbers do not
+    /// jump around when it lands: what is here, and how much of it. The
+    /// ellipsis marks them as still climbing, which is the shape the job strip
+    /// already uses for a total it does not have yet.
     fn reading_status(&self) -> Option<String> {
         let bytes = self.reading_bytes?;
         Some(format!(
@@ -2714,17 +2866,30 @@ impl DirPane {
             return;
         };
         // Inside an archive already: a folder is somewhere to go, a file is
-        // not. `xdg-open` needs a path and there is none, and extracting to a
-        // temporary copy would quietly throw away anything written to it, which
-        // is the trap every archive tool has shipped and regretted.
+        // not. `xdg-open` needs a path and there is none, so opening one means
+        // extracting a temporary copy first, and that needs the user's say-so:
+        // see `open_prompt`, and why it asks rather than just doing it.
         if entry.member().is_some() {
             if entry.is_dir {
                 let name = entry.name.clone();
                 self.navigate_to(self.dir.join(name), cx);
             } else {
-                cx.emit(PaneEvent::Notice {
-                    message: "Extract it first to open it".to_string(),
-                    problem: false,
+                let Location::Archive { archive, inside } = &self.dir else {
+                    return;
+                };
+                let Some(member) = entry
+                    .key()
+                    .strip_prefix(archive)
+                    .ok()
+                    .map(|p| p.to_string_lossy().into_owned())
+                else {
+                    return;
+                };
+                cx.emit(PaneEvent::ConfirmExtractAndOpen {
+                    archive: archive.clone(),
+                    inside: inside.clone(),
+                    member,
+                    name: entry.name.clone(),
                 });
             }
             return;
@@ -3200,6 +3365,29 @@ impl DirPane {
                 whole_selection: selected,
                 source_dir,
             });
+
+        // The same drag, offered for a row with no path instead: a member of
+        // the archive this pane is browsing. Mutually exclusive with `dragged`
+        // above, `on_disk` and `entry.member()` never both answer for one row.
+        let dragged_member = entry.member().is_some().then(|| {
+            let Location::Archive { archive, inside } = &self.dir else {
+                return None;
+            };
+            let anchor = entry
+                .key()
+                .strip_prefix(archive)
+                .ok()?
+                .to_string_lossy()
+                .into_owned();
+            Some(DraggedMembers {
+                resolved: std::cell::OnceCell::new(),
+                pane: cx.entity(),
+                archive: archive.clone(),
+                inside: inside.clone(),
+                anchor,
+                whole_selection: selected,
+            })
+        }).flatten();
         let drag_label: SharedString = if selected {
             match self.selected.len() {
                 1 => entry.name.clone().into(),
@@ -3208,6 +3396,10 @@ impl DirPane {
         } else {
             entry.name.clone().into()
         };
+        // `dragged` and `dragged_member` are never both `Some` for one row,
+        // but both closures below are built regardless, so each needs its own
+        // owned copy of the label rather than fighting over the one variable.
+        let member_drag_label = drag_label.clone();
 
         let row = div()
             .id(ix)
@@ -3276,6 +3468,7 @@ impl DirPane {
                 })
                 .drag_over::<DraggedPaths>(move |style, _, _, _| style.bg(highlight))
                 .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(highlight))
+                .drag_over::<DraggedMembers>(move |style, _, _, _| style.bg(highlight))
                 .on_drop(cx.listener({
                     let target = target.clone();
                     move |this, dragged: &DraggedPaths, window, cx| {
@@ -3289,11 +3482,24 @@ impl DirPane {
                         );
                     }
                 }))
-                .on_drop(cx.listener(
+                .on_drop(cx.listener({
+                    let target = target.clone();
                     move |this, paths: &ExternalPaths, window, cx| {
                         this.accept_drop(paths.paths().to_vec(), None, target.clone(), window, cx);
-                    },
-                ))
+                    }
+                }))
+                .on_drop(cx.listener({
+                    let target = target.clone();
+                    move |this, dragged: &DraggedMembers, _window, cx| {
+                        this.accept_extract_drop(
+                            dragged.archive.clone(),
+                            dragged.inside.clone(),
+                            dragged.roots(),
+                            target.clone(),
+                            cx,
+                        );
+                    }
+                }))
             })
             .when_some(dragged, |row, dragged| {
                 // Also where the payload settles what it carries: see `resolve`.
@@ -3318,6 +3524,18 @@ impl DirPane {
                         )))
                     },
                 )
+            })
+            .when_some(dragged_member, |row, dragged| {
+                // No `external_drag_payload`: promoting this to a native drag
+                // would need a real file to hand another application before
+                // any extraction has run. In-app only, for now, the same as
+                // `Cut` is not offered inside an archive at all.
+                row.on_drag(dragged, move |dragged: &DraggedMembers, _, _, cx| {
+                    dragged.resolve(cx);
+                    cx.new(|_| DragPreview {
+                        label: member_drag_label.clone(),
+                    })
+                })
             })
             .on_mouse_down(
                 MouseButton::Right,
@@ -3506,6 +3724,7 @@ impl Render for DirPane {
                 // hide the listing you are aiming at.
                 .drag_over::<DraggedPaths>(move |style, _, _, _| style.border_color(drop_border))
                 .drag_over::<ExternalPaths>(move |style, _, _, _| style.border_color(drop_border))
+                .drag_over::<DraggedMembers>(move |style, _, _, _| style.border_color(drop_border))
                 .on_drop(cx.listener({
                     let here = here.clone();
                     move |this, dragged: &DraggedPaths, window, cx| {
@@ -3514,11 +3733,24 @@ impl Render for DirPane {
                         this.accept_drop(sources, Some(&source_dir), here.clone(), window, cx);
                     }
                 }))
-                .on_drop(cx.listener(
+                .on_drop(cx.listener({
+                    let here = here.clone();
                     move |this, paths: &ExternalPaths, window, cx| {
                         this.accept_drop(paths.paths().to_vec(), None, here.clone(), window, cx);
-                    },
-                ))
+                    }
+                }))
+                .on_drop(cx.listener({
+                    let here = here.clone();
+                    move |this, dragged: &DraggedMembers, _window, cx| {
+                        this.accept_extract_drop(
+                            dragged.archive.clone(),
+                            dragged.inside.clone(),
+                            dragged.roots(),
+                            here.clone(),
+                            cx,
+                        );
+                    }
+                }))
             })
             .on_action(cx.listener(Self::go_up))
             .on_action(cx.listener(Self::open_selected))

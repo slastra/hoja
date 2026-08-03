@@ -21,6 +21,21 @@ expect 'p[0]["counting"] == []' "no folder in an archive is left counting"
 expect 'p[0]["sizes"][0] == "6.0 KB"' "the folder totals its subtree"
 expect 'p[0]["footer"] == "2 items · 6.1 KB"' "the footer is final at once"
 
+# --- searching inside an archive -----------------------------------------
+# There is no directory to walk, but the whole listing is already in memory,
+# so `ctrl-f` filters it in place: no walk, no debounce, and no way to end up
+# staring at a listing that stays empty forever the way an early version of
+# this did.
+key -M ctrl -P f -m ctrl
+key ttf
+wait_for 'p[0]["rows"] == ["ttf"]'
+expect 'p[0]["rows"] == ["ttf"]' "ctrl-f filters the archive listing in place"
+expect 'p[0]["footer"] == "1 match"' "and the footer counts the match"
+key -k Escape
+wait_for 'p[0]["rows"] == ["ttf", "LICENSE"]'
+expect 'p[0]["rows"] == ["ttf", "LICENSE"]' "escape puts the full listing back"
+expect 'p[0]["footer"] == "2 items · 6.1 KB"' "with the ordinary footer, not stuck on the search"
+
 dbl "$(named ttf)"
 wait_for 'p[0]["dir"].endswith("/fonts.zip/ttf")'
 wait_for 'p[0]["rows"] == ["sub", "Inter.ttf"]'
@@ -38,12 +53,40 @@ wait_for 'd["notice"] is not None'
 expect '"delete" in d["notice"]' "delete is refused, not attempted"
 expect 'p[0]["row_count"] == 2' "and nothing left the listing"
 
-# Enter on a file says why rather than doing nothing.
+# Enter on a file asks before extracting a temp copy to open, rather than
+# either refusing outright or doing it without asking. See `open_prompt`.
+before=$(find /tmp -maxdepth 1 -name 'hoja-open-*' 2>/dev/null | wc -l)
+
 key -k Down
 wait_for 'p[0]["cursor"] == 1'
 key -k Return
-wait_for '"Extract it first" in (d["notice"] or "")'
+wait_for 'd["modal"] == "open-prompt"'
 expect 'p[0]["dir"].endswith("/fonts.zip/ttf")' "and the pane stayed put"
+
+# Cancelling leaves nothing extracted.
+key -k Escape
+wait_for 'd["modal"] is None'
+after_cancel=$(find /tmp -maxdepth 1 -name 'hoja-open-*' 2>/dev/null | wc -l)
+if [ "$after_cancel" -eq "$before" ]; then
+    echo "  ok   cancelling the prompt extracts nothing"
+else
+    echo "  FAIL cancelling the prompt extracts nothing" >&2
+    FAILED=$((FAILED + 1))
+fi
+
+# Confirming extracts the one file into a fresh temp directory.
+key -k Return
+wait_for 'd["modal"] == "open-prompt"'
+key -k Return
+wait_for 'd["modal"] is None'
+extracted=$(ls -td /tmp/hoja-open-* 2>/dev/null | head -1)
+if [ -n "$extracted" ] && [ -f "$extracted/Inter.ttf" ]; then
+    echo "  ok   confirming extracts the file to a temp copy"
+else
+    echo "  FAIL confirming extracts the file to a temp copy" >&2
+    FAILED=$((FAILED + 1))
+fi
+rm -rf "$extracted"
 
 # --- getting out again --------------------------------------------------
 key -k BackSpace

@@ -4,6 +4,12 @@
 //! through `picker`, and differs in the two ways that matter: entries are
 //! places rather than actions, and choosing one navigates the active pane
 //! instead of dispatching an action. An unmounted volume is mounted first.
+//!
+//! `ctrl-e` on a mounted, removable place ejects it instead of navigating:
+//! the symmetric other half of choosing an unmounted one to mount it. Scoped
+//! to the shared `picker` key context rather than a context of its own, which
+//! means it is also, technically, bindable while the command palette has
+//! focus; nothing there registers a handler for it, so it is simply inert.
 
 use fuzzy_nucleo::StringMatchCandidate;
 use gpui::{
@@ -17,7 +23,7 @@ use crate::path_editor::{PathEditor, PathEditorEvent};
 use crate::picker::{self, PickerState, SelectNext, SelectPrevious, highlighted_label};
 use crate::places::{self, Place};
 
-actions!(places, [Toggle]);
+actions!(places, [Toggle, Eject]);
 
 const ROW_HEIGHT: f32 = 32.;
 
@@ -39,6 +45,18 @@ pub enum PlaceEvent {
     /// succeeded and the navigation was thrown away. The workspace outlives the
     /// modal, so the work belongs there.
     Mount { device: PathBuf, label: String },
+    /// Unmount this, which is already mounted at `mount`.
+    ///
+    /// Same reasoning as `Mount`: the finder dismisses (and drops) the moment
+    /// an action is chosen, so the workspace has to be the one to actually do
+    /// it and report back. `mount` travels along so the workspace can bounce
+    /// any pane that was sitting under it once the unmount succeeds, rather
+    /// than leaving a pane pointed at a directory that is no longer there.
+    Unmount {
+        device: PathBuf,
+        label: String,
+        mount: PathBuf,
+    },
 }
 
 pub struct PlaceFinder {
@@ -152,6 +170,33 @@ impl PlaceFinder {
         }
     }
 
+    /// Unmount whatever is highlighted, if it is something that can be.
+    ///
+    /// Silently does nothing on a row that is not a mounted, removable
+    /// device: home, a bookmark, and an already-unmounted volume all answer
+    /// `removable()` with `None`, and there is no action to take on any of
+    /// them here.
+    fn eject(&mut self, _: &Eject, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some((place, _)) = self.picker.chosen(&self.places) else {
+            return;
+        };
+        let Place::Dir {
+            path,
+            label,
+            device: Some(device),
+            ..
+        } = place
+        else {
+            return;
+        };
+        cx.emit(PlaceEvent::Unmount {
+            device: device.clone(),
+            label: label.clone(),
+            mount: path.clone(),
+        });
+        cx.emit(DismissEvent);
+    }
+
     fn render_row(&self, ix: usize, window: &Window, cx: &Context<Self>) -> gpui::AnyElement {
         let colors = cx.theme().colors();
         let Some(matched) = self.picker.matches.get(ix) else {
@@ -193,6 +238,15 @@ impl PlaceFinder {
                     .text_color(colors.text_muted)
                     .child(place.detail().to_string()),
             )
+            .when(place.removable().is_some(), |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(colors.text_muted)
+                        .child("ctrl-e eject"),
+                )
+            })
             .into_any_element()
     }
 }
@@ -226,5 +280,6 @@ impl Render for PlaceFinder {
             .key_context(picker::KEY_CONTEXT)
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_previous))
+            .on_action(cx.listener(Self::eject))
     }
 }
