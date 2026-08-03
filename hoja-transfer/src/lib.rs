@@ -25,5 +25,5 @@ pub use events::{
     TransferError,
 };
 pub use job::{JobHandle, JobId, JobPolicy, JobSpec, Phase, Progress, spawn_job};
-pub use sys::{is_partial_name, rename_no_replace, same_filesystem, stem_end};
+pub use sys::{is_partial_name, partial_path, rename_no_replace, same_filesystem, stem_end};
 pub use trash::{TrashedItem, restore, trash};

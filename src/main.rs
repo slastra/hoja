@@ -1,3 +1,4 @@
+mod archive;
 mod assets;
 mod clipboard;
 mod command_palette;
@@ -10,6 +11,7 @@ mod fs;
 mod git;
 mod history;
 mod icon;
+mod location;
 mod measure;
 mod notifications;
 mod opener;

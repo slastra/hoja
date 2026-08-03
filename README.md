@@ -38,6 +38,23 @@ for important data.
 - **View settings.** Each pane has a menu at the right end of the toolbar.
   It controls hidden files, folder grouping, and the sort order. hoja does
   not show hidden files by default.
+- **Archives as folders.** Press enter on a `.zip` or a tarball and the pane goes
+  into it: `.tar`, and `.tar.gz`, `.tar.bz2`, `.tar.xz` and `.tar.zst` with all
+  their short spellings. Every codec is pure Rust, so there is no C library to
+  install and nothing shells out.
+  The rows have names, sizes and dates like any other listing, and a folder
+  inside an archive carries its exact recursive size immediately, because the
+  archive already said what is in it. A tarball has no index, so listing one is
+  decompressing all of it: the rows go up as they are found rather than after,
+  and the footer says how far through it has got. Measured here, the largest
+  `.tar.bz2` on this machine takes a minute to read and shows its first rows in
+  under a second. Copy out with `ctrl-c` and `ctrl-v`: the
+  members are extracted and then moved into place by the same engine as any
+  other transfer, so conflicts, progress and errors all behave the way they do
+  everywhere else. Symlinks come out as symlinks. Nothing writes to an archive,
+  so rename, delete and paste say so rather than half working, and the document
+  formats that are zip files underneath are deliberately left alone: a `.docx`
+  opens in a word processor, not in a pane.
 - **Live listings.** hoja watches the directory it shows. If another program
   adds, removes, or changes a file, the pane re-lists and keeps your selection.
   If the directory itself goes away, the pane moves to the nearest directory
@@ -170,7 +187,7 @@ Keys work on the pane that has focus.
 | `↑` `↓` | Move the selection one row |
 | `pageup` `pagedown` | Move the selection one screen |
 | `home` `end` | Move to the first or the last entry |
-| `enter` | Open the selected entry |
+| `enter` | Open the selected entry. A folder or a `.zip` opens in the pane. |
 | type a name | Jump to the first match. Repeat one letter to cycle the matches. |
 | `alt-←` `alt-→` | Go back and forward in the history |
 | `alt-↑` or `backspace` | Go to the parent directory |
@@ -303,6 +320,22 @@ Nested, its window presents to the host as class `wlroots`, so float it at a
 fixed size or a tiling compositor will stretch it and move the rows a test
 clicks.
 
+A `wait_for` that times out ends the run. That is a safety property rather
+than a tidiness one: once a wait has failed the script no longer knows where
+the window is, and everything after it is keystrokes sent somewhere unverified.
+An earlier version carried on, walked a pane up to the root of the filesystem
+and pressed paste there; nothing was written only because root is not writable.
+
+There are three suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
+`archive.sh` and `tar.sh` need fixtures, which `scripts/tests/setup-archives.sh`
+builds and prints the path of:
+
+```sh
+FIX=$(scripts/tests/setup-archives.sh)
+scripts/sway-harness.sh "$FIX" scripts/tests/archive.sh
+scripts/sway-harness.sh "$FIX" scripts/tests/tar.sh
+```
+
 Two things it cannot do. It cannot synthesise a drag: `wlrctl` only clicks, and
 `swaymsg seat - cursor` moves the pointer without gpui starting a drag from it,
 so column resizing and drag-and-drop need a person. And it has no second
@@ -338,8 +371,12 @@ Planned and not complete:
 
 - **A job journal.** Pause, resume and undo a transfer, and survive a crash
   partway through one.
-- **Opening an archive like a folder.** Browse a zip or a tarball in a pane and
-  copy out of it without unpacking the whole thing first.
+- **Searching inside an archive**, which the recursive search does not do yet.
+  The whole member list is already in memory, so filtering it is cheaper than
+  searching a directory.
+- **Opening a file inside an archive**, which needs somewhere to put it first.
+- **Writing to an archive.** Everything here reads; rename, delete and paste
+  inside one are refusals rather than half-features.
 - **Owner, group and permission columns**, for anyone who wants them.
 - **Tabs, previews and thumbnails.**
 - **Query history in the pickers**, and modal geometry that persists.

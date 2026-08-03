@@ -9,7 +9,7 @@ license = "GPL-3.0-or-later"
 description = "A GPU-accelerated file manager with splittable panes"
 
 # Pinned to a specific zed revision. Safe to pin by `rev` here only because gpui is
-# our sole git source — nothing else in the graph depends on it, so there is no
+# our sole git source: nothing else in the graph depends on it, so there is no
 # source-unification hazard. Bump deliberately; `main` moves daily.
 #
 # `gpui_platform` is mandatory and not published on crates.io: since the Feb 2026
@@ -45,9 +45,36 @@ rust-embed = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json_lenient = "0.2"
 notify = "8"
+# Browsing a zip. `default-features = false` is load-bearing: the defaults pull
+# aes, bzip2, deflate64, lzma, ppmd, xz and zstd, and of ~50k entries across the
+# 127 zip files on a real machine, 39616 were deflate, 10640 stored, and 7 zstd
+# in a test fixture inside a cargo registry. Deflate alone is the format.
+#
+# One crate more to compile. zip's only non-optional dependencies are crc32fast,
+# indexmap and memchr; those three and flate2 are all already in the tree through
+# the Zed crates, so `cargo tree -p zip` adds nothing under it. The lockfile also
+# gains `derive_arbitrary`, which is a resolution artefact of a feature on a
+# crate already in the graph and is not built for this target.
+zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
+# Browsing a tarball. One crate: `filetime`, `libc` and `xattr` are already here.
+tar = "0.4"
+# The four codecs a tarball comes wrapped in, all pure Rust and all measured
+# against the C tools on real files from this machine:
+#
+#   gzip   flate2/miniz_oxide   357 MB/s   faster than the C tool
+#   bzip2  libbz2-rs-sys         39 MB/s   parity, and slow by algorithm not code
+#   zstd   ruzstd               260 MB/s   3.5x slower than libzstd
+#   xz     lzma-rs              102 MB/s   2.6x slower than liblzma
+#
+# `flate2` and `bzip2` cost nothing: both are already in the tree, and `bzip2`
+# 0.6 defaults to `libbz2-rs-sys` rather than binding the C library.
+flate2 = "1"
+bzip2 = "0.6"
+ruzstd = "0.9"
+lzma-rs = "0.3"
 # Parallel directory walking for the pane footer's size totals. Measured on a
 # 1.5M-file tree: 4.16s single-threaded against 1.09s on four threads, and no
-# better beyond eight — which is what dua and dust are doing to be quick.
+# better beyond eight, which is what dua and dust are doing to be quick.
 # Already in the graph through the Zed crates, so this adds nothing to the tree.
 rayon = "1"
 # flock, for the state file's read-modify-write. Already in the graph at 1.x
@@ -58,6 +85,11 @@ smallvec = "1"
 xdg-mime = "0.4"
 freedesktop-desktop-entry = { version = "0.8", default-features = false }
 unicode-segmentation = "1"
+
+[dev-dependencies]
+# Real zip files for the archive tests, written to a temporary path. Already in
+# the tree as hoja-transfer's dev dependency, so this adds nothing.
+tempfile = "3"
 
 [profile.dev]
 # The gpui dependency tree is large; without this every debug build of a

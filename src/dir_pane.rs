@@ -19,6 +19,7 @@ use crate::fs::{self, DirEntry, Sort, SortDir, SortKey, ViewSettings};
 use crate::git::GitStatus;
 use crate::history::History;
 use crate::icon::Icon;
+use crate::location::Location;
 use crate::path_editor::{PathEditor, PathEditorEvent};
 use crate::workspace;
 
@@ -104,7 +105,14 @@ pub enum PaneEvent {
     #[allow(dead_code)]
     Remove,
     /// Something worth saying that has no job to attach to.
-    Notice(String),
+    ///
+    /// `problem` because these are not all failures. "Extract it first to open
+    /// it" is an answer to a question, and colouring it like a broken transfer
+    /// says the wrong thing about it.
+    Notice {
+        message: String,
+        problem: bool,
+    },
     /// A view setting or column width changed and is worth remembering.
     ViewChanged,
     /// A drop landed here. The workspace owns the engine and the job strip, so
@@ -180,6 +188,12 @@ const CLOCK_TICK: Duration = Duration::from_secs(30);
 
 const MEASURE_DEBOUNCE: Duration = Duration::from_millis(120);
 
+/// How often an archive read is asked what it has found.
+///
+/// Fast enough that the first rows feel immediate, slow enough that a read
+/// finishing in twenty milliseconds does not tick at all.
+const ARCHIVE_POLL: Duration = Duration::from_millis(80);
+
 /// How often the footer reads the running total. A size is a magnitude, not a
 /// counter, it has to look alive, not be exact to the byte.
 const MEASURE_POLL: Duration = Duration::from_millis(100);
@@ -192,8 +206,8 @@ const MEASURE_POLL: Duration = Duration::from_millis(100);
 #[derive(Default)]
 struct Footer {
     /// What this was resolved against. A defaulted footer is out of date by
-    /// construction: no directory is the empty path.
-    dir: PathBuf,
+    /// construction: it has been resolved against nowhere.
+    dir: Option<Location>,
     /// The listing the footer's summary was built for, and the directory read
     /// the walk belongs to. Two counters because they answer different
     /// questions: the summary has to follow a re-order, the walk must not.
@@ -288,11 +302,14 @@ impl DraggedPaths {
     /// move: no entity is leased.
     fn resolve(&self, cx: &App) {
         self.resolved.get_or_init(|| {
-            if self.whole_selection {
-                self.pane.read(cx).selected_paths()
-            } else {
-                vec![self.anchor.clone()]
-            }
+            // The anchor is the fallback, and it is always a real path: the
+            // drag is not offered at all for a row without one. So a selection
+            // that spans an archive and the disk, which has no set of real
+            // paths to carry, drags the row that was grabbed instead.
+            self.whole_selection
+                .then(|| self.pane.read(cx).selected_on_disk())
+                .flatten()
+                .unwrap_or_else(|| vec![self.anchor.clone()])
         });
     }
 
@@ -574,7 +591,7 @@ pub struct DirPane {
     /// active one while the command palette holds the keyboard, and asking
     /// `contains_focused` would dim every pane the moment a modal opened.
     active: bool,
-    dir: PathBuf,
+    dir: Location,
     history: History,
     entries: Vec<DirEntry>,
     /// Multi-select: plain click replaces, ctrl-click toggles, shift-click
@@ -604,13 +621,25 @@ pub struct DirPane {
     /// watch, and so a watcher that failed to arm cannot be recorded as armed.
     watch: Option<(PathBuf, Task<()>)>,
     view: ViewSettings,
-    /// The directory `entries` was built from. Differs from `dir` while a load
+    /// The location `entries` was built from. Differs from `dir` while a load
     /// is in flight, which is how a navigation is told apart from a refresh.
-    loaded_dir: PathBuf,
+    ///
+    /// `None` before the first listing has landed.
+    loaded_dir: Option<Location>,
     /// Set when the directory could not be read at all (permissions, gone, not a dir).
     error: Option<String>,
     /// Held so that navigating away cancels an in-flight read by dropping its task.
     load_task: Option<Task<()>>,
+    /// Uncompressed bytes an archive read has accounted for, while it runs.
+    ///
+    /// `None` when nothing is being read, which is what the footer reads as
+    /// "this is the whole listing" rather than "so far".
+    reading_bytes: Option<u64>,
+    /// Stops the read behind `load_task`, which dropping the task does not.
+    ///
+    /// Only an archive read is slow enough to matter: `read_dir` returns in
+    /// milliseconds, where listing a tarball has to decompress the whole thing.
+    reading: Option<crate::archive::Cancel>,
     /// Separate from `load_task` so a header click cannot cancel a pending read.
     sort_task: Option<Task<()>>,
     /// Repaints the listing so the Modified column stays true. Dropped with the
@@ -650,7 +679,7 @@ pub struct DirPane {
 
 impl DirPane {
     pub fn new(
-        dir: PathBuf,
+        dir: Location,
         view: ViewSettings,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -684,9 +713,11 @@ impl DirPane {
             git_task: None,
             watch: None,
             view,
-            loaded_dir: PathBuf::new(),
+            loaded_dir: None,
             error: None,
             load_task: None,
+            reading_bytes: None,
+            reading: None,
             sort_task: None,
             _clock: Self::spawn_clock(cx),
             context_menu: None,
@@ -756,11 +787,12 @@ impl DirPane {
             modified: column(Column::Modified),
             selected: self.selected.iter().collect(),
             cursor: self.cursor_ix,
-            footer: self.footer.text.clone(),
+            footer: self.footer_line(),
             counting: (0..self.entries.len().min(crate::probe::MAX_ROWS))
                 .filter(|ix| self.counting_size(*ix))
                 .collect(),
             searching: self.searching(),
+            reading: self.reading_bytes.is_some(),
             error: self.error.clone(),
         }
     }
@@ -772,8 +804,14 @@ impl DirPane {
         }
     }
 
-    pub fn dir(&self) -> &Path {
+    /// Where this pane is, which is not always a directory.
+    pub fn location(&self) -> &Location {
         &self.dir
+    }
+
+    /// The real directory this pane is showing, and `None` inside an archive.
+    pub fn disk_dir(&self) -> Option<&Path> {
+        self.dir.disk()
     }
 
     /// Splits copy the source pane's view settings, sort included.
@@ -842,12 +880,50 @@ impl DirPane {
         self.select_sort_key(SortKey::Modified, cx);
     }
 
-    /// Paths of the current selection, in listing order.
-    pub fn selected_paths(&self) -> Vec<PathBuf> {
+    /// Identity keys for the current selection, in listing order.
+    ///
+    /// For remembering a selection across a re-listing, and for nothing that
+    /// touches a file: see `DirEntry::key`.
+    pub fn selected_keys(&self) -> Vec<PathBuf> {
         self.selected
             .iter()
             .filter_map(|ix| self.entries.get(ix))
-            .map(|e| e.path.clone())
+            .map(|e| e.key().to_path_buf())
+            .collect()
+    }
+
+    /// The archive this pane is in, the directory within it, and the members
+    /// the selection names. `None` unless the pane is inside an archive.
+    ///
+    /// The member paths are relative to the archive's root and name folders as
+    /// well as files: a folder in an archive is a prefix rather than a thing,
+    /// because three of twelve real zip files name no folders at all, so
+    /// expanding one is `archive::extract`'s job and not this one's.
+    pub fn selected_in_archive(&self) -> Option<(PathBuf, PathBuf, Vec<String>)> {
+        let Location::Archive { archive, inside } = &self.dir else {
+            return None;
+        };
+        let roots = self
+            .selected
+            .iter()
+            .filter_map(|ix| self.entries.get(ix))
+            .filter_map(|entry| entry.key().strip_prefix(archive).ok())
+            .map(|member| member.to_string_lossy().into_owned())
+            .collect();
+        Some((archive.clone(), inside.clone(), roots))
+    }
+
+    /// Real paths for the current selection, and `None` when any row of it has
+    /// none.
+    ///
+    /// All or nothing on purpose. A selection that spans rows with paths and
+    /// rows without them can only be half copied or half deleted, and half of
+    /// either is worse than refusing the lot.
+    pub fn selected_on_disk(&self) -> Option<Vec<PathBuf>> {
+        self.selected
+            .iter()
+            .filter_map(|ix| self.entries.get(ix))
+            .map(|e| e.on_disk().map(Path::to_path_buf))
             .collect()
     }
 
@@ -871,7 +947,7 @@ impl DirPane {
     pub fn select_after_removal(&mut self, removed: &[PathBuf], cx: &mut Context<Self>) {
         let gone: std::collections::HashSet<&Path> =
             removed.iter().map(|path| path.as_path()).collect();
-        let surviving = |entry: &DirEntry| !gone.contains(entry.path.as_path());
+        let surviving = |entry: &DirEntry| !gone.contains(entry.key());
 
         let first_gone = self
             .entries
@@ -889,7 +965,7 @@ impl DirPane {
             });
 
         self.pending_select = successor
-            .map(|entry| vec![entry.path.clone()])
+            .map(|entry| vec![entry.key().to_path_buf()])
             .unwrap_or_default();
         self.reload(cx);
     }
@@ -913,6 +989,12 @@ impl DirPane {
             }
         };
 
+        // Nothing here changes an archive: this module only reads them, which
+        // is what makes rename, delete and the rest refusals rather than
+        // half-built features. Absent rather than present and refusing, because
+        // a menu of things that all say no is worse than a shorter menu.
+        let writable = self.dir.is_disk();
+
         let mut items = Vec::new();
         // Where the "Open With" section lands once it resolves.
         let mut open_with_ix = None;
@@ -922,35 +1004,45 @@ impl DirPane {
             // MIME detection reads the head of the file, so it can block for as
             // long as the filesystem wants to take: unacceptable on a network
             // mount. The menu opens without this section and grows it in.
+            // Only for a real file: the applications this offers are launched
+            // on a path, and there is nothing to hand them for a row that has
+            // none.
             let anchor_entry = self.cursor_ix.and_then(|ix| self.entries.get(ix));
-            if let Some(entry) = anchor_entry.filter(|e| !e.is_dir) {
-                open_with_ix = Some((items.len(), entry.path.clone()));
+            if let Some(path) = anchor_entry
+                .filter(|e| !e.is_dir)
+                .and_then(|entry| entry.on_disk())
+            {
+                open_with_ix = Some((items.len(), path.to_path_buf()));
             }
+            if writable {
+                items.push(MenuItem::Separator);
+                items.push(MenuItem::action(
+                    "Rename",
+                    dispatch(Box::new(RenameSelected)),
+                ));
+                items.push(MenuItem::action(
+                    "Delete",
+                    dispatch(Box::new(workspace::Delete)),
+                ));
+                items.push(MenuItem::Separator);
+                items.push(MenuItem::action("Cut", dispatch(Box::new(workspace::Cut))));
+                items.push(MenuItem::action(
+                    "Copy",
+                    dispatch(Box::new(workspace::Copy)),
+                ));
+            }
+        }
+        if writable {
+            items.push(MenuItem::action(
+                "Paste",
+                dispatch(Box::new(workspace::Paste)),
+            ));
             items.push(MenuItem::Separator);
             items.push(MenuItem::action(
-                "Rename",
-                dispatch(Box::new(RenameSelected)),
-            ));
-            items.push(MenuItem::action(
-                "Delete",
-                dispatch(Box::new(workspace::Delete)),
-            ));
-            items.push(MenuItem::Separator);
-            items.push(MenuItem::action("Cut", dispatch(Box::new(workspace::Cut))));
-            items.push(MenuItem::action(
-                "Copy",
-                dispatch(Box::new(workspace::Copy)),
+                "New Folder",
+                dispatch(Box::new(workspace::NewFolder)),
             ));
         }
-        items.push(MenuItem::action(
-            "Paste",
-            dispatch(Box::new(workspace::Paste)),
-        ));
-        items.push(MenuItem::Separator);
-        items.push(MenuItem::action(
-            "New Folder",
-            dispatch(Box::new(workspace::NewFolder)),
-        ));
 
         self.show_menu(items, position, window, cx);
 
@@ -1281,8 +1373,8 @@ impl DirPane {
     fn reload_inner(&mut self, refresh_git: bool, cx: &mut Context<Self>) {
         // A directory change starts fresh; a refresh of the same directory
         // keeps the selection.
-        if self.pending_select.is_empty() && self.dir == self.loaded_dir {
-            self.pending_select = self.selected_paths();
+        if self.pending_select.is_empty() && self.loaded_dir.as_ref() == Some(&self.dir) {
+            self.pending_select = self.selected_keys();
         }
         if refresh_git {
             self.reload_git(cx);
@@ -1302,24 +1394,69 @@ impl DirPane {
         let show_hidden = self.view.show_hidden;
         let folders_first = self.view.folders_first;
 
+        // Dropping the task discards the answer; it does not stop a read
+        // already running. That is fine for a directory and not for an archive,
+        // where the read can be a full decompression, so navigating away says
+        // so rather than leaving a thread inflating something nobody wants.
+        let cancel = crate::archive::Cancel::new();
+        if let Some(previous) = self.reading.replace(cancel.clone()) {
+            previous.stop();
+        }
+
+        // An archive is read a piece at a time, because reading one can take a
+        // minute and a pane showing nothing for a minute looks broken. See
+        // `spawn_archive_read`.
+        if let Location::Archive { archive, inside } = &self.dir {
+            let (archive, inside) = (archive.clone(), inside.clone());
+            self.load_task = Some(self.spawn_archive_read(archive, inside, cancel, cx));
+            return;
+        }
+
         self.load_task = Some(cx.spawn(async move |this, cx| {
             // `read_dir` is blocking and sorting a large listing costs ~100ms, so both
             // run off the foreground executor in the same hop.
             let result = cx
                 .background_spawn(async move {
-                    let mut entries = fs::read_dir(&dir, show_hidden)?;
+                    // `skipped` counts the names an archive holds that cannot
+                    // be shown: refused by `tidy`, or a repeat of one already
+                    // taken. Zero for a directory, which has neither.
+                    let (mut entries, skipped) = match dir.disk() {
+                        Some(dir) => (fs::read_dir(dir, show_hidden)?, 0),
+                        // Archives took the branch above.
+                        None => (Vec::new(), 0),
+                    };
                     fs::sort_entries(&mut entries, sort, folders_first);
-                    anyhow::Ok(entries)
+                    anyhow::Ok((entries, skipped))
                 })
                 .await;
 
             let _ = this.update(cx, |this, cx| {
                 match result {
-                    Ok(entries) => {
+                    Ok((entries, skipped)) => {
                         this.entries = entries;
                         this.listing_moved += 1;
                         this.directory_read += 1;
                         this.error = None;
+                        // Said once, on the listing that found them. The names
+                        // themselves are exactly the ones there is no safe way
+                        // to show, so the count is the whole of what can be
+                        // reported: the alternative is a view that quietly
+                        // claims to be the whole archive.
+                        if skipped > 0 {
+                            cx.emit(PaneEvent::Notice {
+                                message: format!(
+                                    "{} in this archive could not be shown",
+                                    match skipped {
+                                        1 => "1 name".to_string(),
+                                        n => format!(
+                                            "{} names",
+                                            crate::notifications::count(n as u64)
+                                        ),
+                                    }
+                                ),
+                                problem: false,
+                            });
+                        }
                     }
                     Err(err) => {
                         // A directory that has gone away is not a state to sit
@@ -1331,19 +1468,29 @@ impl DirPane {
                         // Only when it is *gone*. A directory that exists but
                         // cannot be read is a real, actionable error, and
                         // bouncing to the parent would hide it.
-                        let gone = !this.dir.is_dir();
-                        let fallback = gone
-                            .then(|| fs::nearest_existing_dir(&this.dir))
-                            .flatten()
-                            .filter(|dir| dir != &this.dir);
+                        //
+                        // Only for a real directory, too: an archive that
+                        // cannot be read is a thing to say so about, not a
+                        // place to quietly climb out of.
+                        let fallback = this
+                            .dir
+                            .disk()
+                            .filter(|dir| !dir.is_dir())
+                            .and_then(fs::nearest_existing_dir)
+                            .filter(|dir| Some(dir.as_path()) != this.dir.disk());
 
                         if let Some(dir) = fallback {
-                            cx.emit(PaneEvent::Notice(format!(
-                                "{} is gone. Showing {}.",
-                                this.dir.display(),
-                                dir.display()
-                            )));
-                            this.navigate_to(dir, cx);
+                            // Informational: nothing failed, the pane
+                            // just moved somewhere that still exists.
+                            cx.emit(PaneEvent::Notice {
+                                message: format!(
+                                    "{} is gone. Showing {}.",
+                                    this.dir,
+                                    dir.display()
+                                ),
+                                problem: false,
+                            });
+                            this.navigate_to(Location::Disk(dir), cx);
                             return;
                         }
                         this.entries.clear();
@@ -1359,12 +1506,12 @@ impl DirPane {
                 // Same directory: find the renamed row again. A navigation is
                 // different, the same name elsewhere is a different file, so
                 // the rename ends with the directory it belonged to.
-                if this.dir == this.loaded_dir {
+                if this.loaded_dir.as_ref() == Some(&this.dir) {
                     this.reanchor_rename();
                 } else {
                     this.renaming = None;
                 }
-                this.loaded_dir = this.dir.clone();
+                this.loaded_dir = Some(this.dir.clone());
                 this.restore_selection();
                 // Without this the mutation lands but nothing repaints.
                 cx.notify();
@@ -1421,11 +1568,31 @@ impl DirPane {
     /// leave the pane showing entries that are no longer there. A file manager
     /// showing yesterday's truth is worse than a slow one.
     fn watch_dir(&mut self, cx: &mut Context<Self>) {
-        if self.watch.as_ref().map(|(dir, _)| dir.as_path()) == Some(self.dir.as_path()) {
+        // The file behind what is being shown, which is the directory itself
+        // on disk and the archive file inside one: both are things a change
+        // to would make the listing wrong.
+        let anchor = self.dir.anchor();
+        if self.watch.as_ref().map(|(dir, _)| dir.as_path()) == Some(anchor) {
             return;
         }
         self.watch = None;
-        let dir = self.dir.clone();
+        // A directory is watched directly; an archive is watched through the
+        // directory holding it. `notify` on a file follows the inode, and
+        // anything that rewrites an archive does it by writing a new one and
+        // renaming it over the old, which would leave the watch pointing at the
+        // file that used to be there. `watch_settings` does the same thing for
+        // the same reason.
+        //
+        // The cost is that any change in that directory wakes this, and a
+        // wasted re-list is cheap next to a listing that quietly goes wrong.
+        let archive = (!self.dir.is_disk()).then(|| anchor.to_path_buf());
+        let dir = match &archive {
+            Some(file) => match file.parent() {
+                Some(parent) => parent.to_path_buf(),
+                None => return,
+            },
+            None => anchor.to_path_buf(),
+        };
 
         let (tx, rx) = std::sync::mpsc::channel();
         let mut watcher = match notify::recommended_watcher(move |res| {
@@ -1465,13 +1632,20 @@ impl DirPane {
                 cx.background_executor().timer(WATCH_INTERVAL).await;
                 crate::config::drain_changes(&rx);
 
+                // The arranged contents are remembered per archive, so
+                // forgetting them is what makes the re-list read the file again
+                // rather than hand back what it said before it changed.
+                if let Some(file) = &archive {
+                    crate::archive::forget(file);
+                }
+
                 let alive = this.update(cx, |this, cx| this.reload_from_watch(cx));
                 if alive.is_err() {
                     break;
                 }
             }
         });
-        self.watch = Some((self.dir.clone(), task));
+        self.watch = Some((self.dir.anchor().to_path_buf(), task));
     }
 
     /// Ask git about this directory off the UI thread.
@@ -1484,7 +1658,11 @@ impl DirPane {
     fn reload_git(&mut self, cx: &mut Context<Self>) {
         // Clear first: the old directory's statuses must not tint this one.
         self.git = crate::git::GitStatuses::new();
-        let dir = self.dir.clone();
+        // `git -C` needs a directory to run in, and a repository cannot be
+        // inside an archive anyway.
+        let Some(dir) = self.dir.disk().map(Path::to_path_buf) else {
+            return;
+        };
         self.git_task = Some(cx.spawn(async move |this, cx| {
             let statuses = cx
                 .background_spawn(async move { crate::git::statuses(&dir) })
@@ -1501,6 +1679,160 @@ impl DirPane {
 
     /// Re-select `pending_select` against the freshly built listing and scroll
     /// the first survivor into view. Entries that disappeared are dropped.
+    /// Read an archive a piece at a time, showing rows as they arrive.
+    ///
+    /// A zip is read in milliseconds and lands in one piece like a directory
+    /// would. A tarball has no index at all, so listing one *is* decompressing
+    /// all of it: measured here, twelve seconds for a middling `.tar.bz2` and a
+    /// minute for the largest. Waiting for the whole answer would show an empty
+    /// pane for a minute, so the rows go up as they are found.
+    ///
+    /// What a batch may touch is the delicate part, and the answers are the
+    /// same ones `set_filter` arrived at for search:
+    ///
+    /// - `directory_read` stays put, because bumping it restarts the folder
+    ///   size walk, and each restart re-eats its debounce so the walk would
+    ///   never run at all.
+    /// - `restore_selection` runs once at the end. It takes `pending_select`,
+    ///   so a second call has nothing left and would clear what the first one
+    ///   restored.
+    /// - `reanchor_rename` likewise: it closes the rename editor when it cannot
+    ///   find the row, and early on it will not be there yet.
+    /// - `loaded_dir` is what tells a navigation from a refresh, so it flips
+    ///   when the listing is whole and not before.
+    fn spawn_archive_read(
+        &mut self,
+        archive: PathBuf,
+        inside: PathBuf,
+        cancel: crate::archive::Cancel,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        let reading = crate::archive::spawn_read(&archive, cancel);
+        let sort = self.view.sort;
+        let folders_first = self.view.folders_first;
+
+        cx.spawn(async move |this, cx| {
+            let mut members: Vec<crate::archive::Member> = Vec::new();
+            // Rebuilt when the count has grown by a quarter rather than on a
+            // timer. A rebuild is a pass over everything read so far, so a
+            // timer makes that cost O(n) per tick where growth makes the whole
+            // read cost O(n) however long it takes.
+            let mut arranged_at = 0usize;
+            let mut cleared = false;
+
+            loop {
+                cx.background_executor().timer(ARCHIVE_POLL).await;
+
+                let batch = reading.drain();
+                let finished = reading.is_done();
+                members.extend(batch);
+
+                // Rearranged only when there is meaningfully more to arrange,
+                // because a rebuild is a pass over everything read so far.
+                let grown = members.len() > arranged_at + arranged_at / 4;
+                if !grown && !finished {
+                    // Nothing new to show, but the read has moved on, and a
+                    // figure that stops climbing while it grinds through a
+                    // three hundred megabyte member reads as a hang. This is
+                    // the common case for a CUDA package: thirty members, and
+                    // ten seconds between two of them.
+                    let alive = this.update(cx, |this, cx| {
+                        this.reading_bytes = Some(reading.bytes());
+                        cx.notify();
+                    });
+                    if alive.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                arranged_at = members.len();
+
+                // Cloned because the index owns what it arranges, and the
+                // accumulation has to survive for the next rebuild.
+                let listing = crate::archive::Listing {
+                    members: members.clone(),
+                    skipped: reading.skipped(),
+                };
+                let index = crate::archive::Index::build(listing);
+                let rows = crate::archive::rows_in(&index, &archive, &inside);
+
+                let alive = this.update(cx, |this, cx| {
+                    if let Some(fault) = reading.fault() {
+                        this.entries.clear();
+                        this.error = Some(fault);
+                        this.listing_moved += 1;
+                        this.directory_read += 1;
+                        this.loaded_dir = Some(this.dir.clone());
+                        this.reading_bytes = None;
+                        cx.notify();
+                        return false;
+                    }
+
+                    match rows {
+                        Some(rows) => {
+                            let mut entries = rows.entries;
+                            fs::sort_entries(&mut entries, sort, folders_first);
+                            this.entries = entries;
+                            this.error = None;
+                            if finished && rows.skipped > 0 {
+                                cx.emit(PaneEvent::Notice {
+                                    message: format!(
+                                        "{} in this archive could not be shown",
+                                        match rows.skipped {
+                                            1 => "1 name".to_string(),
+                                            n => format!(
+                                                "{} names",
+                                                crate::notifications::count(n as u64)
+                                            ),
+                                        }
+                                    ),
+                                    problem: false,
+                                });
+                            }
+                        }
+                        // No such directory. Only worth saying once the read is
+                        // whole: until then it may simply not have arrived.
+                        None if finished => {
+                            this.entries.clear();
+                            this.error = Some("that folder is not in this archive".to_string());
+                        }
+                        None => {}
+                    }
+
+                    // The rows are a different directory's now, so the
+                    // selection that was on the old ones means nothing. A
+                    // refresh of the same archive put its keys in
+                    // `pending_select`, and `restore_selection` below puts them
+                    // back once the listing is whole.
+                    if !cleared {
+                        this.clear_cursor();
+                        cleared = true;
+                    }
+                    this.listing_moved += 1;
+                    this.reading_bytes = (!finished).then(|| reading.bytes());
+
+                    if finished {
+                        // The tail a directory read runs too, once.
+                        this.directory_read += 1;
+                        if this.loaded_dir.as_ref() == Some(&this.dir) {
+                            this.reanchor_rename();
+                        } else {
+                            this.renaming = None;
+                        }
+                        this.loaded_dir = Some(this.dir.clone());
+                        this.restore_selection();
+                    }
+                    cx.notify();
+                    !finished
+                });
+
+                if !alive.unwrap_or(false) {
+                    break;
+                }
+            }
+        })
+    }
+
     fn restore_selection(&mut self) {
         // A set, not the Vec: this runs once per entry, so a linear scan makes
         // restoring a large selection quadratic: measured at 11 seconds for
@@ -1516,7 +1848,7 @@ impl DirPane {
             return;
         }
         for (ix, entry) in self.entries.iter().enumerate() {
-            if wanted.contains(&entry.path) {
+            if wanted.contains(entry.key()) {
                 self.selected.insert(ix);
             }
         }
@@ -1591,7 +1923,7 @@ impl DirPane {
     fn apply_sort(&mut self, cx: &mut Context<Self>) {
         cx.emit(PaneEvent::ViewChanged);
         if self.pending_select.is_empty() {
-            self.pending_select = self.selected_paths();
+            self.pending_select = self.selected_keys();
         }
         let sort = self.view.sort;
         let folders_first = self.view.folders_first;
@@ -1610,7 +1942,7 @@ impl DirPane {
             let entries = cx
                 .background_spawn(async move {
                     fs::sort_entries_by(&mut entries, sort, folders_first, |entry| {
-                        entry.size.or_else(|| sizes.get(&entry.path).copied())
+                        entry.size.or_else(|| sizes.get(entry.key()).copied())
                     });
                     entries
                 })
@@ -1639,7 +1971,7 @@ impl DirPane {
         cx.notify();
     }
 
-    pub fn navigate_to(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+    pub fn navigate_to(&mut self, dir: Location, cx: &mut Context<Self>) {
         if dir == self.dir {
             return;
         }
@@ -1648,20 +1980,20 @@ impl DirPane {
     }
 
     /// Change directory without touching history, the back/forward path.
-    fn load_dir_only(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+    fn load_dir_only(&mut self, dir: Location, cx: &mut Context<Self>) {
         self.dir = dir;
         self.reload(cx);
         cx.notify();
     }
 
     fn nav_back(&mut self, _: &NavBack, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(dir) = self.history.back().map(Path::to_path_buf) {
+        if let Some(dir) = self.history.back().cloned() {
             self.load_dir_only(dir, cx);
         }
     }
 
     fn nav_forward(&mut self, _: &NavForward, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(dir) = self.history.forward().map(Path::to_path_buf) {
+        if let Some(dir) = self.history.forward().cloned() {
             self.load_dir_only(dir, cx);
         }
     }
@@ -1678,7 +2010,9 @@ impl DirPane {
             return;
         };
         let name = entry.name.clone();
-        let entry_path = entry.path.clone();
+        // The anchor `reanchor_rename` looks the row back up by, so a key and
+        // not a path: it is only ever compared, never opened.
+        let entry_path = entry.key().to_path_buf();
         let selection = fs::stem_range(&name);
         let editor = cx.new(|cx| PathEditor::new_with_selection(name, selection, window, cx));
 
@@ -1740,23 +2074,28 @@ impl DirPane {
             .entries
             .get(ix)
             .ok_or_else(|| "the entry is gone".to_string())?;
+        // Nothing to rename: a row that is not a file on the disk is a member
+        // of an archive, and renaming one means rewriting the archive.
+        let path = entry
+            .on_disk()
+            .ok_or_else(|| "there is no file here to rename".to_string())?;
         let new_name = new_name.trim();
         if let Some(problem) = fs::name_problem(new_name) {
             return Err(problem.to_string());
         }
         if new_name == entry.name {
-            return Ok(entry.path.clone());
+            return Ok(path.to_path_buf());
         }
         // The entry's own directory, which is the pane's only when the listing
         // is a plain one: a search result lives somewhere below it, and joining
         // `self.dir` would move the file up to the search root as a side effect
         // of renaming it.
-        let target = entry
-            .path
+        let target = path
             .parent()
-            .unwrap_or(self.dir.as_path())
+            .or_else(|| self.dir.disk())
+            .unwrap_or(Path::new("/"))
             .join(new_name);
-        hoja_transfer::rename_no_replace(&entry.path, &target)
+        hoja_transfer::rename_no_replace(path, &target)
             .map(|()| target.clone())
             .map_err(|err| err.to_string())
     }
@@ -1847,7 +2186,12 @@ impl DirPane {
         self.clear_cursor();
         self.error = None;
 
-        let dir = self.dir.clone();
+        // The walker reads directories off the disk, so there is nothing for
+        // it to walk inside an archive. Filtering the rows already listed still
+        // works, and that is a different code path.
+        let Some(dir) = self.dir.disk().map(Path::to_path_buf) else {
+            return;
+        };
         let show_hidden = self.view.show_hidden;
         let spawn_query = query.clone();
 
@@ -1926,7 +2270,7 @@ impl DirPane {
         let Some(path) = self.renaming.as_ref().map(|r| r.path.clone()) else {
             return;
         };
-        match self.entries.iter().position(|entry| entry.path == path) {
+        match self.entries.iter().position(|entry| entry.key() == path) {
             Some(ix) => {
                 if let Some(renaming) = self.renaming.as_mut() {
                     renaming.ix = ix;
@@ -1951,7 +2295,7 @@ impl DirPane {
         // The walk belongs to the listing. Moving the selection re-reads the
         // buckets but never restarts them, which is what makes selecting a
         // folder free, the number is already there, or already coming.
-        let moved_directory = self.footer.dir != self.dir;
+        let moved_directory = self.footer.dir.as_ref() != Some(&self.dir);
         let reread = self.footer.read != self.directory_read || moved_directory;
         let relisted = self.footer.listing != self.listing_moved || reread;
         if reread {
@@ -1965,7 +2309,7 @@ impl DirPane {
             // directory and not below it, so a folder's size is only ever as
             // fresh as the moment it was measured; re-reading the directory is
             // the one honest cue there is that it might not be.
-            self.footer.dir = self.dir.clone();
+            self.footer.dir = Some(self.dir.clone());
             if moved_directory {
                 // Different paths entirely, so the old figures answer nothing
                 // and would only grow the map.
@@ -1999,14 +2343,22 @@ impl DirPane {
         // A search's rows come from directories this pane is not showing, and an
         // unreadable one has already said so in the body. Neither is worth a
         // walk.
+        //
+        // And only the folders that need one: a folder inside an archive
+        // already carries its exact total, and there is no path under it for
+        // the walker to read anyway. `on_disk` is what says so. Without it the
+        // walker would fail to `stat` each root, treat it as finished at zero,
+        // and every folder in the archive would print a confident `0 B` that
+        // nothing would ever correct.
         self.footer.roots = if self.searching() || self.error.is_some() {
             HashMap::new()
         } else {
             self.entries
                 .iter()
-                .filter(|entry| entry.is_dir)
+                .filter(|entry| entry.is_dir && entry.size.is_none())
+                .filter_map(|entry| entry.on_disk().map(Path::to_path_buf))
                 .enumerate()
-                .map(|(root, entry)| (entry.path.clone(), root))
+                .map(|(root, path)| (path, root))
                 .collect()
         };
         if !self.footer.roots.is_empty() {
@@ -2032,11 +2384,11 @@ impl DirPane {
     fn bucket(&self, entry_ix: usize) -> Option<(u64, bool)> {
         let entry = self.entries.get(entry_ix)?;
         // A figure that is already final, and immune to any re-sort.
-        if let Some(bytes) = self.footer.settled.get(&entry.path) {
+        if let Some(bytes) = self.footer.settled.get(entry.key()) {
             return Some((*bytes, true));
         }
         let walk = self.footer.walk.as_ref()?;
-        let root = *self.footer.roots.get(&entry.path)?;
+        let root = *self.footer.roots.get(entry.key())?;
         Some((walk.bytes(root), walk.settled(root)))
     }
 
@@ -2081,14 +2433,14 @@ impl DirPane {
         }
         self.footer.resorted = true;
 
-        self.pending_select = self.selected_paths();
+        self.pending_select = self.selected_keys();
         let sizes = std::mem::take(&mut self.footer.settled);
         let mut entries = std::mem::take(&mut self.entries);
         fs::sort_entries_by(
             &mut entries,
             self.view.sort,
             self.view.folders_first,
-            |entry| entry.size.or_else(|| sizes.get(&entry.path).copied()),
+            |entry| entry.size.or_else(|| sizes.get(entry.key()).copied()),
         );
         self.entries = entries;
         self.footer.settled = sizes;
@@ -2111,8 +2463,8 @@ impl DirPane {
             return false;
         };
         entry.is_dir
-            && !self.footer.settled.contains_key(&entry.path)
-            && self.footer.roots.contains_key(&entry.path)
+            && !self.footer.settled.contains_key(entry.key())
+            && self.footer.roots.contains_key(entry.key())
     }
 
     /// A folder's size for the Size column: only once it is final, so a cell
@@ -2243,8 +2595,39 @@ impl DirPane {
         })
     }
 
+    /// The footer line while an archive is being read, which for a tarball can
+    /// be the best part of a minute.
+    ///
+    /// Says the same two things the settled line does, so the numbers do not
+    /// jump around when it lands: what is here, and how much of it. The
+    /// ellipsis marks them as still climbing, which is the shape the job strip
+    /// already uses for a total it does not have yet.
+    /// The line the footer actually shows.
+    ///
+    /// Resolved in one place because the probe has to report what a person is
+    /// reading, and `footer.text` is only the settled form of it: during a
+    /// search or an archive read the line on screen is a different one, and a
+    /// test asserting on the stale text would be asserting on nothing.
+    pub fn footer_line(&self) -> String {
+        self.search_status()
+            .or_else(|| self.reading_status())
+            .unwrap_or_else(|| self.footer.text.clone())
+    }
+
+    fn reading_status(&self) -> Option<String> {
+        let bytes = self.reading_bytes?;
+        Some(format!(
+            "reading… {} · {}",
+            match self.entries.len() {
+                1 => "1 item".to_string(),
+                n => format!("{} items", crate::notifications::count(n as u64)),
+            },
+            fs::format_size(bytes)
+        ))
+    }
+
     fn start_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let editor = cx.new(|cx| PathEditor::new(self.dir.display().to_string(), window, cx));
+        let editor = cx.new(|cx| PathEditor::new(self.dir.to_string(), window, cx));
 
         cx.subscribe_in(
             &editor,
@@ -2255,7 +2638,7 @@ impl DirPane {
                         Some(dir) => {
                             this.path_editor = None;
                             window.focus(&this.focus_handle, cx);
-                            this.navigate_to(dir, cx);
+                            this.navigate_to(Location::Disk(dir), cx);
                         }
                         None => {
                             // Not a directory: flag the field, keep editing.
@@ -2296,19 +2679,21 @@ impl DirPane {
         let absolute = if expanded.is_absolute() {
             expanded
         } else {
-            self.dir.join(expanded)
+            // Relative to a real directory only. Inside an archive there is
+            // nothing to resolve against, so only a full path gets you out.
+            self.dir.disk()?.join(expanded)
         };
         absolute.is_dir().then_some(absolute)
     }
 
     fn go_home(&mut self, _: &GoHome, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-            self.navigate_to(home, cx);
+            self.navigate_to(Location::Disk(home), cx);
         }
     }
 
     fn go_up(&mut self, _: &GoUp, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(parent) = self.dir.parent().map(Path::to_path_buf) {
+        if let Some(parent) = self.dir.parent() {
             self.navigate_to(parent, cx);
         }
     }
@@ -2328,9 +2713,37 @@ impl DirPane {
         let Some(entry) = self.entries.get(ix) else {
             return;
         };
-        let path = entry.path.clone();
+        // Inside an archive already: a folder is somewhere to go, a file is
+        // not. `xdg-open` needs a path and there is none, and extracting to a
+        // temporary copy would quietly throw away anything written to it, which
+        // is the trap every archive tool has shipped and regretted.
+        if entry.member().is_some() {
+            if entry.is_dir {
+                let name = entry.name.clone();
+                self.navigate_to(self.dir.join(name), cx);
+            } else {
+                cx.emit(PaneEvent::Notice {
+                    message: "Extract it first to open it".to_string(),
+                    problem: false,
+                });
+            }
+            return;
+        }
+
+        // Both branches below need a real path: one to list, one to hand to
+        // the desktop.
+        let Some(path) = entry.on_disk().map(Path::to_path_buf) else {
+            return;
+        };
         if entry.is_dir {
-            self.navigate_to(path, cx);
+            self.navigate_to(Location::Disk(path), cx);
+            return;
+        }
+        // An archive is a folder as far as this is concerned. Only `.zip`, and
+        // deliberately not the many document formats that are zip files
+        // underneath: see `archive::is_archive`.
+        if crate::archive::is_archive(&path) {
+            self.navigate_to(Location::in_archive(path), cx);
             return;
         }
         if let Err(err) = crate::opener::open(&path) {
@@ -2338,7 +2751,10 @@ impl DirPane {
             // silently does nothing reads as the click not registering, and
             // there is no other sign that anything was attempted.
             let name = entry.name.clone();
-            cx.emit(PaneEvent::Notice(format!("Could not open {name}: {err}")));
+            cx.emit(PaneEvent::Notice {
+                message: format!("Could not open {name}: {err}"),
+                problem: true,
+            });
         }
     }
 
@@ -2484,7 +2900,7 @@ impl DirPane {
             .child(nav_button(
                 "nav-home",
                 "icons/file_icons/house.svg",
-                std::env::var_os("HOME").map(PathBuf::from).as_deref() != Some(&self.dir),
+                std::env::var_os("HOME").map(PathBuf::from).as_deref() != self.dir.disk(),
                 Box::new(GoHome),
                 cx,
             ))
@@ -2500,7 +2916,7 @@ impl DirPane {
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.start_edit(window, cx);
                     }))
-                    .child(self.dir.display().to_string())
+                    .child(self.dir.to_string())
                     .into_any_element(),
             })
             .child(
@@ -2644,7 +3060,10 @@ impl DirPane {
         // acts on. It is usually also selected, so it needs its own mark.
         let is_lead = self.cursor_ix == Some(ix);
         let is_dir = entry.is_dir;
-        let path = entry.path.clone();
+        // Dropping onto this row and dragging it away both end in a real file
+        // operation, so both hang off this rather than off the key. `None`
+        // means the row is a member of an archive, and neither is offered.
+        let on_disk = entry.on_disk().map(Path::to_path_buf);
 
         let colors = cx.theme().colors();
         // Deliberately one content colour throughout: names, secondary columns, and
@@ -2686,9 +3105,9 @@ impl DirPane {
         // multiple extensions (`Component.stories.tsx`), hidden files (`.gitignore`),
         // bare extension, then the `"default"` key.
         let icon_path = if is_dir {
-            FileIcons::get_folder_icon(false, &entry.path, cx)
+            FileIcons::get_folder_icon(false, entry.key(), cx)
         } else {
-            FileIcons::get_icon(&entry.path, cx)
+            FileIcons::get_icon(entry.key(), cx)
         };
 
         // Cells line up with the header by using the same widths and the same
@@ -2765,13 +3184,22 @@ impl DirPane {
 
         // Dragging a selected row takes the whole selection; dragging an
         // unselected one takes only itself, without disturbing the selection.
-        let dragged = DraggedPaths {
-            resolved: std::cell::OnceCell::new(),
-            pane: cx.entity(),
-            anchor: entry.path.clone(),
-            whole_selection: selected,
-            source_dir: self.dir.clone(),
-        };
+        //
+        // `None` for a row with no real path, and the drag is then never
+        // offered at all. Gating here rather than at the drop is deliberate: a
+        // drag that starts and can land nowhere is worse than one that never
+        // starts, and this payload can leave the window for another
+        // application, which would otherwise be handed paths to nothing.
+        let dragged = on_disk
+            .clone()
+            .zip(self.dir.disk().map(Path::to_path_buf))
+            .map(|(anchor, source_dir)| DraggedPaths {
+                resolved: std::cell::OnceCell::new(),
+                pane: cx.entity(),
+                anchor,
+                whole_selection: selected,
+                source_dir,
+            });
         let drag_label: SharedString = if selected {
             match self.selected.len() {
                 1 => entry.name.clone().into(),
@@ -2838,8 +3266,9 @@ impl DirPane {
         cells
             .into_iter()
             .fold(row, |row, spec| row.child(spacer()).child(cell(spec)))
-            .when(is_dir, |row| {
-                let target = path.clone();
+            // A folder is a place to drop things only when it is a folder on
+            // the disk. There is nowhere to put a file inside an archive.
+            .when_some(on_disk.clone().filter(|_| is_dir), |row, target| {
                 let highlight = colors.drop_target_background;
                 row.can_drop({
                     let target = target.clone();
@@ -2866,24 +3295,29 @@ impl DirPane {
                     },
                 ))
             })
-            // Also where the payload settles what it carries: see `resolve`.
-            .on_drag(dragged, move |dragged: &DraggedPaths, _, _, cx| {
-                dragged.resolve(cx);
-                cx.new(|_| DragPreview {
-                    label: drag_label.clone(),
+            .when_some(dragged, |row, dragged| {
+                // Also where the payload settles what it carries: see `resolve`.
+                row.on_drag(dragged, move |dragged: &DraggedPaths, _, _, cx| {
+                    dragged.resolve(cx);
+                    cx.new(|_| DragPreview {
+                        label: drag_label.clone(),
+                    })
                 })
-            })
-            // Promotes the same drag to a native one when it leaves the window.
-            // The resolver runs once, at promotion, never per frame, which is
-            // why the is_dir probes belong here and not in the payload.
-            .external_drag_payload(|dragged: &DraggedPaths, _, _: &mut App| {
-                Some(gpui::ExternalDragPayload::Files(gpui::FileDragPaths::new(
-                    dragged
-                        .paths()
-                        .into_iter()
-                        .map(|path| (path.is_dir(), path))
-                        .map(|(is_dir, path)| (path, is_dir)),
-                )))
+                // Promotes the same drag to a native one when it leaves the
+                // window. The resolver runs once, at promotion, never per
+                // frame, which is why the is_dir probes belong here and not in
+                // the payload.
+                .external_drag_payload(
+                    |dragged: &DraggedPaths, _, _: &mut App| {
+                        Some(gpui::ExternalDragPayload::Files(gpui::FileDragPaths::new(
+                            dragged
+                                .paths()
+                                .into_iter()
+                                .map(|path| (path.is_dir(), path))
+                                .map(|(is_dir, path)| (path, is_dir)),
+                        )))
+                    },
+                )
             })
             .on_mouse_down(
                 MouseButton::Right,
@@ -2945,15 +3379,12 @@ impl DirPane {
             .when_some(crate::theming::numeric_font(cx), |el, family| {
                 el.font_family(family)
             })
-            .child(
-                div().truncate().child(
-                    // A search is the pane's loudest running work, and while one
-                    // is on the rows are not this directory's, so nothing the
-                    // footer would otherwise say about them is true.
-                    self.search_status()
-                        .unwrap_or_else(|| self.footer.text.clone()),
-                ),
-            )
+            .child(div().truncate().child(
+                // A search is the pane's loudest running work, and while one
+                // is on the rows are not this directory's, so nothing the
+                // footer would otherwise say about them is true.
+                self.footer_line(),
+            ))
     }
 
     fn render_body(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -2964,6 +3395,20 @@ impl DirPane {
                 .text_sm()
                 .text_color(cx.theme().status().error)
                 .child(error.clone())
+                .into_any_element();
+        }
+
+        if self.entries.is_empty() && self.reading_bytes.is_some() {
+            // An archive whose first rows have not arrived. Not "Empty": a
+            // tarball takes as long to list as it takes to decompress, and the
+            // largest here is a minute, which is a long time to be told there
+            // is nothing in it.
+            return div()
+                .flex_1()
+                .p_4()
+                .text_sm()
+                .text_color(cx.theme().colors().text_muted)
+                .child("Reading…")
                 .into_any_element();
         }
 
@@ -3014,6 +3459,19 @@ impl DirPane {
     }
 }
 
+impl Drop for DirPane {
+    /// Stop whatever is being read for this pane.
+    ///
+    /// Dropping the task stops the answer being wanted; it does not stop a
+    /// thread part-way through decompressing a gigabyte. Closing a pane while
+    /// one is running would otherwise leave it running to the end.
+    fn drop(&mut self) {
+        if let Some(reading) = &self.reading {
+            reading.stop();
+        }
+    }
+}
+
 impl Focusable for DirPane {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -3028,7 +3486,9 @@ impl Render for DirPane {
         // after every one of them, and cannot be forgotten by the next one.
         self.sync_footer(cx);
 
-        let here = self.dir.clone();
+        // `None` inside an archive, and the pane then takes no drops at all:
+        // there is nowhere in it to put a file.
+        let here = self.dir.disk().map(Path::to_path_buf);
         let drop_border = cx.theme().colors().drop_target_background;
 
         div()
@@ -3037,25 +3497,29 @@ impl Render for DirPane {
             // The pane body is the fallback target: anything not dropped on a
             // folder row lands in the directory being shown. A folder row that
             // accepts consumes the drop first, so the two never both fire.
-            .can_drop({
-                let here = here.clone();
-                move |dragged, _, _| drop_allowed(dragged, &here)
+            .when_some(here, |pane, here| {
+                pane.can_drop({
+                    let here = here.clone();
+                    move |dragged, _, _| drop_allowed(dragged, &here)
+                })
+                // A border rather than a fill: the whole pane going solid would
+                // hide the listing you are aiming at.
+                .drag_over::<DraggedPaths>(move |style, _, _, _| style.border_color(drop_border))
+                .drag_over::<ExternalPaths>(move |style, _, _, _| style.border_color(drop_border))
+                .on_drop(cx.listener({
+                    let here = here.clone();
+                    move |this, dragged: &DraggedPaths, window, cx| {
+                        let sources = dragged.paths();
+                        let source_dir = dragged.source_dir.clone();
+                        this.accept_drop(sources, Some(&source_dir), here.clone(), window, cx);
+                    }
+                }))
+                .on_drop(cx.listener(
+                    move |this, paths: &ExternalPaths, window, cx| {
+                        this.accept_drop(paths.paths().to_vec(), None, here.clone(), window, cx);
+                    },
+                ))
             })
-            // A border rather than a fill: the whole pane going solid would hide
-            // the listing you are aiming at.
-            .drag_over::<DraggedPaths>(move |style, _, _, _| style.border_color(drop_border))
-            .drag_over::<ExternalPaths>(move |style, _, _, _| style.border_color(drop_border))
-            .on_drop(cx.listener({
-                let here = here.clone();
-                move |this, dragged: &DraggedPaths, window, cx| {
-                    let sources = dragged.paths();
-                    let source_dir = dragged.source_dir.clone();
-                    this.accept_drop(sources, Some(&source_dir), here.clone(), window, cx);
-                }
-            }))
-            .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
-                this.accept_drop(paths.paths().to_vec(), None, here.clone(), window, cx);
-            }))
             .on_action(cx.listener(Self::go_up))
             .on_action(cx.listener(Self::open_selected))
             .on_action(cx.listener(Self::nav_back))

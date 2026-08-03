@@ -35,7 +35,9 @@ pub const MAX_ROWS: usize = 200;
 /// A pane, as a test sees it.
 #[derive(Serialize, PartialEq, Eq)]
 pub struct PaneProbe {
-    pub dir: PathBuf,
+    /// Serialized as the one line the address bar shows, which is what a test
+    /// asserts on and what a person would type to get back here.
+    pub dir: crate::location::Location,
     pub active: bool,
     /// Every row, however many are carried below.
     pub row_count: usize,
@@ -53,6 +55,11 @@ pub struct PaneProbe {
     /// Rows whose folder size the walk has not finished, by index.
     pub counting: Vec<usize>,
     pub searching: bool,
+    /// Whether rows are still arriving.
+    ///
+    /// Without it a test cannot tell "still reading" from "that is all there
+    /// is", which is exactly the distinction a progressive listing creates.
+    pub reading: bool,
     pub error: Option<String>,
 }
 

@@ -1,7 +1,27 @@
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
+
+/// Where a row came from, when it did not come from the filesystem.
+///
+/// The archive is shared by every row of one listing, so this costs a pointer
+/// and an index per row rather than a path.
+// Read once a listing can be built from an archive, which is the slice after
+// this one. Until then nothing constructs a `Some`, which is what makes this
+// refactor a no-op rather than a change.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct Member {
+    pub archive: Arc<Path>,
+    /// Into the archive's own listing, which is what extraction asks for.
+    ///
+    /// `None` for a directory the archive never named. Three of twelve real zip
+    /// files hold no directory entries at all, so their folders are worked out
+    /// from the names of the files inside them and belong to no member.
+    pub index: Option<usize>,
+}
 
 /// One row in a directory listing.
 ///
@@ -15,7 +35,17 @@ pub struct DirEntry {
     /// entry's own name, because rename, git colouring, type-ahead, and
     /// selection all key on it.
     pub relative: Option<String>,
-    pub path: PathBuf,
+    /// Private, and reached only through `key` or `on_disk`.
+    ///
+    /// A row inside an archive has no path a syscall can use, but it still
+    /// needs something unique to key a selection by and something with an
+    /// extension on the end to pick an icon and a Kind from. Those are the same
+    /// value for a real file and different values for a member, and the whole
+    /// point of hiding the field is that the compiler makes every reader say
+    /// which of the two it meant.
+    path: PathBuf,
+    /// `None` when this row is a real file on the real filesystem.
+    origin: Option<Member>,
     pub is_dir: bool,
     /// `None` for directories and for entries whose metadata could not be read.
     pub size: Option<u64>,
@@ -32,6 +62,63 @@ pub struct DirEntry {
 }
 
 impl DirEntry {
+    /// Identity, sort key, extension, icon.
+    ///
+    /// Unique across a listing and never handed to the filesystem. For a real
+    /// file it is the path; for a member it is the archive's path with the
+    /// member's path on the end, which is both unique and still ends in the
+    /// extension the icon and the Kind column read.
+    pub fn key(&self) -> &Path {
+        &self.path
+    }
+
+    /// The real path, and `None` when there is not one.
+    ///
+    /// Every caller that opens, renames, trashes, walks, or hands this to
+    /// another process wants this one. Returning an `Option` is the point:
+    /// there is no path inside an archive, and the alternative is a path that
+    /// looks fine and silently means nothing.
+    pub fn on_disk(&self) -> Option<&Path> {
+        self.origin.is_none().then_some(self.path.as_path())
+    }
+
+    /// The archive this row lives in, and which member it is.
+    // Called by extraction, which is a later slice.
+    #[allow(dead_code)]
+    pub fn member(&self) -> Option<&Member> {
+        self.origin.as_ref()
+    }
+
+    /// A row for something inside an archive.
+    ///
+    /// `key` is the archive's own path with the member's path on the end, which
+    /// is unique across the listing and still ends in the extension the icon and
+    /// the Kind column read. `on_disk` returns `None` for it, which is what
+    /// keeps it away from every syscall.
+    pub fn in_archive(
+        archive: &Arc<Path>,
+        inside: &Path,
+        name: &str,
+        is_dir: bool,
+        index: Option<usize>,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            relative: None,
+            path: archive.join(inside).join(name),
+            origin: Some(Member {
+                archive: Arc::clone(archive),
+                index,
+            }),
+            is_dir,
+            size: None,
+            modified: None,
+            mode: None,
+            uid: None,
+            gid: None,
+        }
+    }
+
     pub(crate) fn from_std(entry: &std::fs::DirEntry) -> Self {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -63,7 +150,32 @@ impl DirEntry {
             uid: metadata.as_ref().map(MetadataExt::uid),
             gid: metadata.as_ref().map(MetadataExt::gid),
             path,
+            origin: None,
             is_dir,
+        }
+    }
+
+    /// A row for a real file whose facts the caller already has.
+    ///
+    /// Only the tests below want this: `from_std` is what reads the facts off
+    /// the disk, and the archive listing has an origin to fill in as well.
+    #[cfg(test)]
+    pub fn on_path(path: PathBuf, is_dir: bool) -> Self {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Self {
+            name,
+            relative: None,
+            path,
+            origin: None,
+            is_dir,
+            size: None,
+            modified: None,
+            mode: None,
+            uid: None,
+            gid: None,
         }
     }
 
@@ -206,7 +318,7 @@ pub fn sort_entries_by(
 
 fn extension_of(entry: &DirEntry) -> &str {
     entry
-        .path
+        .key()
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
@@ -719,10 +831,15 @@ pub fn summarise_dir(entries: &[DirEntry]) -> Summary {
         trail: Vec::new(),
         sized: true,
         known: entries.iter().filter_map(|entry| entry.size).sum(),
+        // Only the folders whose size is not already known. On the disk that is
+        // all of them, because a directory's size is what a walk is for. In an
+        // archive it is none of them: the listing carried an exact total for
+        // every folder, so there is nothing to wait on and the line is final
+        // the moment it is drawn.
         rows: entries
             .iter()
             .enumerate()
-            .filter(|(_, entry)| entry.is_dir)
+            .filter(|(_, entry)| entry.is_dir && entry.size.is_none())
             .map(|(ix, _)| ix)
             .collect(),
     }
@@ -778,10 +895,12 @@ pub fn summarise_selection(entries: &[DirEntry], selected: &Selection) -> Summar
         let Some(entry) = entries.get(ix) else {
             continue;
         };
-        if entry.is_dir {
-            summary.rows.push(ix);
-        } else {
-            summary.known += entry.size.unwrap_or(0);
+        match (entry.is_dir, entry.size) {
+            // A folder that has to be walked for.
+            (true, None) => summary.rows.push(ix),
+            // Anything that already knows: every file, and every folder in an
+            // archive.
+            (_, size) => summary.known += size.unwrap_or(0),
         }
     }
     summary
@@ -819,17 +938,9 @@ mod tests {
     }
 
     fn row(name: &str, is_dir: bool, size: Option<u64>) -> DirEntry {
-        DirEntry {
-            name: name.to_string(),
-            relative: None,
-            path: PathBuf::from("/tmp/fixture").join(name),
-            is_dir,
-            size,
-            modified: None,
-            mode: None,
-            uid: None,
-            gid: None,
-        }
+        let mut entry = DirEntry::on_path(PathBuf::from("/tmp/fixture").join(name), is_dir);
+        entry.size = size;
+        entry
     }
 
     #[test]
@@ -1152,17 +1263,10 @@ mod tests {
     }
 
     fn entry(name: &str, is_dir: bool, size: u64, secs: u64) -> DirEntry {
-        DirEntry {
-            relative: None,
-            name: name.to_string(),
-            path: PathBuf::from(format!("/x/{name}")),
-            is_dir,
-            size: (!is_dir).then_some(size),
-            modified: Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)),
-            mode: None,
-            uid: None,
-            gid: None,
-        }
+        let mut entry = DirEntry::on_path(PathBuf::from(format!("/x/{name}")), is_dir);
+        entry.size = (!is_dir).then_some(size);
+        entry.modified = Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs));
+        entry
     }
 
     fn names(entries: &[DirEntry]) -> Vec<&str> {
@@ -1416,16 +1520,13 @@ mod bench {
     #[ignore = "timing measurement, run explicitly"]
     fn time_sort_of_100k_entries() {
         let mut entries: Vec<DirEntry> = (0..100_000)
-            .map(|i| DirEntry {
-                relative: None,
-                name: format!("file{i}.txt"),
-                path: PathBuf::from(format!("/tmp/manyfiles/file{i}.txt")),
-                is_dir: false,
-                size: Some(i as u64 % 9973),
-                modified: Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(i as u64)),
-                mode: None,
-                uid: None,
-                gid: None,
+            .map(|i| {
+                let mut entry =
+                    DirEntry::on_path(PathBuf::from(format!("/tmp/manyfiles/file{i}.txt")), false);
+                entry.size = Some(i as u64 % 9973);
+                entry.modified =
+                    Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(i as u64));
+                entry
             })
             .collect();
 

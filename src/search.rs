@@ -129,9 +129,9 @@ pub fn spawn(root: PathBuf, query: String, show_hidden: bool) -> Search {
                         // a label, so it goes beside the name rather than over
                         // it: rename and git colouring key on `name`.
                         item.relative = Some(
-                            item.path
+                            item.key()
                                 .strip_prefix(&root)
-                                .unwrap_or(&item.path)
+                                .unwrap_or(item.key())
                                 .display()
                                 .to_string(),
                         );

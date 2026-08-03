@@ -21,6 +21,7 @@ use crate::failure_report::{self, Failure, FailureReport};
 use crate::fs;
 use crate::fs::ViewSettings;
 use crate::icon::Icon;
+use crate::location::Location;
 use crate::notifications;
 use crate::pane_group::{PaneGroup, SplitDirection};
 use crate::place_finder::{self, PlaceEvent, PlaceFinder};
@@ -110,6 +111,24 @@ struct PendingConflict {
     reply: std::sync::mpsc::Sender<ConflictDecision>,
 }
 
+/// What a copy or a cut put away.
+///
+/// Two kinds because members of an archive are not paths and cannot be made
+/// into any: nothing outside hoja can act on them, so unlike a set of files
+/// they are never mirrored to the system clipboard.
+#[derive(Debug, Clone)]
+enum Stash {
+    Paths(ClipboardSet),
+    Members {
+        archive: PathBuf,
+        /// The directory inside the archive they were selected from, stripped
+        /// on the way out so that copying `ttf/sub` lands `sub`.
+        inside: PathBuf,
+        /// Member paths, files and folders alike.
+        roots: Vec<String>,
+    },
+}
+
 /// A running or finished transfer job as the UI tracks it.
 struct JobView {
     handle: JobHandle,
@@ -117,6 +136,9 @@ struct JobView {
     dest_dir: PathBuf,
     /// Source parent dirs, refreshed after moves.
     src_parents: Vec<PathBuf>,
+    /// A directory this job's sources were put in on its behalf, removed once
+    /// it is done with them. Only an extraction has one: see `extract_into`.
+    staging: Option<PathBuf>,
     done: Option<Outcome>,
     /// How many files failed, which is `failures.len()` until the cap.
     errors: usize,
@@ -316,7 +338,7 @@ pub struct Workspace {
     /// Internal file clipboard, the source of truth for in-app paste. The
     /// system clipboard is mirrored on write and consulted on read only to
     /// interoperate with other applications.
-    clipboard: Option<ClipboardSet>,
+    clipboard: Option<Stash>,
     jobs: Vec<JobView>,
     /// Deletions, newest last. Each entry is one `Delete` press, so undo
     /// restores a multi-selection in one go.
@@ -356,7 +378,7 @@ impl Workspace {
         let view = config::initial_view(&settings, &state, config::newer());
         let widths = state.column_widths.clone();
         let pane = cx.new(|cx| {
-            let mut pane = DirPane::new(start_dir, view, window, cx);
+            let mut pane = DirPane::new(Location::Disk(start_dir), view, window, cx);
             pane.set_column_widths(&widths);
             pane
         });
@@ -424,8 +446,13 @@ impl Workspace {
             PaneEvent::Focus => this.set_active_pane(pane, cx),
             PaneEvent::Remove => this.remove_pane(&pane.clone(), window, cx),
             PaneEvent::ViewChanged => this.remember_view(&pane.clone(), cx),
-            PaneEvent::Notice(message) => {
-                this.set_notice(Some(Notice::Problem(message.clone())), cx)
+            PaneEvent::Notice { message, problem } => {
+                let notice = if *problem {
+                    Notice::Problem(message.clone())
+                } else {
+                    Notice::Info(message.clone())
+                };
+                this.set_notice(Some(notice), cx)
             }
             PaneEvent::Transfer { op, sources, dest } => {
                 this.spawn_transfer(*op, sources.clone(), dest.clone(), window, cx)
@@ -454,7 +481,7 @@ impl Workspace {
     /// Create a pane starting in `dir`, register it, and focus it.
     fn add_pane(
         &mut self,
-        dir: PathBuf,
+        dir: Location,
         view: ViewSettings,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -476,7 +503,7 @@ impl Workspace {
     fn split(&mut self, direction: SplitDirection, window: &mut Window, cx: &mut Context<Self>) {
         // The new pane inherits the source pane's directory, so a split is a cheap way
         // to get a second view of where you already are.
-        let dir = self.active_pane.read(cx).dir().to_path_buf();
+        let dir = self.active_pane.read(cx).location().clone();
         // Copied at construction, so the new pane reads the directory once.
         let view = self.active_pane.read(cx).view_settings();
         let source = self.active_pane.clone();
@@ -533,13 +560,48 @@ impl Workspace {
     // ---- clipboard + jobs -------------------------------------------------
 
     fn stash_selection(&mut self, cut: bool, cx: &mut Context<Self>) {
-        let paths = self.active_pane.read(cx).selected_paths();
+        // Inside an archive there are no paths, and a cut is a rewrite of the
+        // archive rather than a copy out of it. Copying is offered and cutting
+        // is not, which is the honest pair: nothing here writes to an archive.
+        if let Some((archive, inside, roots)) = self.active_pane.read(cx).selected_in_archive() {
+            if roots.is_empty() {
+                return;
+            }
+            if cut {
+                self.set_notice(
+                    Some(Notice::Problem(
+                        "Nothing can be moved out of an archive, only copied".to_string(),
+                    )),
+                    cx,
+                );
+                return;
+            }
+            // Not mirrored to the system clipboard: `wl-copy` publishes
+            // `file://` URIs, and there is no file for another application to
+            // open at the other end of one of these.
+            self.clipboard = Some(Stash::Members {
+                archive,
+                inside,
+                roots,
+            });
+            return;
+        }
+
+        // Real paths, because this ends in `wl-copy` publishing `file://` URIs
+        // to every other application on the desktop.
+        let Some(paths) = self.active_pane.read(cx).selected_on_disk() else {
+            self.set_notice(
+                Some(Notice::Problem("There is no file here to copy".to_string())),
+                cx,
+            );
+            return;
+        };
         if paths.is_empty() {
             return;
         }
         let set = ClipboardSet { paths, cut };
         clipboard::mirror_to_system(&set);
-        self.clipboard = Some(set);
+        self.clipboard = Some(Stash::Paths(set));
     }
 
     fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
@@ -551,8 +613,32 @@ impl Workspace {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        let dest_dir = self.active_pane.read(cx).dir().to_path_buf();
-        let internal = self.clipboard.clone();
+        // The transfer engine writes into a real directory, and there is not
+        // one here to write into.
+        let Some(dest_dir) = self.active_pane.read(cx).disk_dir().map(Path::to_path_buf) else {
+            self.set_notice(
+                Some(Notice::Problem(
+                    "There is nowhere here to paste into".to_string(),
+                )),
+                cx,
+            );
+            return;
+        };
+        // Members of an archive were never on the system clipboard, so there is
+        // nothing to consult and no other application to lose a race with.
+        if let Some(Stash::Members {
+            archive,
+            inside,
+            roots,
+        }) = self.clipboard.clone()
+        {
+            self.extract_into(archive, inside, roots, dest_dir, window, cx);
+            return;
+        }
+        let internal = match self.clipboard.clone() {
+            Some(Stash::Paths(set)) => Some(set),
+            _ => None,
+        };
 
         // The external read shells out to wl-paste, which blocks on the current
         // clipboard owner, so it runs on the background executor. External
@@ -591,11 +677,120 @@ impl Workspace {
         task.detach();
     }
 
+    /// Copy things out of an archive into `dest_dir`.
+    ///
+    /// Two steps, deliberately. The members are extracted into a hidden
+    /// directory **inside the destination**, and the results are then handed to
+    /// the transfer engine as a move. Being on the destination's own filesystem
+    /// by construction, that move is a rename per item rather than a second
+    /// copy, and it buys the whole of what the engine already does well: the
+    /// conflict dialog, keep-both naming, the progress strip, the failure
+    /// report and cancellation. Extracting straight into the destination would
+    /// have meant writing all of that again, worse.
+    fn extract_into(
+        &mut self,
+        archive: PathBuf,
+        inside: PathBuf,
+        roots: Vec<String>,
+        dest_dir: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Inside the destination, so the move at the end is a rename, and
+        // named the way the engine names a file it is part-way through
+        // writing: `is_partial_name` already keeps those out of every listing,
+        // and a staging directory is exactly that sort of thing.
+        let temp = hoja_transfer::partial_path(&dest_dir.join("extract"));
+        let label = match roots.len() {
+            1 => "1 item".to_string(),
+            n => format!("{} items", notifications::count(n as u64)),
+        };
+        self.set_notice(Some(Notice::Info(format!("Extracting {label}…"))), cx);
+
+        let cancel = crate::archive::Cancel::new();
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let out = temp.clone();
+            let extracted = cx
+                .background_spawn(async move {
+                    std::fs::create_dir(&out)?;
+                    let failures = crate::archive::extract(
+                        &archive,
+                        &inside,
+                        &roots,
+                        &out,
+                        &crate::archive::Progress::default(),
+                        &cancel,
+                    )?;
+                    // What actually landed, which is what the engine is given.
+                    // Reading the directory rather than deriving it from the
+                    // selection: a member that failed left nothing behind, and
+                    // handing the engine a path to nothing would turn one
+                    // failure into two.
+                    let sources: Vec<PathBuf> = std::fs::read_dir(&out)?
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.path())
+                        .collect();
+                    anyhow::Ok((sources, failures))
+                })
+                .await;
+
+            let _ = this.update_in(cx, |this, window, cx| match extracted {
+                Ok((sources, failures)) => {
+                    if !failures.is_empty() {
+                        this.set_notice(
+                            Some(Notice::Problem(format!(
+                                "{} could not be extracted",
+                                match failures.len() {
+                                    1 => "1 file".to_string(),
+                                    n => format!("{} files", notifications::count(n as u64)),
+                                }
+                            ))),
+                            cx,
+                        );
+                    } else {
+                        this.set_notice(None, cx);
+                    }
+                    if sources.is_empty() {
+                        let _ = std::fs::remove_dir_all(&temp);
+                        return;
+                    }
+                    this.spawn_transfer_from(
+                        Operation::Move,
+                        sources,
+                        dest_dir,
+                        Some(temp),
+                        window,
+                        cx,
+                    );
+                }
+                Err(err) => {
+                    let _ = std::fs::remove_dir_all(&temp);
+                    this.set_notice(Some(Notice::Problem(err.to_string())), cx);
+                }
+            });
+        });
+        task.detach();
+    }
+
     fn spawn_transfer(
         &mut self,
         op: Operation,
         sources: Vec<PathBuf>,
         dest_dir: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.spawn_transfer_from(op, sources, dest_dir, None, window, cx);
+    }
+
+    /// `staging` is a directory this job's sources were put in on its behalf,
+    /// removed once the job is done with them. Only an extraction has one.
+    fn spawn_transfer_from(
+        &mut self,
+        op: Operation,
+        sources: Vec<PathBuf>,
+        dest_dir: PathBuf,
+        staging: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -616,6 +811,7 @@ impl Workspace {
                     handle,
                     dest_dir,
                     src_parents,
+                    staging,
                     done: None,
                     errors: 0,
                     failures: Vec::new(),
@@ -629,7 +825,13 @@ impl Workspace {
             }
             // Drag-and-drop greys an illegal target, but paste has no such
             // pre-check, so this is the only way the refusal is ever seen.
-            Err(err) => self.set_notice(Some(Notice::Problem(err.to_string())), cx),
+            Err(err) => {
+                // Nothing is going to move out of it now.
+                if let Some(staging) = &staging {
+                    let _ = std::fs::remove_dir_all(staging);
+                }
+                self.set_notice(Some(Notice::Problem(err.to_string())), cx)
+            }
         }
     }
 
@@ -697,6 +899,13 @@ impl Workspace {
                     JobEvent::Done(summary) => {
                         job.done = Some(summary.outcome);
                         finished_jobs.push(job_id);
+                        // A move empties it, but a cancellation or a refused
+                        // conflict can leave things behind, and none of them
+                        // belong to anyone now. `remove_dir_all` rather than
+                        // `remove_dir` for exactly that.
+                        if let Some(staging) = job.staging.take() {
+                            let _ = std::fs::remove_dir_all(staging);
+                        }
                         // The summary is the authoritative list, it holds
                         // failures raised before the strip started polling, and
                         // the walk's own, which arrive as no `FileError` at
@@ -809,7 +1018,16 @@ impl Workspace {
     }
 
     fn new_folder(&mut self, _: &NewFolder, _window: &mut Window, cx: &mut Context<Self>) {
-        let dir = self.active_pane.read(cx).dir().to_path_buf();
+        // `create_dir` needs somewhere real to create it.
+        let Some(dir) = self.active_pane.read(cx).disk_dir().map(Path::to_path_buf) else {
+            self.set_notice(
+                Some(Notice::Problem(
+                    "There is nowhere here to make a folder".to_string(),
+                )),
+                cx,
+            );
+            return;
+        };
         let mut candidate = dir.join("New Folder");
         let mut n = 1;
         while candidate.exists() {
@@ -828,7 +1046,17 @@ impl Workspace {
     /// There is deliberately no confirmation dialog: undo is the safety net, and
     /// a dialog that is always dismissed protects nobody.
     fn delete(&mut self, _: &Delete, cx: &mut Context<Self>) {
-        let paths = self.active_pane.read(cx).selected_paths();
+        // `trash` moves a real file into a real trash directory, so a row that
+        // is not one has nothing to move.
+        let Some(paths) = self.active_pane.read(cx).selected_on_disk() else {
+            self.set_notice(
+                Some(Notice::Problem(
+                    "There is no file here to delete".to_string(),
+                )),
+                cx,
+            );
+            return;
+        };
         if paths.is_empty() {
             return;
         }
@@ -939,7 +1167,11 @@ impl Workspace {
     /// Re-list every pane showing one of `dirs`.
     fn refresh_dirs(&mut self, dirs: &[PathBuf], cx: &mut Context<Self>) {
         for pane in &self.panes {
-            let pane_dir = pane.read(cx).dir().to_path_buf();
+            // A pane inside an archive shows no directory, so it matches none
+            // of these and is left alone.
+            let Some(pane_dir) = pane.read(cx).disk_dir().map(Path::to_path_buf) else {
+                continue;
+            };
             if dirs.contains(&pane_dir) {
                 pane.update(cx, |pane, cx| pane.refresh(cx));
             }
@@ -950,7 +1182,11 @@ impl Workspace {
     /// Put the selection back on restored items, in whichever pane shows them.
     fn select_in_panes(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         for pane in &self.panes {
-            let pane_dir = pane.read(cx).dir().to_path_buf();
+            // Restored items land on the disk, so only a pane showing the disk
+            // can be showing them.
+            let Some(pane_dir) = pane.read(cx).disk_dir().map(Path::to_path_buf) else {
+                continue;
+            };
             let landed: Vec<PathBuf> = paths
                 .iter()
                 .filter(|p| p.parent() == Some(pane_dir.as_path()))
@@ -1030,8 +1266,9 @@ impl Workspace {
             window,
             |this, _, event: &PlaceEvent, window, cx| match event {
                 PlaceEvent::Open(path) => {
-                    this.active_pane
-                        .update(cx, |pane, cx| pane.navigate_to(path.clone(), cx));
+                    this.active_pane.update(cx, |pane, cx| {
+                        pane.navigate_to(Location::Disk(path.clone()), cx)
+                    });
                     window.focus(&this.active_pane.focus_handle(cx), cx);
                 }
                 PlaceEvent::Mount { device, label } => {
@@ -1064,7 +1301,7 @@ impl Workspace {
                 Ok(path) => {
                     this.set_notice(None, cx);
                     this.active_pane
-                        .update(cx, |pane, cx| pane.navigate_to(path, cx));
+                        .update(cx, |pane, cx| pane.navigate_to(Location::Disk(path), cx));
                 }
                 Err(err) => this.set_notice(
                     Some(Notice::Problem(format!("Could not mount {label}: {err}"))),
@@ -1758,7 +1995,7 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The window had no title at all, which leaves an empty entry in the
         // task switcher. Name it for the active pane's directory.
-        let dir = self.active_pane.read(cx).dir().to_path_buf();
+        let dir = self.active_pane.read(cx).location().key();
         let title = file_label(&dir);
         if title != self.title {
             window.set_window_title(&title);
