@@ -3142,7 +3142,6 @@ name = "hoja"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
  "file_icons",
  "freedesktop-desktop-entry",
  "fuzzy_nucleo",
