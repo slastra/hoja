@@ -9,6 +9,7 @@
 #   $OUT         where shots are written    shot NAME   the whole output
 #   $W $H        the nested output size     strip NAME  just hoja's footer
 #   row N        y of listing row N         click N     click listing row N
+#   named NAME   index of the row called NAME
 #   key ...      wtype arguments, e.g. -M ctrl -P a -m ctrl
 #
 # Nested rather than headless, so the sway window sits on your desktop and the
@@ -222,9 +223,29 @@ print(eval(sys.argv[2]))" "$HOJA_PROBE" "$1" 2>/dev/null
 }
 
 # shellcheck disable=SC2317
+# named NAME: the index of the listing row called NAME, for `dbl` and `click`.
+#
+# Counting rows by hand is how a test ends up double-clicking the file next to
+# the one it meant, which is silent when both are archives. Deliberately not
+# called `row`: that one is the harness's own y-coordinate helper, and shadowing
+# it makes every click land at a coordinate derived from a python expression.
+named() { probe "p[0][\"rows\"].index(\"$1\")"; }
+
+# shellcheck disable=SC2317
 # wait_for EXPR [seconds]: poll until the expression is true. Replaces a sleep
 # that was guessing; a test that waits for what it needs does not get slower on
 # a loaded machine and does not pass by accident on a fast one.
+#
+# A timeout ENDS THE TEST, and that is not a matter of tidiness. A `wait_for`
+# is what a script knows about where the window is; once one has failed, the
+# script no longer knows, and everything after it is keystrokes sent somewhere
+# unverified. A run that lost its place while walking up out of a fixture
+# directory carried on to the root of the filesystem and pressed paste there,
+# and the only thing that stopped it was that root is not writable. That is
+# luck, and luck is not a test harness.
+#
+# `expect` still only counts a failure: an assertion that is wrong about what is
+# on screen has not lost track of where the window is.
 wait_for() {
     local deadline=$(( SECONDS + ${2:-10} ))
     while [ "$SECONDS" -lt "$deadline" ]; do
@@ -232,8 +253,12 @@ wait_for() {
         sleep 0.1
     done
     echo "TIMEOUT waiting for: $1" >&2
+    echo "       stopping here: what is on screen is no longer known, and the" >&2
+    echo "       rest of this script would be typing into somewhere unchecked." >&2
     FAILED=$((FAILED + 1))
-    return 1
+    echo "$FAILED check(s) failed; artifacts in $OUT" >&2
+    echo "$OUT"
+    exit 1
 }
 
 # shellcheck disable=SC2317
