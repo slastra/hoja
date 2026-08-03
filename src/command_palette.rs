@@ -191,8 +191,11 @@ impl CommandPalette {
     ///   dispatches into the palette's own path where nothing handles it.
     pub fn new(previous_focus: FocusHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        let query = cx
-            .new(|cx| PathEditor::new(String::new(), window, cx).with_placeholder("Run a command"));
+        let query = cx.new(|cx| {
+            PathEditor::new(String::new(), window, cx)
+                .with_placeholder("Run a command")
+                .bare()
+        });
 
         // The query field carries the AddressBar context *inside* the palette's
         // own, and the deeper context wins, so enter and escape reach the

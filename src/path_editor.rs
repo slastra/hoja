@@ -160,6 +160,7 @@ pub struct PathEditor {
     pub error: bool,
     /// Drawn in place of the content while it is empty.
     placeholder: SharedString,
+    chrome: Chrome,
 }
 
 impl PathEditor {
@@ -198,6 +199,7 @@ impl PathEditor {
             is_selecting: false,
             error: false,
             placeholder: SharedString::default(),
+            chrome: Chrome::Field,
         }
     }
 
@@ -209,6 +211,13 @@ impl PathEditor {
     /// Grey prompt shown while the field is empty.
     pub fn with_placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = placeholder.into();
+        self
+    }
+
+    /// Draw no background and no border: for a field that is already the only
+    /// thing on its row of a surface that has both.
+    pub fn bare(mut self) -> Self {
+        self.chrome = Chrome::Bare;
         self
     }
 
@@ -653,6 +662,20 @@ impl Focusable for PathEditor {
     }
 }
 
+/// How the field draws itself.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Chrome {
+    /// Its own background and border. The address bar and the search field sit
+    /// on the toolbar among buttons and icons, and have to read as somewhere
+    /// you can type.
+    Field,
+    /// Neither. Inside a picker the field *is* the modal's first row: it has
+    /// the whole width, a rule under it, and nothing beside it to be confused
+    /// with. A second surface inset into the first only says the same thing
+    /// twice, in a slightly different colour.
+    Bare,
+}
+
 impl EventEmitter<PathEditorEvent> for PathEditor {}
 impl EventEmitter<DismissEvent> for PathEditor {}
 
@@ -697,11 +720,19 @@ impl Render for PathEditor {
             .cursor(gpui::CursorStyle::IBeam)
             .flex_1()
             .h(px(22.))
-            .px_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(border)
-            .bg(colors.editor_background)
+            .map(|el| match self.chrome {
+                Chrome::Field => el
+                    .px_1()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(border)
+                    .bg(colors.editor_background),
+                // The error border still shows: it is the only thing that
+                // reports a path that did not resolve, and losing it would make
+                // the field silently do nothing.
+                Chrome::Bare if self.error => el.border_1().border_color(border),
+                Chrome::Bare => el,
+            })
             .overflow_hidden()
             .child(PathElement {
                 editor: cx.entity(),

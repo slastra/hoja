@@ -51,8 +51,11 @@ pub struct PlaceFinder {
 impl PlaceFinder {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        let query = cx
-            .new(|cx| PathEditor::new(String::new(), window, cx).with_placeholder("Go to a place"));
+        let query = cx.new(|cx| {
+            PathEditor::new(String::new(), window, cx)
+                .with_placeholder("Go to a place")
+                .bare()
+        });
 
         // As in the palette: the query field carries the AddressBar context
         // inside this one, and the deeper context wins, so enter and escape
