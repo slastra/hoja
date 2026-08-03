@@ -1961,6 +1961,11 @@ impl DirPane {
     /// Not through `apply_sort`, which scrolls to the top and closes an open
     /// rename. This keeps the selection and lets `restore_selection` scroll
     /// back to it, so the view follows what you had rather than jumping away.
+    ///
+    /// Keeping the rename open is what makes `reanchor_rename` below mandatory.
+    /// `Renaming` holds a row index beside its path, and the commit path renames
+    /// whatever sits at that index: without the re-anchor, a walk settling while
+    /// someone was typing a new name renamed a different file entirely.
     fn resort_for_sizes(&mut self, cx: &mut Context<Self>) {
         if self.footer.resorted
             || self.view.sort.key != SortKey::Size
@@ -1984,6 +1989,7 @@ impl DirPane {
         // Deliberately not `listing_moved`: the rows are the same rows in a
         // different order, and bumping it would throw away the finished walk
         // and start it again.
+        self.reanchor_rename();
         self.restore_selection();
         cx.notify();
     }
