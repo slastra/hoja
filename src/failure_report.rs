@@ -69,7 +69,7 @@ enum Line {
 /// parentheses is the half nobody reads. It also keeps the parenthetical out of
 /// the grouping key, where it would have been a silent way to split one reason
 /// into two.
-fn tidy(reason: &str) -> &str {
+pub fn tidy(reason: &str) -> &str {
     match reason.rfind(" (os error ") {
         Some(ix) if reason.ends_with(')') => &reason[..ix],
         _ => reason,
@@ -116,11 +116,17 @@ pub struct FailureReport {
 }
 
 impl FailureReport {
-    pub fn new(label: String, failures: Vec<Failure>, total: usize, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        label: String,
+        failures: Vec<Failure>,
+        counts: HashMap<String, usize>,
+        total: usize,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let root = common_root(&failures);
         Self {
             label,
-            lines: group(&failures, root.as_deref()),
+            lines: group(&counts, &failures, root.as_deref()),
             total,
             root,
             scroll: gpui::UniformListScrollHandle::new(),
@@ -199,15 +205,6 @@ impl Render for FailureReport {
                 crate::notifications::count(n as u64)
             ),
         };
-        let listed: usize = self
-            .lines
-            .iter()
-            .map(|line| match line {
-                Line::Reason { count, .. } => *count,
-                _ => 0,
-            })
-            .sum();
-
         let list = uniform_list(
             "failures",
             self.lines.len(),
@@ -269,7 +266,7 @@ impl Render for FailureReport {
                     ),
             )
             .child(list)
-            .when(self.root.is_some() || listed < self.total, |el| {
+            .when_some(self.root.clone(), |el, root| {
                 el.child(
                     div()
                         .flex_none()
@@ -282,25 +279,16 @@ impl Render for FailureReport {
                         .border_color(colors.border)
                         .text_xs()
                         .text_color(colors.text_muted)
-                        .when_some(self.root.clone(), |el, root| {
-                            // Said once here, since every path above had it cut.
-                            el.child(
-                                div()
-                                    .flex_1()
-                                    .truncate()
-                                    .child(format!("in {}", root.display())),
-                            )
-                        })
-                        .when(listed < self.total, |el| {
-                            el.child(
-                                div()
-                                    .flex_none()
-                                    .child(format!(
-                                        "{} not listed",
-                                        crate::notifications::count((self.total - listed) as u64)
-                                    )),
-                            )
-                        }),
+                        // Said once here, since every path above had it cut.
+                        // Nothing about a remainder: each heading carries its
+                        // own true count, and says under itself how many of its
+                        // files went unnamed.
+                        .child(
+                            div()
+                                .flex_1()
+                                .truncate()
+                                .child(format!("in {}", root.display())),
+                        ),
                 )
             })
     }
@@ -311,47 +299,45 @@ impl Render for FailureReport {
 /// Biggest group first, because the reason that accounts for most of a failed
 /// transfer is the one that explains it. Ties break on the reason text so the
 /// order does not shuffle between two renders of the same report.
-fn group(failures: &[Failure], root: Option<&std::path::Path>) -> Vec<Line> {
-    let mut order: Vec<&str> = Vec::new();
+///
+/// `counts` is every reason and its true count; `examples` are the paths the
+/// strip still holds, which is a prefix of the failures in arrival order. The
+/// two are separate because they have to be: a job that fails forty thousand
+/// times on symlinks and then fills the disk keeps no path from the second
+/// reason at all, and grouping the paths alone would have dropped the heading
+/// with them. The disk filling up is the one this report exists to surface.
+fn group(
+    counts: &HashMap<String, usize>,
+    examples: &[Failure],
+    root: Option<&std::path::Path>,
+) -> Vec<Line> {
     let mut by_reason: HashMap<&str, Vec<String>> = HashMap::new();
-    for failure in failures {
-        let reason = tidy(&failure.reason);
+    for failure in examples {
+        let paths = by_reason.entry(tidy(&failure.reason)).or_default();
+        if paths.len() == MAX_FILES_PER_GROUP {
+            continue;
+        }
         let path = match root {
             Some(root) => failure.path.strip_prefix(root).unwrap_or(&failure.path),
             None => &failure.path,
         };
-        by_reason.entry(reason).or_insert_with(|| {
-            order.push(reason);
-            Vec::new()
-        });
-        by_reason
-            .get_mut(reason)
-            .expect("just inserted")
-            .push(path.display().to_string());
+        paths.push(path.display().to_string());
     }
 
-    order.sort_by(|a, b| {
-        by_reason[b]
-            .len()
-            .cmp(&by_reason[a].len())
-            .then_with(|| a.cmp(b))
-    });
+    let mut order: Vec<&str> = counts.keys().map(String::as_str).collect();
+    order.sort_by(|a, b| counts[*b].cmp(&counts[*a]).then_with(|| a.cmp(b)));
 
     let mut lines = Vec::new();
     for reason in order {
-        let files = &by_reason[reason];
+        let count = counts[reason];
+        let files = by_reason.get(reason).map(Vec::as_slice).unwrap_or(&[]);
         lines.push(Line::Reason {
             text: reason.to_string(),
-            count: files.len(),
+            count,
         });
-        lines.extend(
-            files
-                .iter()
-                .take(MAX_FILES_PER_GROUP)
-                .map(|path| Line::File(path.clone())),
-        );
-        if files.len() > MAX_FILES_PER_GROUP {
-            lines.push(Line::More(files.len() - MAX_FILES_PER_GROUP));
+        lines.extend(files.iter().cloned().map(Line::File));
+        if count > files.len() {
+            lines.push(Line::More(count - files.len()));
         }
     }
     lines
@@ -422,6 +408,15 @@ mod grouping_tests {
     use super::*;
     use std::path::Path;
 
+    /// Counts derived from the examples, which is the un-capped case.
+    fn group_all(failures: &[Failure], root: Option<&Path>) -> Vec<Line> {
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for failure in failures {
+            *counts.entry(tidy(&failure.reason).to_string()).or_default() += 1;
+        }
+        group(&counts, failures, root)
+    }
+
     fn failed(pairs: &[(&str, &str)]) -> Vec<Failure> {
         pairs
             .iter()
@@ -429,6 +424,13 @@ mod grouping_tests {
                 path: PathBuf::from(path),
                 reason: (*reason).to_string(),
             })
+            .collect()
+    }
+
+    fn counts_of(pairs: &[(&str, usize)]) -> HashMap<String, usize> {
+        pairs
+            .iter()
+            .map(|(reason, n)| ((*reason).to_string(), *n))
             .collect()
     }
 
@@ -456,7 +458,7 @@ mod grouping_tests {
     fn the_same_reason_with_different_errnos_still_groups_as_one() {
         // Only reachable if two errno values ever print the same message, but
         // the point is that the grouping key is the message and not the number.
-        let lines = group(
+        let lines = group_all(
             &failed(&[
                 ("/a", "Open: Permission denied (os error 13)"),
                 ("/b", "Open: Permission denied (os error 1)"),
@@ -470,7 +472,7 @@ mod grouping_tests {
     fn the_reason_accounting_for_most_failures_comes_first() {
         // The disk filling up is one line and the symlinks are three; the
         // heading order is what tells you which one explains the transfer.
-        let lines = group(
+        let lines = group_all(
             &failed(&[
                 ("/t/a", "Symlink: Operation not permitted"),
                 ("/t/full", "Write: No space left on device"),
@@ -493,7 +495,7 @@ mod grouping_tests {
         let many: Vec<(String, &str)> = (0..MAX_FILES_PER_GROUP + 5)
             .map(|i| (format!("/t/f{i}"), "Open: Permission denied"))
             .collect();
-        let lines = group(
+        let lines = group_all(
             &failed(
                 &many
                     .iter()
@@ -513,8 +515,50 @@ mod grouping_tests {
     }
 
     #[test]
+    fn a_reason_with_no_surviving_paths_still_gets_a_heading() {
+        // The case the split exists for: the strip stops keeping paths after
+        // MAX_RETAINED_FAILURES, so a job that fails forty thousand times on
+        // symlinks and then fills the disk holds no path for the disk at all.
+        // Grouping the paths alone lost the heading with them, and the disk
+        // filling up is what the report exists to surface.
+        let counts = counts_of(&[
+            ("Symlink: Operation not permitted", 40_000),
+            ("Write: No space left on device", 5_000),
+        ]);
+        let examples = failed(&[("/t/a", "Symlink: Operation not permitted")]);
+        let lines = group(&counts, &examples, None);
+
+        assert_eq!(
+            reasons(&lines),
+            vec![
+                ("Symlink: Operation not permitted".into(), 40_000),
+                ("Write: No space left on device".into(), 5_000),
+            ]
+        );
+        // And the heading that kept no paths says so rather than sitting empty.
+        assert!(
+            lines
+                .iter()
+                .any(|line| matches!(line, Line::More(5_000))),
+            "the reason with no examples reports all of its files as unnamed"
+        );
+    }
+
+    #[test]
+    fn a_heading_counts_every_file_not_just_the_ones_it_names() {
+        let counts = counts_of(&[("Open: Permission denied", 900)]);
+        let examples = failed(&[
+            ("/t/a", "Open: Permission denied"),
+            ("/t/b", "Open: Permission denied"),
+        ]);
+        let lines = group(&counts, &examples, None);
+        assert_eq!(reasons(&lines), vec![("Open: Permission denied".into(), 900)]);
+        assert!(matches!(lines.last(), Some(Line::More(898))));
+    }
+
+    #[test]
     fn paths_are_shown_relative_to_the_root_that_was_lifted_out() {
-        let lines = group(
+        let lines = group_all(
             &failed(&[("/t/one/a.bin", "Open: Permission denied")]),
             Some(Path::new("/t")),
         );

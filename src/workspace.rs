@@ -17,7 +17,7 @@ use crate::command_palette::{self, CommandPalette};
 use crate::place_finder::{self, PlaceEvent, PlaceFinder};
 use crate::conflict_dialog::ConflictDialog;
 use crate::dir_pane::{DirPane, PaneEvent};
-use crate::failure_report::{Failure, FailureReport};
+use crate::failure_report::{self, Failure, FailureReport};
 use crate::icon::Icon;
 use crate::config::{self, Settings, State};
 use crate::notifications;
@@ -120,8 +120,17 @@ struct JobView {
     done: Option<Outcome>,
     /// How many files failed, which is `failures.len()` until the cap.
     errors: usize,
-    /// What failed, for the report the warning icon opens.
+    /// Example paths for the report, capped: see `MAX_RETAINED_FAILURES`.
     failures: Vec<Failure>,
+    /// Every distinct reason and how many files it accounts for, uncapped.
+    ///
+    /// Separate from `failures` because the cap has to fall on the paths and
+    /// not on the reasons. A job that fails forty thousand times on symlinks
+    /// and then fills the disk keeps no path from the second reason at all, and
+    /// a report grouped from the paths alone would have lost the heading with
+    /// them. There are only ever a handful of distinct reasons, one per stage
+    /// per errno, so nothing here needs a cap of its own.
+    reasons: HashMap<String, usize>,
     /// When the transfer started, so a job short enough to have been watched
     /// does not raise a notification about it: see `notifications::NOTIFY_AFTER`.
     started: std::time::Instant,
@@ -132,7 +141,7 @@ struct JobView {
 
 /// Weight of the newest sample in the rate estimate.
 ///
-/// A 120ms window over a tree of small files is violently bursty, one large
+/// A 120ms window over a tree of small files is violently bursty: one large
 /// file lands and the instantaneous figure jumps by an order of magnitude, and
 /// a number that jitters like that is worse than no number.
 ///
@@ -613,6 +622,7 @@ impl Workspace {
                     done: None,
                     errors: 0,
                     failures: Vec::new(),
+                    reasons: HashMap::new(),
                     started: std::time::Instant::now(),
                     rate: None,
                     last_sample: (std::time::Instant::now(), 0),
@@ -678,11 +688,13 @@ impl Workspace {
                     }
                     JobEvent::FileError { path, error } => {
                         job.errors += 1;
+                        let reason = error.to_string();
+                        *job
+                            .reasons
+                            .entry(failure_report::tidy(&reason).to_string())
+                            .or_default() += 1;
                         if job.failures.len() < MAX_RETAINED_FAILURES {
-                            job.failures.push(Failure {
-                                path,
-                                reason: error.to_string(),
-                            });
+                            job.failures.push(Failure { path, reason });
                         }
                     }
                     JobEvent::Warning { .. } => {}
@@ -694,6 +706,13 @@ impl Workspace {
                         // the walk's own, which arrive as no `FileError` at
                         // all. Rebuilding from it cannot double-count.
                         job.errors = summary.errors.len();
+                        job.reasons.clear();
+                        for (_, error) in &summary.errors {
+                            *job
+                                .reasons
+                                .entry(failure_report::tidy(&error.to_string()).to_string())
+                                .or_default() += 1;
+                        }
                         job.failures = summary
                             .errors
                             .iter()
@@ -964,7 +983,7 @@ impl Workspace {
             return;
         }
 
-        // Any *other* modal, the place finder: still holds focus here, and
+        // Any *other* modal (the place finder) still holds focus here, and
         // `available_actions` resolves against whatever is focused rather than
         // against the handle it is passed. Opening the palette over the finder
         // therefore enumerated the finder's dispatch path, and every pane
@@ -1130,11 +1149,11 @@ impl Workspace {
         }
 
         // The file was just written, so it is the newest answer and wins where
-        // it has one. Where it has none, a file that only sets a theme: what
-        // was remembered still stands, which is why the real state goes in here
-        // and not an empty one. Passing `State::default()` reset every pane to
-        // the compiled defaults on any settings edit, and then wrote the reset
-        // out through `remember_view` below.
+        // it has one. Where it has none, as in a file that only sets a theme,
+        // what was remembered still stands, which is why the real state goes in
+        // here and not an empty one. Passing `State::default()` reset every
+        // pane to the compiled defaults on any settings edit, and then wrote
+        // the reset out through `remember_view` below.
         let view = config::initial_view(&settings, &self.state, config::Winner::Settings);
         for pane in &self.panes {
             pane.update(cx, |pane, cx| pane.set_view_settings(view, cx));
@@ -1233,13 +1252,14 @@ impl Workspace {
         // Copied rather than borrowed by index: the row underneath can be
         // dismissed while the report is open, and a still-running job keeps
         // collecting. Either would move the ground under a live index.
-        let (label, failures, total) = (
+        let (label, failures, reasons, total) = (
             job.handle.label().to_string(),
             job.failures.clone(),
+            job.reasons.clone(),
             job.errors,
         );
 
-        let report = cx.new(|cx| FailureReport::new(label, failures, total, cx));
+        let report = cx.new(|cx| FailureReport::new(label, failures, reasons, total, cx));
         cx.subscribe_in(&report, window, |this, _, _: &DismissEvent, window, cx| {
             this.close_modal(window, cx)
         })
@@ -1885,9 +1905,10 @@ mod tests {
             "the four cells of the size phrase and the three gaps between them"
         );
         // The total is one cell now, so it has to hold the number and the unit
-        // together. `format_size` drops the decimal once it reaches three
-        // digits, so the widest it prints is four digits and a two-letter unit.
-        for widest in ["1023.0 PB", "99.9 GB", "1023 B"] {
+        // together. `format_size` always prints one decimal and promotes past
+        // 1023, except below a kilobyte where there is no tenth of a byte, so
+        // these are the widest shapes it has.
+        for widest in ["1023.9 PB", "99.9 GB", "1023 B"] {
             assert!(
                 widest.chars().count() as f32 * CHAR_W <= TOTAL_W,
                 "{widest:?} outgrew the total's cell"

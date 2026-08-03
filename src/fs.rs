@@ -634,9 +634,9 @@ impl Selection {
 
 /// What the footer has to say about a listing or a selection.
 ///
-/// The split between `known` and `roots` is the whole point: every size that
-/// arrived with the listing is already in `known`, and only directories: whose
-/// size nothing knows without walking them: end up in `roots`. A selection of
+/// The split between `known` and `roots` is the whole point. Every size that
+/// arrived with the listing is already in `known`; only directories, whose size
+/// nothing knows without walking them, end up in `roots`. A selection of
 /// plain files therefore leaves `roots` empty, and empty roots is what tells the
 /// pane not to start a thread at all.
 #[derive(Debug, Default, PartialEq, Eq)]

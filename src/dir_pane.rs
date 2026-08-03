@@ -438,9 +438,10 @@ impl Column {
     #[cfg(test)]
     fn widest(self) -> &'static str {
         match self {
-            // `format_size` drops to no decimal past four digits, so this is
-            // the most characters it can print.
-            Column::Size => "1023.0 MB",
+            // `format_size` always prints one decimal and promotes past 1023,
+            // so four digits, a point, a decimal and a two-letter unit is the
+            // most it can come to.
+            Column::Size => "1023.9 MB",
             // Not pinned: "Rust source" and the like come from the file's kind
             // and are already elided when they do not fit.
             Column::Kind => "",
@@ -2544,7 +2545,12 @@ impl DirPane {
     /// `use<>` opts out of capturing the `&self` / `&Context` lifetimes: the returned
     /// element owns every value it needs, and `uniform_list`'s callback must return
     /// something with no borrows outstanding.
-    fn render_entry(&self, ix: usize, now: SystemTime, cx: &Context<Self>) -> impl IntoElement + use<> {
+    fn render_entry(
+        &self,
+        ix: usize,
+        now: SystemTime,
+        cx: &Context<Self>,
+    ) -> impl IntoElement + use<> {
         let entry = &self.entries[ix];
         let rename_editor = self
             .renaming

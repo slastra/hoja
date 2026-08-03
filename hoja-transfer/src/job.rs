@@ -257,8 +257,8 @@ struct Worker {
     /// `st_dev` → mount key, so the statx behind `mount_key` happens once per
     /// filesystem rather than once per file. Keying on `st_dev` is sound for
     /// what the answer is used for: it decides whether rename and reflink are
-    /// worth attempting, and two bind mounts of one filesystem, the case
-    /// `MNT_ID` exists to tell apart: share a superblock and so share both
+    /// worth attempting, and two bind mounts of one filesystem (the case
+    /// `MNT_ID` exists to tell apart) share a superblock and so share both
     /// answers.
     mount_keys: HashMap<u64, MountKey>,
 }
