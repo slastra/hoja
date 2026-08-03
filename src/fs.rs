@@ -20,6 +20,15 @@ pub struct DirEntry {
     /// `None` for directories and for entries whose metadata could not be read.
     pub size: Option<u64>,
     pub modified: Option<SystemTime>,
+    /// `st_mode`, `st_uid`, `st_gid`: the facts no column shows.
+    ///
+    /// Taken from the metadata `from_std` already reads, so they cost no extra
+    /// syscall. Twelve bytes a row, which a hundred thousand of them makes
+    /// about a megabyte, against re-statting a file every time the selection
+    /// lands on it.
+    pub mode: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
 }
 
 impl DirEntry {
@@ -44,11 +53,15 @@ impl DirEntry {
             None => file_type.is_some_and(|t| t.is_dir()),
         };
 
+        use std::os::unix::fs::MetadataExt;
         Self {
             name,
             relative: None,
             size: metadata.as_ref().filter(|_| !is_dir).map(|m| m.len()),
             modified: metadata.as_ref().and_then(|m| m.modified().ok()),
+            mode: metadata.as_ref().map(MetadataExt::mode),
+            uid: metadata.as_ref().map(MetadataExt::uid),
+            gid: metadata.as_ref().map(MetadataExt::gid),
             path,
             is_dir,
         }
@@ -492,6 +505,38 @@ pub fn format_rate(bytes_per_second: u64) -> String {
     format!("{value:.0} {}", UNITS[unit])
 }
 
+/// `st_mode` as `drwxr-xr-x`.
+///
+/// The set-user, set-group and sticky bits replace the execute letter they
+/// modify, upper case where the underlying execute bit is off, which is how
+/// `ls` prints them and the only part of this that is not obvious.
+pub fn format_mode(mode: u32) -> String {
+    let kind = match mode & 0o170000 {
+        0o040000 => 'd',
+        0o120000 => 'l',
+        0o060000 => 'b',
+        0o020000 => 'c',
+        0o010000 => 'p',
+        0o140000 => 's',
+        _ => '-',
+    };
+    let mut out = String::with_capacity(10);
+    out.push(kind);
+    // (read, write, execute, special bit, letter the special bit shows)
+    for (shift, special, letter) in [(6, 0o4000, 's'), (3, 0o2000, 's'), (0, 0o1000, 't')] {
+        let bits = (mode >> shift) & 0o7;
+        out.push(if bits & 0o4 != 0 { 'r' } else { '-' });
+        out.push(if bits & 0o2 != 0 { 'w' } else { '-' });
+        out.push(match (bits & 0o1 != 0, mode & special != 0) {
+            (true, true) => letter,
+            (true, false) => 'x',
+            (false, true) => letter.to_ascii_uppercase(),
+            (false, false) => '-',
+        });
+    }
+    out
+}
+
 /// Local-time timestamp, for the pane footer's single-file line.
 pub fn format_time(time: SystemTime) -> String {
     let local: chrono::DateTime<chrono::Local> = time.into();
@@ -703,12 +748,27 @@ pub fn summarise_selection(entries: &[DirEntry], selected: &Selection) -> Summar
         // A selection whose rows have all gone is not a selection yet: the
         // listing is mid-rebuild and `restore_selection` is about to speak.
         (0, _) | (_, None) => return Summary::default(),
-        (1, Some(entry)) if entry.is_dir => {
-            summary.lead = vec![entry.name.clone(), "folder".to_string()];
-        }
+        // One row, and the columns beside it already say the name, the size,
+        // the kind and the date. Repeating them here spent the whole line
+        // saying what the eye had just read, so this says the things no column
+        // shows: the mode, and who owns it.
         (1, Some(entry)) => {
-            summary.lead = vec![entry.name.clone()];
-            summary.trail = entry.modified.map(format_time).into_iter().collect();
+            return Summary {
+                // No size, so no walk to wait on either. Selecting a folder
+                // used to hold the line at an ellipsis until its subtree was
+                // counted; the Size column now has that number, and had it
+                // before the selection could land.
+                sized: false,
+                lead: [
+                    entry.mode.map(format_mode),
+                    entry.uid.map(crate::owners::user),
+                    entry.gid.map(crate::owners::group),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
+                ..Summary::default()
+            };
         }
         (n, _) => {
             summary.lead = vec![format!(
@@ -772,6 +832,9 @@ mod tests {
             is_dir,
             size,
             modified: None,
+            mode: None,
+            uid: None,
+            gid: None,
         }
     }
 
@@ -791,17 +854,35 @@ mod tests {
     }
 
     #[test]
-    fn a_selected_folder_defers_to_the_walk() {
+    fn one_row_says_what_no_column_says() {
+        // Not the name, size, kind or date: those are the four columns beside
+        // it, and the line spent itself repeating what the eye had just read.
+        let mut file = row("Cargo.toml", false, Some(2867));
+        file.mode = Some(0o100644);
+        file.uid = Some(0);
+        file.gid = Some(0);
+        let summary = summarise_selection(&[file], &selection([0]));
+        assert!(!summary.sized, "no size: the Size column has it");
+        assert!(summary.rows.is_empty(), "and so nothing to walk for");
+        let line = compose(&summary, 0, true);
+        assert!(line.starts_with("-rw-r--r-- · "), "got {line}");
+        assert_eq!(line.split(" · ").count(), 3, "mode, user, group: {line}");
+    }
+
+    #[test]
+    fn one_row_whose_metadata_never_arrived_says_nothing_rather_than_guessing() {
+        let summary = summarise_selection(&[row("a.bin", false, Some(1))], &selection([0]));
+        assert_eq!(compose(&summary, 0, true), "");
+    }
+
+    #[test]
+    fn a_selected_folder_no_longer_waits_on_the_walk() {
+        // It used to total the folder here, which is now the Size column's job
+        // and settled before the selection can land on it.
         let entries = vec![row("src", true, None), row("a.bin", false, Some(1000))];
         let summary = summarise_selection(&entries, &selection([0]));
-        assert_eq!(summary.rows, vec![0], "the folder's row");
-        assert_eq!(summary.known, 0);
-        assert_eq!(compose(&summary, 0, false), "src · folder · …");
-        assert_eq!(
-            compose(&summary, 4_300_000, false),
-            "src · folder · 4.1 MB…"
-        );
-        assert_eq!(compose(&summary, 4_300_000, true), "src · folder · 4.1 MB");
+        assert!(summary.rows.is_empty(), "nothing to wait for");
+        assert!(!summary.sized);
     }
 
     #[test]
@@ -818,13 +899,23 @@ mod tests {
     }
 
     #[test]
-    fn one_file_is_named_and_dated() {
-        let mut file = row("Cargo.toml", false, Some(2867));
-        file.modified =
-            Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000));
-        let summary = summarise_selection(&[file], &selection([0]));
-        let line = compose(&summary, 0, true);
-        assert!(line.starts_with("Cargo.toml · 2.8 KB · "), "got {line}");
+    fn a_mode_reads_as_ls_prints_it() {
+        assert_eq!(format_mode(0o100644), "-rw-r--r--");
+        assert_eq!(format_mode(0o040755), "drwxr-xr-x");
+        assert_eq!(format_mode(0o120777), "lrwxrwxrwx");
+        assert_eq!(format_mode(0o100000), "----------");
+    }
+
+    #[test]
+    fn a_special_bit_replaces_the_letter_it_modifies() {
+        // Lower case where the execute bit under it is on, upper where it is
+        // off, which is the whole of the convention and the only part of this
+        // that cannot be read straight off the octal.
+        assert_eq!(format_mode(0o104755), "-rwsr-xr-x", "setuid over an x");
+        assert_eq!(format_mode(0o104644), "-rwSr--r--", "setuid without one");
+        assert_eq!(format_mode(0o102755), "-rwxr-sr-x", "setgid over an x");
+        assert_eq!(format_mode(0o041777), "drwxrwxrwt", "sticky, as /tmp");
+        assert_eq!(format_mode(0o041776), "drwxrwxrwT", "sticky without an x");
     }
 
     #[test]
@@ -1074,6 +1165,9 @@ mod tests {
             is_dir,
             size: (!is_dir).then_some(size),
             modified: Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)),
+            mode: None,
+            uid: None,
+            gid: None,
         }
     }
 
@@ -1335,6 +1429,9 @@ mod bench {
                 is_dir: false,
                 size: Some(i as u64 % 9973),
                 modified: Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(i as u64)),
+                mode: None,
+                uid: None,
+                gid: None,
             })
             .collect();
 

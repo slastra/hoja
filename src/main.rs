@@ -13,6 +13,7 @@ mod icon;
 mod measure;
 mod notifications;
 mod opener;
+mod owners;
 mod pane_group;
 mod path_editor;
 mod picker;

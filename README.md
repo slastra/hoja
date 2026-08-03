@@ -27,8 +27,8 @@ for important data.
   so no number ever climbs in the listing. Sorting by size reorders once, when
   every folder is final.
 - **Pane footer.** Each pane says what it is holding: `14 items · 1.2 GB` for
-  the folder, `Cargo.toml · 2.8 KB · 2026-08-02 07:50` for one file,
-  `3 selected · 259 MB` for several. It totals exactly the rows above it, so it
+  the folder, `3 selected · 259 MB` for several, and for a single row the
+  things no column shows: `-rw-r--r-- · shaun · shaun`. It totals exactly the rows above it, so it
   is the sum of the Size column. The one walk serves both, which is why
   selecting a folder costs nothing, because its size is already there. A running
   search reports here too, in the pane doing the searching.
