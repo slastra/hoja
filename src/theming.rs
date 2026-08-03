@@ -86,10 +86,7 @@ fn set_active(name: &str) {
 }
 
 fn active() -> Option<String> {
-    ACTIVE
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .clone()
+    ACTIVE.lock().unwrap_or_else(|err| err.into_inner()).clone()
 }
 
 pub fn apply(name: &str, cx: &mut App) -> Result<()> {

@@ -345,6 +345,9 @@ mod tests {
             Path::new("/nonexistent")
         ));
         // tmpfs (/tmp): virtual major 0 → not removable.
-        assert!(!is_removable_with_sysfs(Path::new("/tmp"), Path::new("/sys")));
+        assert!(!is_removable_with_sysfs(
+            Path::new("/tmp"),
+            Path::new("/sys")
+        ));
     }
 }

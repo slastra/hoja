@@ -96,10 +96,7 @@ fn parse_bookmarks(text: &str) -> Vec<Place> {
             let label = name
                 .filter(|name| !name.is_empty())
                 .map(str::to_string)
-                .or_else(|| {
-                    path.file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                })?;
+                .or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()))?;
             Some(Place::Dir {
                 detail: path.display().to_string(),
                 label,
@@ -141,7 +138,10 @@ fn parse_volumes(json: &str) -> Vec<Place> {
         if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
             queue.extend(children);
         }
-        let hotplug = node.get("hotplug").and_then(|h| h.as_bool()).unwrap_or(false);
+        let hotplug = node
+            .get("hotplug")
+            .and_then(|h| h.as_bool())
+            .unwrap_or(false);
         let fstype = node.get("fstype").and_then(|f| f.as_str()).unwrap_or("");
         if !hotplug || fstype.is_empty() {
             continue;
@@ -194,7 +194,10 @@ pub fn mount(device: &std::path::Path) -> std::io::Result<PathBuf> {
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     parse_mount_output(&stdout).ok_or_else(|| {
-        std::io::Error::other(format!("mounted {} but could not tell where", device.display()))
+        std::io::Error::other(format!(
+            "mounted {} but could not tell where",
+            device.display()
+        ))
     })
 }
 
@@ -242,7 +245,11 @@ sftp://elsewhere/remote Remote
              "mountpoint":"/","hotplug":false}]}]}"#;
 
         let places = parse_volumes(json);
-        assert_eq!(places.len(), 2, "the internal disk is not a place: {places:?}");
+        assert_eq!(
+            places.len(),
+            2,
+            "the internal disk is not a place: {places:?}"
+        );
 
         // Mounted: offered as a directory, named from the device when unlabelled.
         assert_eq!(

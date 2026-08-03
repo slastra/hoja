@@ -70,11 +70,11 @@ impl PickerState {
     pub fn rematch_keeping_selection(&mut self, query: &str) {
         let held = self.matches.get(self.selected).map(|m| m.candidate_id);
         self.rematch(query);
-        if let Some(ix) = held.and_then(|id| {
-            self.matches.iter().position(|m| m.candidate_id == id)
-        }) {
+        if let Some(ix) = held.and_then(|id| self.matches.iter().position(|m| m.candidate_id == id))
+        {
             self.selected = ix;
-            self.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
+            self.scroll
+                .scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
         }
     }
 
@@ -111,12 +111,7 @@ pub fn list_height(state: &PickerState, row_height: f32) -> Pixels {
 /// The modal: query field on top, rows or an empty message below.
 ///
 /// The list arrives already sized, via `list_height`: see why there.
-pub fn shell(
-    state: &PickerState,
-    empty_message: &'static str,
-    list: AnyElement,
-    cx: &App,
-) -> Div {
+pub fn shell(state: &PickerState, empty_message: &'static str, list: AnyElement, cx: &App) -> Div {
     let colors = cx.theme().colors();
     let count = state.matches.len();
 

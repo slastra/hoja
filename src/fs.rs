@@ -1,5 +1,5 @@
-use std::collections::BTreeSet;
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -313,9 +313,11 @@ fn starts_with_ignore_case(name: &str, prefix: &str) -> bool {
         return nb[..pb.len()].eq_ignore_ascii_case(pb);
     }
     let mut name_chars = name.chars();
-    prefix
-        .chars()
-        .all(|p| name_chars.next().is_some_and(|n| chars_eq_ignore_case(n, p)))
+    prefix.chars().all(|p| {
+        name_chars
+            .next()
+            .is_some_and(|n| chars_eq_ignore_case(n, p))
+    })
 }
 
 /// Why a proposed file name cannot be used, or `None` when it is acceptable.
@@ -709,7 +711,10 @@ pub fn summarise_selection(entries: &[DirEntry], selected: &Selection) -> Summar
             summary.trail = entry.modified.map(format_time).into_iter().collect();
         }
         (n, _) => {
-            summary.lead = vec![format!("{} selected", crate::notifications::count(n as u64))];
+            summary.lead = vec![format!(
+                "{} selected",
+                crate::notifications::count(n as u64)
+            )];
         }
     }
 
@@ -792,7 +797,10 @@ mod tests {
         assert_eq!(summary.rows, vec![0], "the folder's row");
         assert_eq!(summary.known, 0);
         assert_eq!(compose(&summary, 0, false), "src · folder · …");
-        assert_eq!(compose(&summary, 4_300_000, false), "src · folder · 4.1 MB…");
+        assert_eq!(
+            compose(&summary, 4_300_000, false),
+            "src · folder · 4.1 MB…"
+        );
         assert_eq!(compose(&summary, 4_300_000, true), "src · folder · 4.1 MB");
     }
 
@@ -812,7 +820,8 @@ mod tests {
     #[test]
     fn one_file_is_named_and_dated() {
         let mut file = row("Cargo.toml", false, Some(2867));
-        file.modified = Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000));
+        file.modified =
+            Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000));
         let summary = summarise_selection(&[file], &selection([0]));
         let line = compose(&summary, 0, true);
         assert!(line.starts_with("Cargo.toml · 2.8 KB · "), "got {line}");
@@ -833,7 +842,10 @@ mod tests {
             row("b.bin", false, Some(2000)),
         ];
         let summary = summarise_dir(&entries);
-        assert!(summary.rows.is_empty(), "no subdirectories, so nothing to walk");
+        assert!(
+            summary.rows.is_empty(),
+            "no subdirectories, so nothing to walk"
+        );
         assert_eq!(compose(&summary, 0, true), "2 items · 2.9 KB");
     }
 
@@ -873,7 +885,10 @@ mod tests {
         };
         sort_entries_by(
             &mut entries,
-            Sort { key: SortKey::Size, dir: SortDir::Descending },
+            Sort {
+                key: SortKey::Size,
+                dir: SortDir::Descending,
+            },
             true,
             measured,
         );
@@ -888,7 +903,10 @@ mod tests {
         // does not opt in changes behaviour.
         sort_entries(
             &mut entries,
-            Sort { key: SortKey::Size, dir: SortDir::Descending },
+            Sort {
+                key: SortKey::Size,
+                dir: SortDir::Descending,
+            },
             true,
         );
         let order: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
@@ -899,7 +917,9 @@ mod tests {
     fn item_counts_are_grouped_and_singular_where_they_should_be() {
         let one = summarise_dir(&[row("a", false, Some(1))]);
         assert_eq!(one.lead, vec!["1 item"]);
-        let many: Vec<DirEntry> = (0..1234).map(|i| row(&i.to_string(), false, Some(0))).collect();
+        let many: Vec<DirEntry> = (0..1234)
+            .map(|i| row(&i.to_string(), false, Some(0)))
+            .collect();
         let big = summarise_dir(&many);
         assert_eq!(big.lead, vec!["1,234 items"]);
     }
@@ -948,7 +968,10 @@ mod tests {
         use super::nearest_existing_dir;
 
         // Read-only probes of paths that certainly do and do not exist.
-        assert_eq!(nearest_existing_dir(Path::new("/")), Some(PathBuf::from("/")));
+        assert_eq!(
+            nearest_existing_dir(Path::new("/")),
+            Some(PathBuf::from("/"))
+        );
         assert_eq!(
             nearest_existing_dir(Path::new("/tmp")),
             Some(PathBuf::from("/tmp"))
@@ -1029,7 +1052,10 @@ mod tests {
         assert_eq!(natural_cmp("a08", "a9"), Ordering::Less);
         // Would overflow u64 if this parsed into an integer.
         assert_eq!(
-            natural_cmp(&format!("a{}", "9".repeat(40)), &format!("a{}", "1".repeat(41))),
+            natural_cmp(
+                &format!("a{}", "9".repeat(40)),
+                &format!("a{}", "1".repeat(41))
+            ),
             Ordering::Less
         );
     }
@@ -1065,7 +1091,12 @@ mod tests {
         ];
 
         for dir in [SortDir::Ascending, SortDir::Descending] {
-            for key in [SortKey::Name, SortKey::Size, SortKey::Kind, SortKey::Modified] {
+            for key in [
+                SortKey::Name,
+                SortKey::Size,
+                SortKey::Kind,
+                SortKey::Modified,
+            ] {
                 sort_entries(&mut v, Sort { key, dir }, true);
                 assert!(
                     v[0].is_dir && v[1].is_dir && !v[2].is_dir && !v[3].is_dir,
@@ -1084,10 +1115,24 @@ mod tests {
             entry("file1.txt", false, 3, 3),
         ];
 
-        sort_entries(&mut v, Sort { key: SortKey::Name, dir: SortDir::Ascending }, true);
+        sort_entries(
+            &mut v,
+            Sort {
+                key: SortKey::Name,
+                dir: SortDir::Ascending,
+            },
+            true,
+        );
         assert_eq!(names(&v), ["file1.txt", "file2.txt", "file10.txt"]);
 
-        sort_entries(&mut v, Sort { key: SortKey::Name, dir: SortDir::Descending }, true);
+        sort_entries(
+            &mut v,
+            Sort {
+                key: SortKey::Name,
+                dir: SortDir::Descending,
+            },
+            true,
+        );
         assert_eq!(names(&v), ["file10.txt", "file2.txt", "file1.txt"]);
     }
 
@@ -1099,10 +1144,24 @@ mod tests {
             entry("c", false, 90, 200),
         ];
 
-        sort_entries(&mut v, Sort { key: SortKey::Size, dir: SortDir::Ascending }, true);
+        sort_entries(
+            &mut v,
+            Sort {
+                key: SortKey::Size,
+                dir: SortDir::Ascending,
+            },
+            true,
+        );
         assert_eq!(names(&v), ["c", "a", "b"]);
 
-        sort_entries(&mut v, Sort { key: SortKey::Modified, dir: SortDir::Descending }, true);
+        sort_entries(
+            &mut v,
+            Sort {
+                key: SortKey::Modified,
+                dir: SortDir::Descending,
+            },
+            true,
+        );
         assert_eq!(names(&v), ["a", "c", "b"]);
     }
 
@@ -1114,7 +1173,10 @@ mod tests {
             entry("a", false, 42, 2),
             entry("b", false, 42, 3),
         ];
-        let sort = Sort { key: SortKey::Size, dir: SortDir::Ascending };
+        let sort = Sort {
+            key: SortKey::Size,
+            dir: SortDir::Ascending,
+        };
 
         sort_entries(&mut v, sort, true);
         assert_eq!(names(&v), ["a", "b", "c"]);
@@ -1149,10 +1211,7 @@ mod tests {
 
     #[test]
     fn folders_first_is_optional() {
-        let mut v = vec![
-            entry("zdir", true, 0, 1),
-            entry("afile", false, 1, 2),
-        ];
+        let mut v = vec![entry("zdir", true, 0, 1), entry("afile", false, 1, 2)];
         sort_entries(&mut v, Sort::default(), true);
         assert_eq!(names(&v), ["zdir", "afile"]);
         sort_entries(&mut v, Sort::default(), false);
@@ -1279,10 +1338,22 @@ mod bench {
             })
             .collect();
 
-        for key in [SortKey::Name, SortKey::Size, SortKey::Kind, SortKey::Modified] {
+        for key in [
+            SortKey::Name,
+            SortKey::Size,
+            SortKey::Kind,
+            SortKey::Modified,
+        ] {
             let mut work = entries.clone();
             let start = std::time::Instant::now();
-            sort_entries(&mut work, Sort { key, dir: SortDir::Descending }, true);
+            sort_entries(
+                &mut work,
+                Sort {
+                    key,
+                    dir: SortDir::Descending,
+                },
+                true,
+            );
             println!("{key:?}: {:?}", start.elapsed());
         }
         entries.clear();
@@ -1328,7 +1399,10 @@ mod time_ago_tests {
         // `duration_since` errors rather than going negative, and a file dated
         // ahead of the clock is a broken timestamp rather than an event.
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000_000_000);
-        assert_eq!(format_time_ago(now + Duration::from_secs(86400), now), "just now");
+        assert_eq!(
+            format_time_ago(now + Duration::from_secs(86400), now),
+            "just now"
+        );
     }
 
     #[test]

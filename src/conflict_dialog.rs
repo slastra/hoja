@@ -125,11 +125,12 @@ impl Render for ConflictDialog {
                 .py_1()
                 .rounded_md()
                 .when(style != ButtonStyle::Ghost, |el| {
-                    el.border_1().border_color(if style == ButtonStyle::Primary {
-                        colors.border_selected
-                    } else {
-                        colors.border
-                    })
+                    el.border_1()
+                        .border_color(if style == ButtonStyle::Primary {
+                            colors.border_selected
+                        } else {
+                            colors.border
+                        })
                 })
                 .when(style == ButtonStyle::Primary, |el| {
                     el.bg(colors.element_selected)

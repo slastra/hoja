@@ -38,7 +38,11 @@ pub fn open(path: &Path) -> std::io::Result<()> {
     } else {
         path.to_path_buf()
     };
-    detached("xdg-open", &[arg.as_os_str().to_string_lossy().into_owned()], None)
+    detached(
+        "xdg-open",
+        &[arg.as_os_str().to_string_lossy().into_owned()],
+        None,
+    )
 }
 
 /// Applications registered for this file's MIME type, best candidates first.
@@ -87,7 +91,11 @@ pub fn launch(app: &AppLaunch) -> std::io::Result<()> {
     detached(&app.argv[0], &app.argv[1..], app.cwd.as_deref())
 }
 
-fn detached(program: &str, args: &[impl AsRef<std::ffi::OsStr>], cwd: Option<&Path>) -> std::io::Result<()> {
+fn detached(
+    program: &str,
+    args: &[impl AsRef<std::ffi::OsStr>],
+    cwd: Option<&Path>,
+) -> std::io::Result<()> {
     // setsid -f double-forks into a new session: the child survives us and
     // never becomes our zombie.
     let mut cmd = Command::new("setsid");
@@ -126,7 +134,11 @@ fn entries() -> &'static HashMap<String, DesktopEntry> {
             // Desktop-file id: path relative to the applications dir with '/'
             // replaced by '-'; appid() gives the stem. Index under both the
             // file name and the bare id so mimeapps references resolve.
-            if let Some(name) = entry.path.file_name().map(|n| n.to_string_lossy().into_owned()) {
+            if let Some(name) = entry
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+            {
                 map.entry(name).or_insert_with(|| entry.clone());
             }
         }
@@ -409,10 +421,7 @@ mod tests {
 
     #[test]
     fn an_unknown_type_is_its_own_only_ancestor() {
-        assert_eq!(
-            ancestors_from("x/y".into(), &HashMap::new()),
-            ["x/y"]
-        );
+        assert_eq!(ancestors_from("x/y".into(), &HashMap::new()), ["x/y"]);
     }
 
     #[test]

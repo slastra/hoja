@@ -114,8 +114,7 @@ pub fn copy_contents(
             break;
         }
 
-        let hole_start = match rustix::fs::seek(src, rustix::fs::SeekFrom::Hole(data_start))
-        {
+        let hole_start = match rustix::fs::seek(src, rustix::fs::SeekFrom::Hole(data_start)) {
             Ok(pos) => pos.min(len),
             Err(_) => len,
         };
@@ -195,7 +194,9 @@ fn copy_extent(
                 }
                 // Cross-fs-type, or fs refuses: permanent flip to read/write
                 // for this file. EXDEV can't "start working" halfway through.
-                Err(Errno::XDEV) | Err(Errno::INVAL) | Err(Errno::NOSYS)
+                Err(Errno::XDEV)
+                | Err(Errno::INVAL)
+                | Err(Errno::NOSYS)
                 | Err(Errno::OPNOTSUPP) => {
                     *cfr_ok = false;
                     *mechanism = CopyMechanism::ReadWrite;

@@ -57,7 +57,10 @@ pub struct Failure {
 /// Flat because `uniform_list` virtualizes on a single row height, and a job
 /// with thousands of failures is exactly the one that needs virtualizing.
 enum Line {
-    Reason { text: String, count: usize },
+    Reason {
+        text: String,
+        count: usize,
+    },
     File(String),
     /// The tail of a group that ran past `MAX_FILES_PER_GROUP`.
     More(usize),
@@ -216,7 +219,9 @@ impl Render for FailureReport {
         // On the list itself, never a parent: it virtualizes, so it builds
         // however many rows fit *its own* height and a height on an ancestor
         // tells it nothing.
-        .h(px(LINE_HEIGHT * (self.lines.len() as f32).min(MAX_VISIBLE_LINES)));
+        .h(px(
+            LINE_HEIGHT * (self.lines.len() as f32).min(MAX_VISIBLE_LINES)
+        ));
 
         div()
             .occlude()
@@ -446,12 +451,18 @@ mod grouping_tests {
 
     #[test]
     fn the_errno_in_parentheses_is_dropped() {
-        assert_eq!(tidy("Open: File name too long (os error 36)"), "Open: File name too long");
+        assert_eq!(
+            tidy("Open: File name too long (os error 36)"),
+            "Open: File name too long"
+        );
     }
 
     #[test]
     fn a_reason_that_never_had_an_errno_is_untouched() {
-        assert_eq!(tidy("Open: special files are not copied"), "Open: special files are not copied");
+        assert_eq!(
+            tidy("Open: special files are not copied"),
+            "Open: special files are not copied"
+        );
     }
 
     #[test]
@@ -537,9 +548,7 @@ mod grouping_tests {
         );
         // And the heading that kept no paths says so rather than sitting empty.
         assert!(
-            lines
-                .iter()
-                .any(|line| matches!(line, Line::More(5_000))),
+            lines.iter().any(|line| matches!(line, Line::More(5_000))),
             "the reason with no examples reports all of its files as unnamed"
         );
     }
@@ -552,7 +561,10 @@ mod grouping_tests {
             ("/t/b", "Open: Permission denied"),
         ]);
         let lines = group(&counts, &examples, None);
-        assert_eq!(reasons(&lines), vec![("Open: Permission denied".into(), 900)]);
+        assert_eq!(
+            reasons(&lines),
+            vec![("Open: Permission denied".into(), 900)]
+        );
         assert!(matches!(lines.last(), Some(Line::More(898))));
     }
 

@@ -270,7 +270,8 @@ impl State {
     /// caller rather than throttled here.
     pub fn save(&self, dirty: Dirty, cx: &App) {
         let state = self.clone();
-        cx.background_spawn(async move { state.commit(dirty) }).detach();
+        cx.background_spawn(async move { state.commit(dirty) })
+            .detach();
     }
 
     /// The same write, on the calling thread.
@@ -466,7 +467,11 @@ mod tests {
         assert!(settings.view.show_hidden.is_none(), "unset stays unset");
 
         let view = initial_view(&settings, &State::default(), Winner::State);
-        assert_eq!(view, ViewSettings::default(), "and falls back to the default");
+        assert_eq!(
+            view,
+            ViewSettings::default(),
+            "and falls back to the default"
+        );
     }
 
     #[test]
@@ -494,13 +499,19 @@ mod tests {
 
         let view = initial_view(&settings, &state, Winner::State);
         assert!(view.show_hidden, "the toggle you last flipped wins");
-        assert!(!view.folders_first, "what you never toggled stays configured");
+        assert!(
+            !view.folders_first,
+            "what you never toggled stays configured"
+        );
 
         // The other way round: the settings file is the newer of the two, so
         // what it says beats what was remembered, and where it says nothing,
         // the remembered value still stands.
         let view = initial_view(&settings, &state, Winner::Settings);
-        assert!(!view.show_hidden, "an edit made while hoja was closed applies");
+        assert!(
+            !view.show_hidden,
+            "an edit made while hoja was closed applies"
+        );
         assert!(!view.folders_first);
 
         let state = State {
@@ -536,7 +547,13 @@ mod tests {
             }),
             ..State::default()
         };
-        theirs.commit_at(&path, Dirty { sort: true, ..Dirty::default() });
+        theirs.commit_at(
+            &path,
+            Dirty {
+                sort: true,
+                ..Dirty::default()
+            },
+        );
 
         // This one started before that, so its snapshot still says name-ascending,
         // but it only ever toggled hidden files.
@@ -545,7 +562,13 @@ mod tests {
             show_hidden: Some(true),
             ..State::default()
         };
-        ours.commit_at(&path, Dirty { show_hidden: true, ..Dirty::default() });
+        ours.commit_at(
+            &path,
+            Dirty {
+                show_hidden: true,
+                ..Dirty::default()
+            },
+        );
 
         let merged = State::read(&path);
         assert_eq!(merged.show_hidden, Some(true), "our toggle landed");
@@ -558,9 +581,15 @@ mod tests {
     #[test]
     fn nothing_dirty_writes_nothing() {
         let path = temp_dir("clean").join("state.json");
-        State { show_hidden: Some(true), ..State::default() }
-            .commit_at(&path, Dirty::default());
-        assert!(!path.exists(), "an untouched instance leaves the file alone");
+        State {
+            show_hidden: Some(true),
+            ..State::default()
+        }
+        .commit_at(&path, Dirty::default());
+        assert!(
+            !path.exists(),
+            "an untouched instance leaves the file alone"
+        );
     }
 
     #[test]
@@ -575,7 +604,13 @@ mod tests {
                     let mut state = State::default();
                     state.column_widths.insert(format!("col{i}"), i as f32);
                     for _ in 0..20 {
-                        state.commit_at(&path, Dirty { column_widths: true, ..Dirty::default() });
+                        state.commit_at(
+                            &path,
+                            Dirty {
+                                column_widths: true,
+                                ..Dirty::default()
+                            },
+                        );
                     }
                 })
             })
@@ -587,7 +622,12 @@ mod tests {
         // column_widths is one field, so the last writer legitimately owns it;
         // what must not happen is a torn or unparseable file.
         let merged = State::read(&path);
-        assert_eq!(merged.column_widths.len(), 1, "got {:?}", merged.column_widths);
+        assert_eq!(
+            merged.column_widths.len(),
+            1,
+            "got {:?}",
+            merged.column_widths
+        );
     }
 
     #[test]
@@ -604,16 +644,31 @@ mod tests {
                     ..State::default()
                 };
                 for _ in 0..50 {
-                    state.commit_at(&path, Dirty { sort: true, ..Dirty::default() });
+                    state.commit_at(
+                        &path,
+                        Dirty {
+                            sort: true,
+                            ..Dirty::default()
+                        },
+                    );
                 }
             }
         });
         let hidden = std::thread::spawn({
             let path = path.clone();
             move || {
-                let state = State { show_hidden: Some(true), ..State::default() };
+                let state = State {
+                    show_hidden: Some(true),
+                    ..State::default()
+                };
                 for _ in 0..50 {
-                    state.commit_at(&path, Dirty { show_hidden: true, ..Dirty::default() });
+                    state.commit_at(
+                        &path,
+                        Dirty {
+                            show_hidden: true,
+                            ..Dirty::default()
+                        },
+                    );
                 }
             }
         });

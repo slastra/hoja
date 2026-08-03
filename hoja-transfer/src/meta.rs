@@ -158,12 +158,9 @@ pub fn apply_dir_meta(src_meta: &std::fs::Metadata, dest: &Path) -> MetaOutcome 
             tv_nsec: src_meta.mtime_nsec(),
         },
     };
-    if let Err(err) = rustix::fs::utimensat(
-        rustix::fs::CWD,
-        dest,
-        &times,
-        rustix::fs::AtFlags::empty(),
-    ) {
+    if let Err(err) =
+        rustix::fs::utimensat(rustix::fs::CWD, dest, &times, rustix::fs::AtFlags::empty())
+    {
         warnings.push(format!("dir mtime not preserved: {err}"));
     }
 

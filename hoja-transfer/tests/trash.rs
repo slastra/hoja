@@ -147,7 +147,10 @@ fn same_name_from_two_places_gets_a_counter() {
     restore(&second).unwrap();
     restore(&first).unwrap();
     assert_eq!(std::fs::read_to_string(a.join("dup.txt")).unwrap(), "first");
-    assert_eq!(std::fs::read_to_string(b.join("dup.txt")).unwrap(), "second");
+    assert_eq!(
+        std::fs::read_to_string(b.join("dup.txt")).unwrap(),
+        "second"
+    );
 }
 
 #[test]
@@ -215,5 +218,11 @@ fn a_symlink_is_trashed_without_following_it() {
 
     assert!(!link.exists());
     assert!(target.exists(), "the link's target must be untouched");
-    assert!(item.file.symlink_metadata().unwrap().file_type().is_symlink());
+    assert!(
+        item.file
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
 }

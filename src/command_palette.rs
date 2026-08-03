@@ -23,8 +23,8 @@ use std::collections::HashMap;
 
 use fuzzy_nucleo::StringMatchCandidate;
 use gpui::{
-    Action, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Subscription,
-    Window, actions, div, prelude::*, uniform_list,
+    Action, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Subscription, Window,
+    actions, div, prelude::*, uniform_list,
 };
 use theme::ActiveTheme;
 
@@ -191,7 +191,8 @@ impl CommandPalette {
     ///   dispatches into the palette's own path where nothing handles it.
     pub fn new(previous_focus: FocusHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        let query = cx.new(|cx| PathEditor::new(String::new(), window, cx).with_placeholder("Run a command"));
+        let query = cx
+            .new(|cx| PathEditor::new(String::new(), window, cx).with_placeholder("Run a command"));
 
         // The query field carries the AddressBar context *inside* the palette's
         // own, and the deeper context wins, so enter and escape reach the
@@ -295,11 +296,7 @@ impl EventEmitter<DismissEvent> for CommandPalette {}
 ///
 /// An action that cannot be built from its type is dropped by gpui before we
 /// see it; if a command goes missing from the palette, that is the reason.
-fn available_commands(
-    origin: &FocusHandle,
-    window: &mut Window,
-    cx: &mut App,
-) -> Vec<Command> {
+fn available_commands(origin: &FocusHandle, window: &mut Window, cx: &mut App) -> Vec<Command> {
     window
         .available_actions(cx)
         .into_iter()
@@ -346,8 +343,7 @@ fn save_history(history: &HashMap<String, usize>, cx: &App) {
         return;
     };
     // Keep only the most used, so the file cannot grow without bound.
-    let mut entries: Vec<(String, usize)> =
-        history.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    let mut entries: Vec<(String, usize)> = history.iter().map(|(k, v)| (k.clone(), *v)).collect();
     entries.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     entries.truncate(HISTORY_LIMIT);
     let trimmed: HashMap<String, usize> = entries.into_iter().collect();
@@ -388,12 +384,7 @@ impl Render for CommandPalette {
 }
 
 impl CommandPalette {
-    fn render_row(
-        &self,
-        ix: usize,
-        window: &Window,
-        cx: &Context<Self>,
-    ) -> gpui::AnyElement {
+    fn render_row(&self, ix: usize, window: &Window, cx: &Context<Self>) -> gpui::AnyElement {
         let colors = cx.theme().colors();
         let Some(matched) = self.picker.matches.get(ix) else {
             return div().into_any_element();
@@ -431,12 +422,12 @@ impl CommandPalette {
                 this.picker.selected = ix;
                 this.confirm(window, cx);
             }))
-            .child(
-                div()
-                    .flex_1()
-                    .truncate()
-                    .child(highlighted_label(command.name.clone(), matched, window, cx)),
-            )
+            .child(div().flex_1().truncate().child(highlighted_label(
+                command.name.clone(),
+                matched,
+                window,
+                cx,
+            )))
             .children(keycaps)
             .into_any_element()
     }

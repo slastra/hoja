@@ -19,8 +19,8 @@ use gpui::{
     Style, StyleRefinement, Window, px, relative, size,
 };
 use parking_lot::Mutex;
-use theme::ActiveTheme;
 use smallvec::SmallVec;
+use theme::ActiveTheme;
 
 use crate::dir_pane::DirPane;
 

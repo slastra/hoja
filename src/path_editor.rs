@@ -13,11 +13,11 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, Context, DismissEvent, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, InspectorElementId,
-    IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
-    Pixels, Point, ShapedLine, SharedString, Style, TextRun, UTF16Selection, Window, actions, div,
-    fill, point, prelude::*, px, relative, size,
+    App, Bounds, Context, DismissEvent, ElementId, ElementInputHandler, Entity, EntityInputHandler,
+    EventEmitter, FocusHandle, Focusable, GlobalElementId, InspectorElementId, IntoElement,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
+    ShapedLine, SharedString, Style, TextRun, UTF16Selection, Window, actions, div, fill, point,
+    prelude::*, px, relative, size,
 };
 use theme::ActiveTheme;
 use unicode_segmentation::UnicodeSegmentation;
@@ -185,8 +185,7 @@ impl PathEditor {
         .detach();
 
         let len = initial.len();
-        let selected_range =
-            initial_selection.start.min(len)..initial_selection.end.min(len);
+        let selected_range = initial_selection.start.min(len)..initial_selection.end.min(len);
         Self {
             focus_handle,
             content: initial.into(),
@@ -432,7 +431,12 @@ impl PathEditor {
         line.closest_index_for_x(position.x - bounds.left() + self.scroll_x)
     }
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let index = self.index_for_mouse_position(event.position);
         match event.click_count {
             2 => {
@@ -461,7 +465,12 @@ impl PathEditor {
         self.is_selecting = false;
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.is_selecting {
             let index = self.index_for_mouse_position(event.position);
             self.select_to(index, cx);
@@ -800,7 +809,9 @@ impl gpui::Element for PathElement {
         } else if cursor_x - scroll_x > width - caret_w {
             scroll_x = cursor_x - width + caret_w;
         }
-        scroll_x = scroll_x.max(px(0.)).min((line.width - width + caret_w).max(px(0.)));
+        scroll_x = scroll_x
+            .max(px(0.))
+            .min((line.width - width + caret_w).max(px(0.)));
 
         let origin_x = bounds.left() - scroll_x;
         let (selection, cursor) = if selected_range.is_empty() {
@@ -818,7 +829,10 @@ impl gpui::Element for PathElement {
             (
                 Some(fill(
                     Bounds::from_corners(
-                        point(origin_x + line.x_for_index(selected_range.start), bounds.top()),
+                        point(
+                            origin_x + line.x_for_index(selected_range.start),
+                            bounds.top(),
+                        ),
                         point(
                             origin_x + line.x_for_index(selected_range.end),
                             bounds.bottom(),

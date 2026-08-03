@@ -107,8 +107,14 @@ mod tests {
         let long = NOTIFY_AFTER + Duration::from_secs(1);
         let short = Duration::from_millis(200);
 
-        assert!(worth_announcing(Outcome::Completed, 0, long), "you walked away");
-        assert!(!worth_announcing(Outcome::Completed, 0, short), "you watched it happen");
+        assert!(
+            worth_announcing(Outcome::Completed, 0, long),
+            "you walked away"
+        );
+        assert!(
+            !worth_announcing(Outcome::Completed, 0, short),
+            "you watched it happen"
+        );
         assert!(
             worth_announcing(Outcome::CompletedWithErrors, 3, short),
             "errors announce however quick, since you may not be looking"

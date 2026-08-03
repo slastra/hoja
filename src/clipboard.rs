@@ -87,8 +87,7 @@ pub fn read_external() -> Option<ClipboardSet> {
             .collect();
         if !paths.is_empty() {
             // KDE marks cut state in a separate flavour: single byte, 1 = cut.
-            let cut = wl_paste("application/x-kde-cutselection")
-                .is_some_and(|v| v.trim() == "1");
+            let cut = wl_paste("application/x-kde-cutselection").is_some_and(|v| v.trim() == "1");
             return Some(ClipboardSet { paths, cut });
         }
     }

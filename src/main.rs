@@ -1,14 +1,14 @@
 mod assets;
 mod clipboard;
-mod config;
 mod command_palette;
+mod config;
 mod conflict_dialog;
 mod dir_pane;
 mod failure_report;
 mod file_menu;
-mod history;
 mod fs;
 mod git;
+mod history;
 mod icon;
 mod measure;
 mod notifications;
@@ -29,19 +29,18 @@ use gpui_platform::application;
 use theme::LoadThemes;
 
 use assets::Assets;
-use dir_pane::{
-    ClearSelection, CursorDown, CursorUp, EditPath, StartSearch, ExtendDown, ExtendPageDown, ExtendPageUp,
-    ExtendToBottom, ExtendToTop, ExtendUp, GoHome, GoUp, MoveDown, MovePageDown, MovePageUp,
-    MoveToBottom, MoveToTop, MoveUp, NavBack, NavForward, OpenSelected, RenameSelected,
-    SelectAll, ToggleHiddenFiles, ToggleSelection,
-};
 use command_palette as palette;
-use place_finder as places_finder;
+use dir_pane::{
+    ClearSelection, CursorDown, CursorUp, EditPath, ExtendDown, ExtendPageDown, ExtendPageUp,
+    ExtendToBottom, ExtendToTop, ExtendUp, GoHome, GoUp, MoveDown, MovePageDown, MovePageUp,
+    MoveToBottom, MoveToTop, MoveUp, NavBack, NavForward, OpenSelected, RenameSelected, SelectAll,
+    StartSearch, ToggleHiddenFiles, ToggleSelection,
+};
 use file_menu::{Cancel as MenuCancel, Confirm as MenuConfirm, SelectNext, SelectPrevious};
 use path_editor as ab;
+use place_finder as places_finder;
 use workspace::{
-    ClosePane, Copy, Cut, DismissJobs, FocusNext, FocusPrevious, Paste,
-    SplitRight, Undo, Workspace,
+    ClosePane, Copy, Cut, DismissJobs, FocusNext, FocusPrevious, Paste, SplitRight, Undo, Workspace,
 };
 
 struct Args {
@@ -65,9 +64,7 @@ fn parse_args() -> Args {
             // A desktop launcher hands a file manager `file:///…` rather than
             // a path, so accept both.
             other => {
-                dir = Some(
-                    clipboard::uri_to_path(other).unwrap_or_else(|| PathBuf::from(other)),
-                )
+                dir = Some(clipboard::uri_to_path(other).unwrap_or_else(|| PathBuf::from(other)))
             }
         }
     }
@@ -160,14 +157,22 @@ fn main() {
             KeyBinding::new("pageup", MovePageUp, Some("DirPane && !AddressBar")),
             KeyBinding::new("pagedown", MovePageDown, Some("DirPane && !AddressBar")),
             KeyBinding::new("shift-pageup", ExtendPageUp, Some("DirPane && !AddressBar")),
-            KeyBinding::new("shift-pagedown", ExtendPageDown, Some("DirPane && !AddressBar")),
+            KeyBinding::new(
+                "shift-pagedown",
+                ExtendPageDown,
+                Some("DirPane && !AddressBar"),
+            ),
             KeyBinding::new("home", MoveToTop, Some("DirPane && !AddressBar")),
             KeyBinding::new("end", MoveToBottom, Some("DirPane && !AddressBar")),
             KeyBinding::new("shift-home", ExtendToTop, Some("DirPane && !AddressBar")),
             KeyBinding::new("shift-end", ExtendToBottom, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-up", CursorUp, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-down", CursorDown, Some("DirPane && !AddressBar")),
-            KeyBinding::new("ctrl-space", ToggleSelection, Some("DirPane && !AddressBar")),
+            KeyBinding::new(
+                "ctrl-space",
+                ToggleSelection,
+                Some("DirPane && !AddressBar"),
+            ),
             KeyBinding::new("ctrl-a", SelectAll, Some("DirPane && !AddressBar")),
             KeyBinding::new("escape", ClearSelection, Some("DirPane && !AddressBar")),
             KeyBinding::new("delete", workspace::Delete, Some("DirPane && !AddressBar")),
@@ -225,7 +230,8 @@ fn main() {
 
         // The XDG mime database and .desktop entries cost ~12ms to parse. Do it
         // before the first right-click asks for them.
-        cx.background_spawn(async { opener::warm_caches() }).detach();
+        cx.background_spawn(async { opener::warm_caches() })
+            .detach();
 
         let window_size = state
             .window
@@ -239,9 +245,7 @@ fn main() {
                 app_id: Some("hoja".into()),
                 ..Default::default()
             },
-            |window, cx| {
-                cx.new(|cx| Workspace::new(args.dir.clone(), settings, state, window, cx))
-            },
+            |window, cx| cx.new(|cx| Workspace::new(args.dir.clone(), settings, state, window, cx)),
         )
         .unwrap();
         cx.activate(true);

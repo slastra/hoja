@@ -51,22 +51,19 @@ pub struct PlaceFinder {
 impl PlaceFinder {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        let query = cx.new(|cx| {
-            PathEditor::new(String::new(), window, cx).with_placeholder("Go to a place")
-        });
+        let query = cx
+            .new(|cx| PathEditor::new(String::new(), window, cx).with_placeholder("Go to a place"));
 
         // As in the palette: the query field carries the AddressBar context
         // inside this one, and the deeper context wins, so enter and escape
         // reach the editor. Its events mean exactly open and close.
-        let subscriptions = vec![cx.subscribe_in(
-            &query,
-            window,
-            |this, _, event, window, cx| match event {
+        let subscriptions = vec![
+            cx.subscribe_in(&query, window, |this, _, event, window, cx| match event {
                 PathEditorEvent::Edited => this.rematch(cx),
                 PathEditorEvent::Committed(_) => this.confirm(window, cx),
                 PathEditorEvent::Cancelled => cx.emit(DismissEvent),
-            },
-        )];
+            }),
+        ];
 
         // Home and bookmarks are a file read; volumes shell out to lsblk, which
         // stalls on a spun-down or flaky enclosure. Open on what is free and
@@ -178,7 +175,12 @@ impl PlaceFinder {
                     .text_color(colors.text)
                     // The candidate is "label detail", so the label's own
                     // highlight offsets are the leading part of the match.
-                    .child(highlighted_label(place.label().to_string(), matched, window, cx)),
+                    .child(highlighted_label(
+                        place.label().to_string(),
+                        matched,
+                        window,
+                        cx,
+                    )),
             )
             .child(
                 div()

@@ -7,7 +7,7 @@ use std::path::Path;
 
 use common::*;
 use hoja_transfer::{
-    ConflictChoice, Event, ConflictDecision, JobPolicy, JobSpec, Operation, Outcome, spawn_job,
+    ConflictChoice, ConflictDecision, Event, JobPolicy, JobSpec, Operation, Outcome, spawn_job,
 };
 
 fn copy_spec(sources: Vec<std::path::PathBuf>, dest: &Path) -> JobSpec {
@@ -70,7 +70,10 @@ fn a_directory_copy_knows_its_total_before_it_starts() {
                 progress.walk_complete.load(Ordering::Relaxed),
                 "the total is not known yet, so the bar cannot move"
             );
-            seen.store(progress.bytes_total.load(Ordering::Relaxed), Ordering::Relaxed);
+            seen.store(
+                progress.bytes_total.load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
             ConflictDecision::Apply {
                 choice: ConflictChoice::Overwrite,
                 apply_to_all: true,
@@ -78,7 +81,11 @@ fn a_directory_copy_knows_its_total_before_it_starts() {
         }
     });
     assert_eq!(summary.outcome, Outcome::Completed);
-    assert_eq!(seen.load(Ordering::Relaxed), 3000, "total, while still copying");
+    assert_eq!(
+        seen.load(Ordering::Relaxed),
+        3000,
+        "total, while still copying"
+    );
     assert_eq!(progress.files_total.load(Ordering::Relaxed), 2);
     assert_eq!(
         progress.bytes_done.load(Ordering::Relaxed),
@@ -106,7 +113,11 @@ fn a_symlink_does_not_inflate_the_byte_total() {
     assert_eq!(summary.outcome, Outcome::Completed);
 
     use std::sync::atomic::Ordering;
-    assert_eq!(progress.files_total.load(Ordering::Relaxed), 2, "file + link");
+    assert_eq!(
+        progress.files_total.load(Ordering::Relaxed),
+        2,
+        "file + link"
+    );
     assert_eq!(
         progress.bytes_total.load(Ordering::Relaxed),
         5000,
@@ -159,7 +170,11 @@ fn tier0_same_fs_move_is_a_rename() {
     assert_eq!(summary.stats.renames, 1);
     assert!(!src.exists());
     let dest = dst_dir.path().join("a.txt");
-    assert_eq!(std::fs::metadata(&dest).unwrap().ino(), src_ino, "same inode = rename");
+    assert_eq!(
+        std::fs::metadata(&dest).unwrap().ino(),
+        src_ino,
+        "same inode = rename"
+    );
 }
 
 #[test]
@@ -175,9 +190,18 @@ fn tier0_exdev_falls_to_copy_and_caches() {
     assert_eq!(summary.outcome, Outcome::Completed);
     assert_eq!(summary.stats.renames, 0, "no rename may succeed across fs");
     assert_eq!(summary.files_copied, 2);
-    assert!(!a.exists() && !b.exists(), "sources deleted after verified copy");
-    assert_eq!(std::fs::read(dst_dir.path().join("a.txt")).unwrap(), b"aaaa");
-    assert_eq!(std::fs::read(dst_dir.path().join("b.txt")).unwrap(), b"bbbb");
+    assert!(
+        !a.exists() && !b.exists(),
+        "sources deleted after verified copy"
+    );
+    assert_eq!(
+        std::fs::read(dst_dir.path().join("a.txt")).unwrap(),
+        b"aaaa"
+    );
+    assert_eq!(
+        std::fs::read(dst_dir.path().join("b.txt")).unwrap(),
+        b"bbbb"
+    );
 }
 
 #[test]
@@ -361,13 +385,7 @@ fn an_xattr_list_too_long_for_the_stack_buffer_still_copies() {
     for i in 0..40 {
         // ~28 bytes of name each: past 512 well before the end.
         let name = format!("user.hoja.padding.attribute.{i:04}");
-        if rustix::fs::setxattr(
-            &src,
-            name.as_str(),
-            b"v",
-            rustix::fs::XattrFlags::empty(),
-        )
-        .is_ok()
+        if rustix::fs::setxattr(&src, name.as_str(), b"v", rustix::fs::XattrFlags::empty()).is_ok()
         {
             set += 1;
         }
@@ -486,7 +504,11 @@ fn conflicts_prompt_once_with_apply_to_all() {
         apply_to_all: true,
     });
 
-    assert_eq!(conflict_count(&events), 1, "apply-to-all: one prompt for five");
+    assert_eq!(
+        conflict_count(&events),
+        1,
+        "apply-to-all: one prompt for five"
+    );
     assert_eq!(summary.files_skipped, 5);
     for i in 0..5 {
         assert_eq!(
@@ -510,7 +532,10 @@ fn overwrite_and_keep_both() {
         apply_to_all: false,
     });
     assert_eq!(summary.files_copied, 1);
-    assert_eq!(std::fs::read(dst_dir.path().join("x.tar.gz")).unwrap(), b"new");
+    assert_eq!(
+        std::fs::read(dst_dir.path().join("x.tar.gz")).unwrap(),
+        b"new"
+    );
 
     // KeepBoth with multi-part extension naming
     let handle = spawn_job(copy_spec(vec![src], dst_dir.path())).unwrap();
@@ -590,11 +615,7 @@ fn moving_a_directory_onto_an_existing_one_merges() {
     std::fs::create_dir(dst_dir.path().join("tree")).unwrap();
     write_file(&dst_dir.path().join("tree"), "existing.txt", b"e");
 
-    let handle = spawn_job(move_spec(
-        vec![src_dir.path().join("tree")],
-        dst_dir.path(),
-    ))
-    .unwrap();
+    let handle = spawn_job(move_spec(vec![src_dir.path().join("tree")], dst_dir.path())).unwrap();
     let (_, summary) = drain(&handle, never_conflict);
 
     assert_eq!(summary.outcome, Outcome::Completed);
@@ -694,7 +715,11 @@ fn random_sparse_files_round_trip() {
     let src_dir = ext4_dir();
     for case in 0..6 {
         // Alternate destinations: ext4 (cfr path) and tmpfs (forced read/write).
-        let dst_dir = if case % 2 == 0 { ext4_dir() } else { tmpfs_dir() };
+        let dst_dir = if case % 2 == 0 {
+            ext4_dir()
+        } else {
+            tmpfs_dir()
+        };
         let len = (next() % (8 * 1024 * 1024)).max(1);
         let src = src_dir.path().join(format!("rand{case}.bin"));
         let file = std::fs::File::create(&src).unwrap();
@@ -789,7 +814,10 @@ fn a_name_that_only_just_fits_still_copies() {
         b"payload",
         "the long-named file"
     );
-    assert_eq!(std::fs::read(dest.path().join("zzz.txt")).unwrap(), b"after");
+    assert_eq!(
+        std::fs::read(dest.path().join("zzz.txt")).unwrap(),
+        b"after"
+    );
     no_partials_under(dest.path());
 }
 
@@ -820,7 +848,10 @@ fn keep_both_on_a_name_that_only_just_fits_still_copies() {
     assert_eq!(summary.outcome, Outcome::Completed);
     assert!(summary.errors.is_empty(), "{:?}", summary.errors);
     // The original is untouched and the copy landed beside it under some name.
-    assert_eq!(std::fs::read(dest.path().join(&long)).unwrap(), b"already here");
+    assert_eq!(
+        std::fs::read(dest.path().join(&long)).unwrap(),
+        b"already here"
+    );
     let copies: Vec<_> = std::fs::read_dir(dest.path())
         .unwrap()
         .filter_map(Result::ok)

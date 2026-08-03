@@ -75,7 +75,13 @@ impl MenuItem {
     }
 
     fn selectable(&self) -> bool {
-        matches!(self, Self::Action { disabled: false, .. })
+        matches!(
+            self,
+            Self::Action {
+                disabled: false,
+                ..
+            }
+        )
     }
 }
 
@@ -140,7 +146,12 @@ impl FileMenu {
         cx.notify();
     }
 
-    fn select_previous(&mut self, _: &SelectPrevious, _window: &mut Window, cx: &mut Context<Self>) {
+    fn select_previous(
+        &mut self,
+        _: &SelectPrevious,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.move_selection(-1);
         cx.notify();
     }
@@ -175,10 +186,15 @@ impl Render for FileMenu {
         let colors = cx.theme().colors();
         // Slot reservation is a property of the menu, not the item: without it
         // a plain item in a menu of toggles sits left of everything else.
-        let reserve_check_slot = self
-            .items
-            .iter()
-            .any(|item| matches!(item, MenuItem::Action { checked: Some(_), .. }));
+        let reserve_check_slot = self.items.iter().any(|item| {
+            matches!(
+                item,
+                MenuItem::Action {
+                    checked: Some(_),
+                    ..
+                }
+            )
+        });
 
         div()
             // Clicks on the menu must not fall through to rows underneath.
@@ -203,11 +219,7 @@ impl Render for FileMenu {
             .text_sm()
             .text_color(colors.text)
             .children(self.items.iter().enumerate().map(|(ix, item)| match item {
-                MenuItem::Separator => div()
-                    .my_1()
-                    .h(px(1.))
-                    .bg(colors.border)
-                    .into_any_element(),
+                MenuItem::Separator => div().my_1().h(px(1.)).bg(colors.border).into_any_element(),
                 MenuItem::Action {
                     label,
                     handler,

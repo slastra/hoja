@@ -260,7 +260,9 @@ fn count(meta: &std::fs::Metadata, walk: &Walk, ix: usize) {
             return;
         }
     }
-    walk.roots[ix].bytes.fetch_add(meta.len(), Ordering::Relaxed);
+    walk.roots[ix]
+        .bytes
+        .fetch_add(meta.len(), Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -277,8 +279,7 @@ mod tests {
     }
 
     fn fixture(tag: &str) -> PathBuf {
-        let root =
-            std::env::temp_dir().join(format!("hoja-measure-{}-{tag}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("hoja-measure-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("a/deep")).unwrap();
         std::fs::write(root.join("top.bin"), vec![0u8; 1000]).unwrap();
@@ -319,8 +320,7 @@ mod tests {
     fn a_small_root_settles_while_a_large_one_is_still_running() {
         // The reason roots count their own outstanding work rather than waiting
         // on the walk: a column cell must not sit blank because of a neighbour.
-        let root = std::env::temp_dir()
-            .join(format!("hoja-measure-{}-uneven", std::process::id()));
+        let root = std::env::temp_dir().join(format!("hoja-measure-{}-uneven", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("small")).unwrap();
         std::fs::write(root.join("small/one.bin"), vec![0u8; 100]).unwrap();
@@ -343,7 +343,11 @@ mod tests {
             }
             std::thread::sleep(Duration::from_micros(200));
         }
-        assert_eq!(measure.bytes(0), 100, "and its figure is final when it says so");
+        assert_eq!(
+            measure.bytes(0),
+            100,
+            "and its figure is final when it says so"
+        );
 
         settle(&measure);
         assert!(measure.settled(1));
@@ -380,8 +384,7 @@ mod tests {
     #[test]
     fn dropping_the_handle_stops_the_walk() {
         // Wide enough that the walk cannot plausibly finish before the drop.
-        let root =
-            std::env::temp_dir().join(format!("hoja-measure-{}-cancel", std::process::id()));
+        let root = std::env::temp_dir().join(format!("hoja-measure-{}-cancel", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for d in 0..40 {
             let dir = root.join(format!("d{d}"));

@@ -18,8 +18,8 @@ use crate::file_menu::{FileMenu, MenuItem};
 use crate::fs::{self, DirEntry, Sort, SortDir, SortKey, ViewSettings};
 use crate::git::GitStatus;
 use crate::history::History;
-use crate::path_editor::{PathEditor, PathEditorEvent};
 use crate::icon::Icon;
+use crate::path_editor::{PathEditor, PathEditorEvent};
 use crate::workspace;
 
 actions!(
@@ -801,7 +801,9 @@ impl DirPane {
 
     /// Paths of the current selection, in listing order.
     pub fn selected_paths(&self) -> Vec<PathBuf> {
-        self.selected.iter().filter_map(|ix| self.entries.get(ix))
+        self.selected
+            .iter()
+            .filter_map(|ix| self.entries.get(ix))
             .map(|e| e.path.clone())
             .collect()
     }
@@ -836,9 +838,16 @@ impl DirPane {
         let successor = self.entries[first_gone..]
             .iter()
             .find(|entry| surviving(entry))
-            .or_else(|| self.entries[..first_gone].iter().rev().find(|e| surviving(e)));
+            .or_else(|| {
+                self.entries[..first_gone]
+                    .iter()
+                    .rev()
+                    .find(|e| surviving(e))
+            });
 
-        self.pending_select = successor.map(|entry| vec![entry.path.clone()]).unwrap_or_default();
+        self.pending_select = successor
+            .map(|entry| vec![entry.path.clone()])
+            .unwrap_or_default();
         self.reload(cx);
     }
 
@@ -885,9 +894,15 @@ impl DirPane {
             ));
             items.push(MenuItem::Separator);
             items.push(MenuItem::action("Cut", dispatch(Box::new(workspace::Cut))));
-            items.push(MenuItem::action("Copy", dispatch(Box::new(workspace::Copy))));
+            items.push(MenuItem::action(
+                "Copy",
+                dispatch(Box::new(workspace::Copy)),
+            ));
         }
-        items.push(MenuItem::action("Paste", dispatch(Box::new(workspace::Paste))));
+        items.push(MenuItem::action(
+            "Paste",
+            dispatch(Box::new(workspace::Paste)),
+        ));
         items.push(MenuItem::Separator);
         items.push(MenuItem::action(
             "New Folder",
@@ -1168,15 +1183,20 @@ impl DirPane {
         };
         // A shift-arrow with nothing selected yet anchors where it starts, so
         // the range grows from there rather than from row zero.
-        let anchor = self.anchor_ix.filter(|&a| a < self.entries.len()).unwrap_or(ix);
+        let anchor = self
+            .anchor_ix
+            .filter(|&a| a < self.entries.len())
+            .unwrap_or(ix);
         self.anchor_ix = Some(anchor);
         self.cursor_ix = Some(ix);
-        self.selected.set((anchor.min(ix)..=anchor.max(ix)).collect());
+        self.selected
+            .set((anchor.min(ix)..=anchor.max(ix)).collect());
         self.reveal(ix, cx);
     }
 
     fn reveal(&mut self, ix: usize, cx: &mut Context<Self>) {
-        self.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
+        self.scroll
+            .scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
         cx.notify();
     }
 
@@ -1309,7 +1329,6 @@ impl DirPane {
         }));
     }
 
-
     /// Turn a completed drop into a transfer request.
     ///
     /// `dest` is the folder that was dropped on, which is a row's own path for a
@@ -1349,11 +1368,7 @@ impl DirPane {
             None => Operation::Copy,
         };
 
-        cx.emit(PaneEvent::Transfer {
-            op,
-            sources,
-            dest,
-        });
+        cx.emit(PaneEvent::Transfer { op, sources, dest });
     }
 
     /// Re-list when something other than pane changes this directory.
@@ -1447,8 +1462,9 @@ impl DirPane {
         // A set, not the Vec: this runs once per entry, so a linear scan makes
         // restoring a large selection quadratic: measured at 11 seconds for
         // 100k rows selected, on the foreground executor.
-        let wanted: std::collections::HashSet<PathBuf> =
-            std::mem::take(&mut self.pending_select).into_iter().collect();
+        let wanted: std::collections::HashSet<PathBuf> = std::mem::take(&mut self.pending_select)
+            .into_iter()
+            .collect();
         self.selected.clear();
         self.anchor_ix = None;
         self.cursor_ix = None;
@@ -1464,7 +1480,9 @@ impl DirPane {
         self.anchor_ix = self.selected.first();
         self.cursor_ix = self.anchor_ix;
         match self.anchor_ix {
-            Some(ix) => self.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Nearest),
+            Some(ix) => self
+                .scroll
+                .scroll_to_item(ix, gpui::ScrollStrategy::Nearest),
             None => self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top),
         }
     }
@@ -1605,12 +1623,7 @@ impl DirPane {
         }
     }
 
-    fn rename_selected(
-        &mut self,
-        _: &RenameSelected,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn rename_selected(&mut self, _: &RenameSelected, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.cursor_ix.filter(|&ix| ix < self.entries.len()) else {
             return;
         };
@@ -1624,39 +1637,42 @@ impl DirPane {
         let name = entry.name.clone();
         let entry_path = entry.path.clone();
         let selection = fs::stem_range(&name);
-        let editor =
-            cx.new(|cx| PathEditor::new_with_selection(name, selection, window, cx));
+        let editor = cx.new(|cx| PathEditor::new_with_selection(name, selection, window, cx));
 
-        cx.subscribe_in(&editor, window, |this, editor, event, window, cx| match event {
-            PathEditorEvent::Committed(text) => {
-                let Some(ix) = this.renaming.as_ref().map(|r| r.ix) else {
-                    return;
-                };
-                match this.commit_rename(ix, text) {
-                    Ok(renamed) => {
-                        this.renaming = None;
-                        this.pending_select = vec![renamed];
-                        window.focus(&this.focus_handle, cx);
-                        this.reload(cx);
-                    }
-                    Err(reason) => {
-                        // The field turns red; the reason is available for a
-                        // tooltip or status line once there is somewhere to put it.
-                        let _ = reason;
-                        editor.update(cx, |editor, cx| {
-                            editor.error = true;
-                            cx.notify();
-                        });
+        cx.subscribe_in(
+            &editor,
+            window,
+            |this, editor, event, window, cx| match event {
+                PathEditorEvent::Committed(text) => {
+                    let Some(ix) = this.renaming.as_ref().map(|r| r.ix) else {
+                        return;
+                    };
+                    match this.commit_rename(ix, text) {
+                        Ok(renamed) => {
+                            this.renaming = None;
+                            this.pending_select = vec![renamed];
+                            window.focus(&this.focus_handle, cx);
+                            this.reload(cx);
+                        }
+                        Err(reason) => {
+                            // The field turns red; the reason is available for a
+                            // tooltip or status line once there is somewhere to put it.
+                            let _ = reason;
+                            editor.update(cx, |editor, cx| {
+                                editor.error = true;
+                                cx.notify();
+                            });
+                        }
                     }
                 }
-            }
-            PathEditorEvent::Edited => {}
-            PathEditorEvent::Cancelled => {
-                this.renaming = None;
-                window.focus(&this.focus_handle, cx);
-                cx.notify();
-            }
-        })
+                PathEditorEvent::Edited => {}
+                PathEditorEvent::Cancelled => {
+                    this.renaming = None;
+                    window.focus(&this.focus_handle, cx);
+                    cx.notify();
+                }
+            },
+        )
         .detach();
 
         let editor_focus = editor.focus_handle(cx);
@@ -1709,10 +1725,13 @@ impl DirPane {
     fn start_search(&mut self, _: &StartSearch, window: &mut Window, cx: &mut Context<Self>) {
         // Reopening keeps whatever is already typed, so ctrl-f twice does not
         // silently throw the search away.
-        let initial = self.search.as_ref().map(|s| s.query.clone()).unwrap_or_default();
-        let editor = cx.new(|cx| {
-            PathEditor::new(initial, window, cx).with_placeholder("Search this folder")
-        });
+        let initial = self
+            .search
+            .as_ref()
+            .map(|s| s.query.clone())
+            .unwrap_or_default();
+        let editor = cx
+            .new(|cx| PathEditor::new(initial, window, cx).with_placeholder("Search this folder"));
 
         cx.subscribe_in(&editor, window, |this, _, event, window, cx| match event {
             PathEditorEvent::Edited => {}
@@ -1800,8 +1819,7 @@ impl DirPane {
             if this
                 .update(cx, |this, _| {
                     if let Some(search) = this.search.as_mut() {
-                        search.handle =
-                            Some(crate::search::spawn(dir, spawn_query, show_hidden));
+                        search.handle = Some(crate::search::spawn(dir, spawn_query, show_hidden));
                     }
                 })
                 .is_err()
@@ -1813,8 +1831,7 @@ impl DirPane {
                     .timer(std::time::Duration::from_millis(60))
                     .await;
                 let keep_going = this.update(cx, |this, cx| {
-                    let Some(handle) = this.search.as_ref().and_then(|s| s.handle.as_ref())
-                    else {
+                    let Some(handle) = this.search.as_ref().and_then(|s| s.handle.as_ref()) else {
                         return false;
                     };
                     let batch = handle.drain();
@@ -2184,34 +2201,36 @@ impl DirPane {
     }
 
     fn start_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let editor = cx.new(|cx| {
-            PathEditor::new(self.dir.display().to_string(), window, cx)
-        });
+        let editor = cx.new(|cx| PathEditor::new(self.dir.display().to_string(), window, cx));
 
-        cx.subscribe_in(&editor, window, |this, editor, event, window, cx| match event {
-            PathEditorEvent::Committed(text) => {
-                match this.resolve_typed_path(text) {
-                    Some(dir) => {
-                        this.path_editor = None;
-                        window.focus(&this.focus_handle, cx);
-                        this.navigate_to(dir, cx);
-                    }
-                    None => {
-                        // Not a directory: flag the field, keep editing.
-                        editor.update(cx, |editor, cx| {
-                            editor.error = true;
-                            cx.notify();
-                        });
+        cx.subscribe_in(
+            &editor,
+            window,
+            |this, editor, event, window, cx| match event {
+                PathEditorEvent::Committed(text) => {
+                    match this.resolve_typed_path(text) {
+                        Some(dir) => {
+                            this.path_editor = None;
+                            window.focus(&this.focus_handle, cx);
+                            this.navigate_to(dir, cx);
+                        }
+                        None => {
+                            // Not a directory: flag the field, keep editing.
+                            editor.update(cx, |editor, cx| {
+                                editor.error = true;
+                                cx.notify();
+                            });
+                        }
                     }
                 }
-            }
-            PathEditorEvent::Edited => {}
-            PathEditorEvent::Cancelled => {
-                this.path_editor = None;
-                window.focus(&this.focus_handle, cx);
-                cx.notify();
-            }
-        })
+                PathEditorEvent::Edited => {}
+                PathEditorEvent::Cancelled => {
+                    this.path_editor = None;
+                    window.focus(&this.focus_handle, cx);
+                    cx.notify();
+                }
+            },
+        )
         .detach();
 
         window.focus(&editor.focus_handle(cx), cx);
@@ -2357,7 +2376,10 @@ impl DirPane {
                 .items_center()
                 .justify_center()
                 .rounded_sm()
-                .child(Icon::from_path(icon, if enabled { nav_on } else { nav_off }))
+                .child(Icon::from_path(
+                    icon,
+                    if enabled { nav_on } else { nav_off },
+                ))
                 .when(enabled, |el| {
                     el.cursor_pointer()
                         .hover(|s| s.bg(hover_bg))
@@ -2645,21 +2667,18 @@ impl DirPane {
                 .items_center()
                 .when(right, |el| el.justify_end())
                 .child(
-                div()
-                    .w(px(COUNTING_BAR_WIDTH))
-                    .h(px(COUNTING_BAR_HEIGHT))
-                    .rounded_full()
-                    .bg(content)
-                    .with_animation(
-                        ("counting", ix),
-                        gpui::Animation::new(COUNTING_PERIOD)
-                            .repeat()
-                            .with_easing(gpui::pulsating_between(
-                                COUNTING_ALPHA_LOW,
-                                COUNTING_ALPHA_HIGH,
-                            )),
-                        |bar, delta| bar.opacity(delta),
-                    ),
+                    div()
+                        .w(px(COUNTING_BAR_WIDTH))
+                        .h(px(COUNTING_BAR_HEIGHT))
+                        .rounded_full()
+                        .bg(content)
+                        .with_animation(
+                            ("counting", ix),
+                            gpui::Animation::new(COUNTING_PERIOD).repeat().with_easing(
+                                gpui::pulsating_between(COUNTING_ALPHA_LOW, COUNTING_ALPHA_HIGH),
+                            ),
+                            |bar, delta| bar.opacity(delta),
+                        ),
                 )
                 .into_any_element()
         };
@@ -2781,9 +2800,11 @@ impl DirPane {
                         );
                     }
                 }))
-                .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
-                    this.accept_drop(paths.paths().to_vec(), None, target.clone(), window, cx);
-                }))
+                .on_drop(cx.listener(
+                    move |this, paths: &ExternalPaths, window, cx| {
+                        this.accept_drop(paths.paths().to_vec(), None, target.clone(), window, cx);
+                    },
+                ))
             })
             // Also where the payload settles what it carries: see `resolve`.
             .on_drag(dragged, move |dragged: &DraggedPaths, _, _, cx| {
@@ -2907,9 +2928,7 @@ impl DirPane {
                 // written in the same second must not disagree about how long
                 // ago that was, and across a 60-second boundary they did.
                 let now = SystemTime::now();
-                range
-                    .map(|ix| this.render_entry(ix, now, cx))
-                    .collect()
+                range.map(|ix| this.render_entry(ix, now, cx)).collect()
             }),
         )
         .track_scroll(&self.scroll)
@@ -2976,59 +2995,63 @@ impl Render for DirPane {
             .on_action(cx.listener(Self::sort_by_size))
             .on_action(cx.listener(Self::sort_by_kind))
             .on_action(cx.listener(Self::sort_by_modified))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _window, cx| {
-                // Keys bubble up from descendants, so an open editor or menu
-                // would otherwise type into the listing behind it.
-                if this.has_inline_editor() || this.context_menu.is_some() {
-                    return;
-                }
-                // Type-ahead find: unmodified printable keys only. Bound keys
-                // (chords, function keys) carry modifiers or no key_char and
-                // fall through untouched.
-                let mods = &event.keystroke.modifiers;
-                if mods.control || mods.alt || mods.platform || mods.function {
-                    return;
-                }
-                if let Some(key_char) = event.keystroke.key_char.as_deref()
-                    && this.type_ahead_key(key_char, cx)
-                {
-                    cx.stop_propagation();
-                }
-            }))
+            .on_key_down(
+                cx.listener(|this, event: &gpui::KeyDownEvent, _window, cx| {
+                    // Keys bubble up from descendants, so an open editor or menu
+                    // would otherwise type into the listing behind it.
+                    if this.has_inline_editor() || this.context_menu.is_some() {
+                        return;
+                    }
+                    // Type-ahead find: unmodified printable keys only. Bound keys
+                    // (chords, function keys) carry modifiers or no key_char and
+                    // fall through untouched.
+                    let mods = &event.keystroke.modifiers;
+                    if mods.control || mods.alt || mods.platform || mods.function {
+                        return;
+                    }
+                    if let Some(key_char) = event.keystroke.key_char.as_deref()
+                        && this.type_ahead_key(key_char, cx)
+                    {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::clear_selection))
             .on_action(cx.listener(|this, _: &MoveUp, _, cx| this.move_cursor(Motion::Up, cx)))
             .on_action(cx.listener(|this, _: &MoveDown, _, cx| this.move_cursor(Motion::Down, cx)))
-            .on_action(cx.listener(|this, _: &MovePageUp, _, cx| {
-                this.move_cursor(Motion::PageUp, cx)
-            }))
-            .on_action(cx.listener(|this, _: &MovePageDown, _, cx| {
-                this.move_cursor(Motion::PageDown, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &MovePageUp, _, cx| this.move_cursor(Motion::PageUp, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &MovePageDown, _, cx| this.move_cursor(Motion::PageDown, cx)),
+            )
             .on_action(cx.listener(|this, _: &MoveToTop, _, cx| this.move_cursor(Motion::Top, cx)))
-            .on_action(cx.listener(|this, _: &MoveToBottom, _, cx| {
-                this.move_cursor(Motion::Bottom, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &MoveToBottom, _, cx| this.move_cursor(Motion::Bottom, cx)),
+            )
             .on_action(cx.listener(|this, _: &ExtendUp, _, cx| this.extend_cursor(Motion::Up, cx)))
-            .on_action(cx.listener(|this, _: &ExtendDown, _, cx| {
-                this.extend_cursor(Motion::Down, cx)
-            }))
-            .on_action(cx.listener(|this, _: &ExtendPageUp, _, cx| {
-                this.extend_cursor(Motion::PageUp, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &ExtendDown, _, cx| this.extend_cursor(Motion::Down, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ExtendPageUp, _, cx| this.extend_cursor(Motion::PageUp, cx)),
+            )
             .on_action(cx.listener(|this, _: &ExtendPageDown, _, cx| {
                 this.extend_cursor(Motion::PageDown, cx)
             }))
-            .on_action(cx.listener(|this, _: &ExtendToTop, _, cx| {
-                this.extend_cursor(Motion::Top, cx)
-            }))
-            .on_action(cx.listener(|this, _: &ExtendToBottom, _, cx| {
-                this.extend_cursor(Motion::Bottom, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &ExtendToTop, _, cx| this.extend_cursor(Motion::Top, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ExtendToBottom, _, cx| {
+                    this.extend_cursor(Motion::Bottom, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &CursorUp, _, cx| this.focus_cursor(Motion::Up, cx)))
-            .on_action(cx.listener(|this, _: &CursorDown, _, cx| {
-                this.focus_cursor(Motion::Down, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &CursorDown, _, cx| this.focus_cursor(Motion::Down, cx)),
+            )
             .on_action(cx.listener(Self::toggle_selection))
             .on_mouse_down(
                 MouseButton::Navigate(gpui::NavigationDirection::Back),

@@ -99,7 +99,10 @@ fn home_trash() -> io::Result<PathBuf> {
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
         .ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "neither XDG_DATA_HOME nor HOME is set")
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "neither XDG_DATA_HOME nor HOME is set",
+            )
         })?;
     let trash = base.join("Trash");
     std::fs::create_dir_all(trash.join("files"))?;
@@ -158,7 +161,11 @@ fn volume_trash(top: &Path) -> io::Result<PathBuf> {
 /// `relative_to` is the volume root for a volume trash, `None` for the home
 /// trash. Separated from directory resolution so tests can drive a temp dir
 /// without a second filesystem.
-fn trash_into(path: &Path, trash_dir: &Path, relative_to: Option<&Path>) -> io::Result<TrashedItem> {
+fn trash_into(
+    path: &Path,
+    trash_dir: &Path,
+    relative_to: Option<&Path>,
+) -> io::Result<TrashedItem> {
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?
@@ -212,7 +219,10 @@ fn claim(trash_dir: &Path, name: &str, body: &str) -> io::Result<(String, PathBu
             Ok(mut file) => {
                 // A truncated sidecar is an unrestorable file, so clean up
                 // rather than leave a half-written claim behind.
-                if let Err(err) = file.write_all(body.as_bytes()).and_then(|()| file.sync_all()) {
+                if let Err(err) = file
+                    .write_all(body.as_bytes())
+                    .and_then(|()| file.sync_all())
+                {
                     drop(file);
                     let _ = std::fs::remove_file(&path);
                     return Err(err);

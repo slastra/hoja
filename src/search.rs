@@ -187,7 +187,8 @@ mod tests {
     }
 
     fn fixture(tag: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("hoja-search-test-{}-{tag}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("hoja-search-test-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("a/deep/deeper")).unwrap();
         std::fs::create_dir_all(root.join(".hidden")).unwrap();
@@ -244,7 +245,9 @@ mod tests {
     fn hidden_entries_follow_the_pane_setting() {
         let root = fixture("hidden");
         assert!(
-            !wait(&spawn(root.clone(), "secret".into(), false)).iter().any(|n| n.contains("secret")),
+            !wait(&spawn(root.clone(), "secret".into(), false))
+                .iter()
+                .any(|n| n.contains("secret")),
             "a hidden directory is not searched unless hidden files are shown"
         );
         assert_eq!(
@@ -257,8 +260,14 @@ mod tests {
     #[test]
     fn matching_is_smart_cased_and_finds_directories_too() {
         let root = fixture("case");
-        assert_eq!(wait(&spawn(root.clone(), "DEEPER".into(), false)), Vec::<String>::new());
-        assert_eq!(wait(&spawn(root.clone(), "deeper".into(), false)), vec!["a/deep/deeper"]);
+        assert_eq!(
+            wait(&spawn(root.clone(), "DEEPER".into(), false)),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            wait(&spawn(root.clone(), "deeper".into(), false)),
+            vec!["a/deep/deeper"]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

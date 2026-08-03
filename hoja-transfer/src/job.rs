@@ -146,7 +146,10 @@ pub fn spawn_job(spec: JobSpec) -> std::io::Result<JobHandle> {
     if !spec.dest_dir.is_dir() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotADirectory,
-            format!("destination is not a directory: {}", spec.dest_dir.display()),
+            format!(
+                "destination is not a directory: {}",
+                spec.dest_dir.display()
+            ),
         ));
     }
     if spec.sources.is_empty() {
@@ -543,9 +546,10 @@ impl Worker {
                 self.files_copied += 1;
                 self.progress.files_done.fetch_add(1, Ordering::Relaxed);
                 if self.spec.op == Operation::Move
-                    && let Err(err) = std::fs::remove_file(src) {
-                        self.queue_error(src, Stage::DeleteSource, err);
-                    }
+                    && let Err(err) = std::fs::remove_file(src)
+                {
+                    self.queue_error(src, Stage::DeleteSource, err);
+                }
                 Step::Ok
             }
             Err(err) => {
@@ -588,10 +592,11 @@ impl Worker {
 
         // Existing directory at dest = merge; only create when absent.
         if !dest.is_dir()
-            && let Err(err) = std::fs::create_dir(dest) {
-                self.queue_error(dest, Stage::CreateDir, err);
-                return self.continue_or_fatal();
-            }
+            && let Err(err) = std::fs::create_dir(dest)
+        {
+            self.queue_error(dest, Stage::CreateDir, err);
+            return self.continue_or_fatal();
+        }
 
         // Enumerate children first so totals grow ahead of processing (this IS
         // the one walk: gate counters for M3 accumulate on these same adds).
@@ -629,11 +634,7 @@ impl Worker {
                 Step::Fatal => return Step::Fatal,
             }
             // Track whether anything under this dir errored, for move cleanup.
-            if self
-                .errors
-                .iter()
-                .any(|(p, _)| p.starts_with(&child_src))
-            {
+            if self.errors.iter().any(|(p, _)| p.starts_with(&child_src)) {
                 child_failed = true;
             }
         }
@@ -646,10 +647,12 @@ impl Worker {
 
         // Move: remove the now-empty source dir, but never when a child failed,
         // that would orphan whatever is still inside.
-        if self.spec.op == Operation::Move && !child_failed
-            && let Err(err) = std::fs::remove_dir(src) {
-                self.queue_error(src, Stage::DeleteSource, err);
-            }
+        if self.spec.op == Operation::Move
+            && !child_failed
+            && let Err(err) = std::fs::remove_dir(src)
+        {
+            self.queue_error(src, Stage::DeleteSource, err);
+        }
         Step::Ok
     }
 
@@ -658,7 +661,8 @@ impl Worker {
 
         // Tier 0: move via rename.
         if self.spec.op == Operation::Move
-            && let (Some(src_key), Some(dst_key)) = (self.src_mount_key(src, src_meta), self.dest_mount)
+            && let (Some(src_key), Some(dst_key)) =
+                (self.src_mount_key(src, src_meta), self.dest_mount)
             && self.caps.rename_worth_trying(src_key, dst_key)
         {
             // rename() clobbers silently, so conflicts resolve BEFORE the
@@ -864,8 +868,7 @@ impl Worker {
         src_meta: &std::fs::Metadata,
     ) -> std::io::Result<CopyOutcome> {
         // Tier 1: reflink, unless this mount pair already refused.
-        if let (Some(src_key), Some(dst_key)) =
-            (self.src_mount_key(src, src_meta), self.dest_mount)
+        if let (Some(src_key), Some(dst_key)) = (self.src_mount_key(src, src_meta), self.dest_mount)
             && self.caps.reflink_worth_trying(src_key, dst_key)
         {
             match copy::try_reflink(src_file, tmp) {
@@ -933,7 +936,10 @@ enum DestPlan {
     /// `existed` answers what a second `dest.exists()` used to ask: resolving a
     /// destination already stats it, so asking again was a syscall per file for
     /// something we had just learned.
-    Proceed { path: PathBuf, existed: bool },
+    Proceed {
+        path: PathBuf,
+        existed: bool,
+    },
     Skip,
     Cancel,
 }

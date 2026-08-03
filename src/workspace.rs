@@ -14,16 +14,16 @@ use theme::ActiveTheme;
 
 use crate::clipboard::{self, ClipboardSet};
 use crate::command_palette::{self, CommandPalette};
-use crate::place_finder::{self, PlaceEvent, PlaceFinder};
+use crate::config::{self, Settings, State};
 use crate::conflict_dialog::ConflictDialog;
 use crate::dir_pane::{DirPane, PaneEvent};
 use crate::failure_report::{self, Failure, FailureReport};
-use crate::icon::Icon;
-use crate::config::{self, Settings, State};
-use crate::notifications;
-use crate::fs::ViewSettings;
 use crate::fs;
+use crate::fs::ViewSettings;
+use crate::icon::Icon;
+use crate::notifications;
 use crate::pane_group::{PaneGroup, SplitDirection};
+use crate::place_finder::{self, PlaceEvent, PlaceFinder};
 
 actions!(
     pane,
@@ -246,8 +246,7 @@ const SIZE_W: f32 = VALUE_W + SIZE_UNIT_W + SEP_W + TOTAL_W + TIGHT_GAP * 3.;
 const BADGE_W: f32 = 108.;
 /// Everything above plus the gaps, so the states that show a sentence line up
 /// with the states that show numbers.
-const STATUS_W: f32 =
-    SIZE_W + RATE_VALUE_W + RATE_UNIT_W + LEFT_VALUE_W + LEFT_UNIT_W + GAP * 4.;
+const STATUS_W: f32 = SIZE_W + RATE_VALUE_W + RATE_UNIT_W + LEFT_VALUE_W + LEFT_UNIT_W + GAP * 4.;
 
 /// The right-hand metrics of a job row, each number split from its unit.
 ///
@@ -503,9 +502,7 @@ impl Workspace {
         self.panes.retain(|p| p != pane);
         self.pane_subscriptions.remove(&pane.entity_id());
 
-        if was_active
-            && let Some(fallback) = self.panes.last().cloned()
-        {
+        if was_active && let Some(fallback) = self.panes.last().cloned() {
             self.active_pane = fallback.clone();
             self.mark_active(cx);
             window.focus(&fallback.focus_handle(cx), cx);
@@ -689,8 +686,7 @@ impl Workspace {
                     JobEvent::FileError { path, error } => {
                         job.errors += 1;
                         let reason = error.to_string();
-                        *job
-                            .reasons
+                        *job.reasons
                             .entry(failure_report::tidy(&reason).to_string())
                             .or_default() += 1;
                         if job.failures.len() < MAX_RETAINED_FAILURES {
@@ -708,8 +704,7 @@ impl Workspace {
                         job.errors = summary.errors.len();
                         job.reasons.clear();
                         for (_, error) in &summary.errors {
-                            *job
-                                .reasons
+                            *job.reasons
                                 .entry(failure_report::tidy(&error.to_string()).to_string())
                                 .or_default() += 1;
                         }
@@ -800,16 +795,12 @@ impl Workspace {
         };
 
         let dialog = cx.new(|cx| ConflictDialog::new(&pending.dest, pending.reply, window, cx));
-        cx.subscribe_in(
-            &dialog,
-            window,
-            |this, _, _: &DismissEvent, window, cx| {
-                this.conflict_dialog = None;
-                window.focus(&this.active_pane.focus_handle(cx), cx);
-                this.maybe_show_conflict(window, cx);
-                cx.notify();
-            },
-        )
+        cx.subscribe_in(&dialog, window, |this, _, _: &DismissEvent, window, cx| {
+            this.conflict_dialog = None;
+            window.focus(&this.active_pane.focus_handle(cx), cx);
+            this.maybe_show_conflict(window, cx);
+            cx.notify();
+        })
         .detach();
 
         window.focus(&dialog.focus_handle(cx), cx);
@@ -1034,8 +1025,10 @@ impl Workspace {
         // Mounting outlives the finder's own dismissal, so this subscription
         // has to survive it: the entity is kept alive by the closure below
         // until it reports back.
-        cx.subscribe_in(&finder, window, |this, _, event: &PlaceEvent, window, cx| {
-            match event {
+        cx.subscribe_in(
+            &finder,
+            window,
+            |this, _, event: &PlaceEvent, window, cx| match event {
                 PlaceEvent::Open(path) => {
                     this.active_pane
                         .update(cx, |pane, cx| pane.navigate_to(path.clone(), cx));
@@ -1044,8 +1037,8 @@ impl Workspace {
                 PlaceEvent::Mount { device, label } => {
                     this.mount_and_open(device.clone(), label.clone(), cx)
                 }
-            }
-        })
+            },
+        )
         .detach();
 
         let query_focus = finder.read(cx).query_focus(cx);
@@ -1124,14 +1117,14 @@ impl Workspace {
         self.settings_task = Some(cx.spawn(async move |this, cx| {
             let _watcher = watcher;
             loop {
-                cx.background_executor()
-                    .timer(config::SAVE_DEBOUNCE)
-                    .await;
+                cx.background_executor().timer(config::SAVE_DEBOUNCE).await;
                 if !config::drain_changes(&rx) {
                     continue;
                 }
                 if this
-                    .update(cx, |this, cx| this.apply_settings(config::Settings::load(), cx))
+                    .update(cx, |this, cx| {
+                        this.apply_settings(config::Settings::load(), cx)
+                    })
                     .is_err()
                 {
                     break;
@@ -1403,18 +1396,13 @@ impl Workspace {
                             .child(job.handle.label().to_string()),
                     )
                     .child(
-                        div()
-                            .flex_1()
-                            .h(px(6.))
-                            .rounded_sm()
-                            .bg(bar_bg)
-                            .child(
-                                div()
-                                    .h_full()
-                                    .rounded_sm()
-                                    .bg(bar_fill)
-                                    .w(relative(fraction)),
-                            ),
+                        div().flex_1().h(px(6.)).rounded_sm().bg(bar_bg).child(
+                            div()
+                                .h_full()
+                                .rounded_sm()
+                                .bg(bar_fill)
+                                .w(relative(fraction)),
+                        ),
                     )
                     .child({
                         // A number grows leftwards into its own cell; the unit
@@ -1430,11 +1418,7 @@ impl Workspace {
                                 .child(text)
                         };
                         let unit = |width: f32, text: String| {
-                            div()
-                                .w(px(width))
-                                .flex_none()
-                                .overflow_hidden()
-                                .child(text)
+                            div().w(px(width)).flex_none().overflow_hidden().child(text)
                         };
                         let row = div()
                             .flex_none()
@@ -1453,7 +1437,9 @@ impl Workspace {
                                 "tnum".to_string(),
                                 1,
                             )])))
-                            .when_some(crate::theming::numeric_font(cx), |el, family| el.font_family(family))
+                            .when_some(crate::theming::numeric_font(cx), |el, family| {
+                                el.font_family(family)
+                            })
                             .text_color(muted);
                         match status {
                             // One sentence, right-aligned across the whole block
@@ -1532,10 +1518,12 @@ impl Workspace {
                                         })
                                         .text_color(error_color)
                                         .cursor_pointer()
-                                        .hover(|s| s.bg(gpui::Hsla {
-                                            a: 0.28,
-                                            ..error_color
-                                        }))
+                                        .hover(|s| {
+                                            s.bg(gpui::Hsla {
+                                                a: 0.28,
+                                                ..error_color
+                                            })
+                                        })
                                         .child(Icon::from_path(
                                             "icons/file_icons/warning.svg",
                                             error_color,
@@ -1589,7 +1577,11 @@ impl Workspace {
             .border_t_1()
             .border_color(colors.border)
             .when_some(self.notice.as_ref(), |el, notice| {
-                let color = if notice.is_problem() { error_color } else { muted };
+                let color = if notice.is_problem() {
+                    error_color
+                } else {
+                    muted
+                };
                 el.child(
                     div()
                         .flex()
@@ -1784,7 +1776,6 @@ impl Render for Workspace {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1796,32 +1787,51 @@ mod tests {
         // one: "28s left".
         assert_eq!(
             Figure::split("1.5 MB"),
-            Figure { value: "1.5".into(), unit: "MB".into() }
+            Figure {
+                value: "1.5".into(),
+                unit: "MB".into()
+            }
         );
         assert_eq!(
             Figure::split("28s left"),
-            Figure { value: "28s".into(), unit: "left".into() }
+            Figure {
+                value: "28s".into(),
+                unit: "left".into()
+            }
         );
         assert_eq!(
             Figure::split("1h 20m left"),
-            Figure { value: "1h 20m".into(), unit: "left".into() }
+            Figure {
+                value: "1h 20m".into(),
+                unit: "left".into()
+            }
         );
         // Nothing to split: the whole of it is the unit, so it lands in the
         // cell that does not move.
         assert_eq!(
             Figure::split("…"),
-            Figure { value: String::new(), unit: "…".into() }
+            Figure {
+                value: String::new(),
+                unit: "…".into()
+            }
         );
     }
 
     #[test]
     fn metrics_say_only_what_they_know() {
-        let fig = |v: &str, u: &str| Figure { value: v.into(), unit: u.into() };
+        let fig = |v: &str, u: &str| Figure {
+            value: v.into(),
+            unit: u.into(),
+        };
 
         // Mid-scan: no denominator yet, so no time remaining either.
         assert_eq!(
             transfer_metrics(1_200_000, 0, false, None),
-            Metrics { done: fig("1.1", "MB"), total: fig("", "…"), ..Default::default() }
+            Metrics {
+                done: fig("1.1", "MB"),
+                total: fig("", "…"),
+                ..Default::default()
+            }
         );
         assert_eq!(
             transfer_metrics(1_200_000, 0, false, Some(50_000_000.)),
@@ -1845,7 +1855,11 @@ mod tests {
         // A stalled transfer must not promise an infinite wait.
         assert_eq!(
             transfer_metrics(100, 500_000_000, true, Some(0.)),
-            Metrics { done: fig("100", "B"), total: fig("476.8", "MB"), ..Default::default() }
+            Metrics {
+                done: fig("100", "B"),
+                total: fig("476.8", "MB"),
+                ..Default::default()
+            }
         );
         // Nothing left to do is not "0s left" forever.
         assert_eq!(
@@ -1916,8 +1930,15 @@ mod tests {
         }
         assert_eq!(
             STATUS_W,
-            SIZE_W + GAP + RATE_VALUE_W + GAP + RATE_UNIT_W + GAP + LEFT_VALUE_W
-                + GAP + LEFT_UNIT_W,
+            SIZE_W
+                + GAP
+                + RATE_VALUE_W
+                + GAP
+                + RATE_UNIT_W
+                + GAP
+                + LEFT_VALUE_W
+                + GAP
+                + LEFT_UNIT_W,
             "the size phrase, the rate, the remaining time, and the gaps between"
         );
     }
