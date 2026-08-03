@@ -194,8 +194,11 @@ struct Footer {
     /// What this was resolved against. A defaulted footer is out of date by
     /// construction: no directory is the empty path.
     dir: PathBuf,
-    /// The listing the walk belongs to.
+    /// The listing the footer's summary was built for, and the directory read
+    /// the walk belongs to. Two counters because they answer different
+    /// questions: the summary has to follow a re-order, the walk must not.
     listing: u64,
+    read: u64,
     /// The directories this walk covers, and where each sits among the walker's
     /// roots.
     ///
@@ -608,6 +611,11 @@ pub struct DirPane {
     /// `selection_moved` because the walk belongs to the listing: moving the
     /// selection must not restart it, and a re-listing must.
     listing_moved: u64,
+    /// Bumped only when the directory has actually been read from disk again,
+    /// which `listing_moved` cannot say: sorting bumps that and touches no file.
+    /// The folder-size walk keys off this, because a re-order tells it nothing
+    /// while a re-read means every size it holds may now be wrong.
+    directory_read: u64,
     footer: Footer,
     /// Type-ahead find: the last keystroke's time and the accumulated prefix.
     /// One value, so "no buffer" cannot disagree with "no timestamp".
@@ -661,6 +669,7 @@ impl DirPane {
             renaming: None,
             pending_select: Vec::new(),
             listing_moved: 0,
+            directory_read: 0,
             footer: Footer::default(),
             type_ahead: None,
             _subscriptions: subscriptions,
@@ -1224,6 +1233,7 @@ impl DirPane {
                     Ok(entries) => {
                         this.entries = entries;
                         this.listing_moved += 1;
+                        this.directory_read += 1;
                         this.error = None;
                     }
                     Err(err) => {
@@ -1253,6 +1263,12 @@ impl DirPane {
                         }
                         this.entries.clear();
                         this.error = Some(err.to_string());
+                        // The failure is a re-read like any other. Without this
+                        // the walk kept running over a tree the pane no longer
+                        // shows, and its figures came back as current when the
+                        // directory did.
+                        this.listing_moved += 1;
+                        this.directory_read += 1;
                     }
                 }
                 // Same directory: find the renamed row again. A navigation is
@@ -1501,6 +1517,11 @@ impl DirPane {
         // every folder as having none and waiting for the walk to settle before
         // the order means anything.
         let sizes = self.footer.settled.clone();
+        // How much was known when the snapshot was taken. The sort runs off the
+        // foreground executor, and a walk settling during that hop leaves this
+        // result describing an order computed from fewer sizes than the pane
+        // now holds.
+        let knew = sizes.len();
 
         self.sort_task = Some(cx.spawn(async move |this, cx| {
             let entries = cx
@@ -1522,6 +1543,13 @@ impl DirPane {
                 this.renaming = None;
                 this.restore_selection();
                 this.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
+                // More is known now than when this sort was handed off, so the
+                // order it computed is already out of date. The walk's own
+                // re-sort may also have run and been overwritten by the line
+                // above, and its guard would have stopped it running twice.
+                if this.footer.settled.len() != knew {
+                    this.resort_for_sizes(cx);
+                }
                 cx.notify();
             });
         }));
@@ -1842,43 +1870,35 @@ impl DirPane {
         // buckets but never restarts them, which is what makes selecting a
         // folder free, the number is already there, or already coming.
         let moved_directory = self.footer.dir != self.dir;
-        let relisted = self.footer.listing != self.listing_moved || moved_directory;
+        let reread = self.footer.read != self.directory_read || moved_directory;
+        let relisted = self.footer.listing != self.listing_moved || reread;
+        if reread {
+            self.footer.read = self.directory_read;
+            // Only a read from disk, never a re-order. Comparing the *set* of
+            // folder paths instead looked equivalent and was not: a sort and a
+            // paste into a subfolder both leave that set identical, so one of
+            // them kept sizes that had just become wrong.
+            //
+            // Nothing tells us a subtree changed. The pane watches its own
+            // directory and not below it, so a folder's size is only ever as
+            // fresh as the moment it was measured; re-reading the directory is
+            // the one honest cue there is that it might not be.
+            self.footer.dir = self.dir.clone();
+            if moved_directory {
+                // Different paths entirely, so the old figures answer nothing
+                // and would only grow the map.
+                self.footer.settled.clear();
+            }
+            self.restart_walk(cx);
+        }
         if relisted {
             self.footer.listing = self.listing_moved;
-            self.footer.dir = self.dir.clone();
-            // A sort is a re-listing, and the one thing it cannot change is
-            // which directories are on screen. Restarting for it threw away
-            // every size already counted and re-walked the whole tree, so the
-            // Size column emptied itself on every header click.
-            if moved_directory || !self.walk_covers_the_rows() {
-                self.restart_walk(cx);
-            }
         }
         if relisted || self.footer.selection != self.selected.revision() {
             self.footer.selection = self.selected.revision();
             self.footer.summary = self.summarise();
             self.footer.text = self.footer_text();
         }
-    }
-
-    /// Whether the walk in hand is still about the directories now on screen.
-    ///
-    /// Set equality, not order and not count alone: a listing that gained one
-    /// folder and lost another has the same number of roots and none of the
-    /// same answers.
-    fn walk_covers_the_rows(&self) -> bool {
-        if self.searching() || self.error.is_some() {
-            // Neither gets a walk, so the only correct state is no roots.
-            return self.footer.roots.is_empty();
-        }
-        let mut on_screen = 0;
-        for entry in self.entries.iter().filter(|entry| entry.is_dir) {
-            if !self.footer.roots.contains_key(&entry.path) {
-                return false;
-            }
-            on_screen += 1;
-        }
-        on_screen == self.footer.roots.len()
     }
 
     /// Abandon any walk and start one for the rows now on screen.
@@ -1888,7 +1908,11 @@ impl DirPane {
         self.footer.walk = None;
         self.footer.poll = None;
         self.footer.resorted = false;
-        self.footer.settled.clear();
+        // `settled` is deliberately kept. It is the last figure measured for
+        // each path, and the new walk overwrites each one as it finishes, so a
+        // directory that keeps receiving folders shows slightly old numbers
+        // rather than emptying its Size column back to placeholders every time
+        // the watcher fires. `sync_footer` clears it when the paths change.
 
         // A search's rows come from directories this pane is not showing, and an
         // unreadable one has already said so in the body. Neither is worth a
