@@ -3369,25 +3369,29 @@ impl DirPane {
         // The same drag, offered for a row with no path instead: a member of
         // the archive this pane is browsing. Mutually exclusive with `dragged`
         // above, `on_disk` and `entry.member()` never both answer for one row.
-        let dragged_member = entry.member().is_some().then(|| {
-            let Location::Archive { archive, inside } = &self.dir else {
-                return None;
-            };
-            let anchor = entry
-                .key()
-                .strip_prefix(archive)
-                .ok()?
-                .to_string_lossy()
-                .into_owned();
-            Some(DraggedMembers {
-                resolved: std::cell::OnceCell::new(),
-                pane: cx.entity(),
-                archive: archive.clone(),
-                inside: inside.clone(),
-                anchor,
-                whole_selection: selected,
+        let dragged_member = entry
+            .member()
+            .is_some()
+            .then(|| {
+                let Location::Archive { archive, inside } = &self.dir else {
+                    return None;
+                };
+                let anchor = entry
+                    .key()
+                    .strip_prefix(archive)
+                    .ok()?
+                    .to_string_lossy()
+                    .into_owned();
+                Some(DraggedMembers {
+                    resolved: std::cell::OnceCell::new(),
+                    pane: cx.entity(),
+                    archive: archive.clone(),
+                    inside: inside.clone(),
+                    anchor,
+                    whole_selection: selected,
+                })
             })
-        }).flatten();
+            .flatten();
         let drag_label: SharedString = if selected {
             match self.selected.len() {
                 1 => entry.name.clone().into(),
