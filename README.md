@@ -4,14 +4,15 @@
   <img alt="hoja" src="docs/hoja-light.png" width="360">
 </picture>
 
-hoja (OH-hah) is a file manager for Linux. It runs on Wayland and renders via
-[GPUI](https://www.gpui.rs/), the GPU-accelerated framework from the Zed editor.
-Split the window into multiple panes. Each folder calculates real recursive
-sizes. File transfers select the optimal method automatically. Deletions are
-undoable.
+**hoja** (OH-hah) is a file manager for Linux. It runs on Wayland and renders
+via [GPUI](https://www.gpui.rs/), the GPU-accelerated framework from the Zed
+editor. Split the window into multiple panes. Each folder calculates real
+recursive sizes. File transfers select the optimal method automatically.
+Deletions are undoable, and archives browse like folders.
 
-**Warning:** hoja is experimental software. Do not use hoja as your only tool
-for important data.
+> [!WARNING]
+> hoja is experimental software. Do not use it as your only tool for
+> important data.
 
 ![Two panes side by side in the Rosé Pine theme: a home directory on the left, where every folder shows a real recursive size, and hoja's own source on the right. Modified says how long ago rather than what o'clock, and each pane's footer totals exactly the rows above it.](docs/screenshot.png)
 
