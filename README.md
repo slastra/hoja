@@ -1,12 +1,10 @@
-<div align="center">
-
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/hoja-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/hoja-light.png">
   <img alt="hoja" src="docs/hoja-light.png" width="360">
 </picture>
 
-</div>
+<br><br>
 
 **Hoja** (OH-hah) is a file manager for Linux. It runs on Wayland and renders
 via [GPUI](https://www.gpui.rs/), the GPU-accelerated framework from the Zed
