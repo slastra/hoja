@@ -27,10 +27,9 @@ for important data.
   so no number ever climbs in the listing. Sorting by size reorders once, when
   every folder is final.
 - **Pane footer.** Each pane says what it is holding: `14 items · 1.2 GB` for
-  the folder, `3 selected · 259 MB` for several, and for a single row the
-  things no column shows: `-rw-r--r-- · shaun · shaun`. It totals exactly the rows above it, so it
-  is the sum of the Size column. The one walk serves both, which is why
-  selecting a folder costs nothing, because its size is already there. A running
+  the folder, `3 selected · 259 MB` for several. It totals exactly the rows
+  above it, so it is the sum of the Size column. For a single row it says the
+  things no column shows instead: `-rw-r--r-- · shaun · shaun`. A running
   search reports here too, in the pane doing the searching.
 - **The active pane.** The pane your keys act on keeps the full text colour.
   In the others the names, the icons, and the path go quiet, and the selection
@@ -97,8 +96,7 @@ for important data.
 ### How it looks
 
 - **Modified.** The column says how long ago, not what o'clock: `just now`,
-  `3 hours ago`, `2 months ago`. Select a single file and the pane footer
-  gives the exact stamp.
+  `3 hours ago`, `2 months ago`.
 - **Git status.** In a git repository, the colour of a file name shows its
   status: added, modified, deleted, renamed, or in conflict. A folder shows
   the status of the files in it. Ignored files are dim. hoja asks `git`

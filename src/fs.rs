@@ -537,12 +537,6 @@ pub fn format_mode(mode: u32) -> String {
     out
 }
 
-/// Local-time timestamp, for the pane footer's single-file line.
-pub fn format_time(time: SystemTime) -> String {
-    let local: chrono::DateTime<chrono::Local> = time.into();
-    local.format("%Y-%m-%d %H:%M").to_string()
-}
-
 /// How long ago, for the Modified column.
 ///
 /// "3 hours ago" answers the question the column is usually asked, which is
