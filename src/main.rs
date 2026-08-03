@@ -19,6 +19,7 @@ mod picker;
 mod place_finder;
 mod places;
 mod probe;
+#[allow(dead_code)] // not wired into a pane yet; see the module header
 mod scrollbar;
 mod search;
 mod theming;

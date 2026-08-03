@@ -592,9 +592,6 @@ pub struct DirPane {
     widths: ColumnWidths,
     /// Anchor for the resize in progress, if any.
     resize: Option<ColumnDrag>,
-    /// Whether the scrollbar is being dragged or hovered. Held here rather than
-    /// in the bar because the bar is rebuilt every frame and a drag is not.
-    scrollbar: crate::scrollbar::ScrollbarState,
     /// Git status by entry name for the loaded directory. Empty outside a
     /// repository, and empty until the background query lands.
     git: crate::git::GitStatuses,
@@ -679,7 +676,6 @@ impl DirPane {
             scroll: UniformListScrollHandle::new(),
             widths: ColumnWidths::default(),
             resize: None,
-            scrollbar: crate::scrollbar::ScrollbarState::default(),
             git: crate::git::GitStatuses::new(),
             git_task: None,
             watch: None,
@@ -2978,7 +2974,7 @@ impl DirPane {
                 .into_any_element();
         }
 
-        let list = uniform_list(
+        uniform_list(
             "entries",
             self.entries.len(),
             cx.processor(|this, range: Range<usize>, _window, cx| {
@@ -2992,21 +2988,8 @@ impl DirPane {
             }),
         )
         .track_scroll(&self.scroll)
-        .flex_1();
-
-        // Over the list, not beside it: a scrollbar that took width would
-        // reflow every row the moment a directory grew past one screen.
-        div()
-            .flex_1()
-            .relative()
-            .child(list)
-            .children(crate::scrollbar::render(
-                self.scroll.clone(),
-                &self.scrollbar,
-                |this: &mut Self| &mut this.scrollbar,
-                cx,
-            ))
-            .into_any_element()
+        .flex_1()
+        .into_any_element()
     }
 }
 

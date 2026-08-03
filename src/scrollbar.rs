@@ -14,30 +14,46 @@
 //! set_offset  put us somewhere else
 //! ```
 //!
-//! All four are public on `UniformListScrollHandle`, so this is arithmetic.
+//! Two of those four never arrive, which is why this is an `Element` and not a
+//! `div` assembled in `render`.
 //!
-//! # Not finished
+//! `ScrollHandle`'s `bounds` and `max_offset` are written in
+//! `Interactivity::prepaint`, in the branch an element takes when it scrolls
+//! *through* the interactivity layer. A `uniform_list` scrolls itself and never
+//! reaches it: `bounds()` stays zero-sized and `max_offset()` comes back as the
+//! whole content height, having subtracted a viewport of nothing. Reading them
+//! from `render` compounds it, because `render` runs before layout.
 //!
-//! The arithmetic below is right and tested. The element is not wired up,
-//! because two of those four numbers never arrive.
+//! So the track comes from this element's *own* bounds in `prepaint`, which is
+//! after the list beside it has been laid out, and the content height comes
+//! from the caller, which knows its row count and row height. Only `offset` is
+//! taken from the handle, and that one uniform_list does maintain. This is what
+//! Zed's `ScrollbarPrepaintState` is for.
 //!
-//! `ScrollHandle`'s `bounds` and `max_offset` are written in `Interactivity::
-//! prepaint`, in the branch taken by an element that scrolls *through* the
-//! interactivity layer. A `uniform_list` scrolls itself, so it never reaches
-//! that branch: `bounds()` stays zero-sized and `max_offset()` comes back as
-//! the whole content height, having subtracted a viewport of nothing. Reading
-//! them from `render` compounds it, since `render` runs before layout in any
-//! case.
+//! # Where this stands
 //!
-//! The fix is to be a real `Element` and read the track from *its own* bounds
-//! in `prepaint`, which is after the list beside it has been laid out, and to
-//! take the content height from the caller, which knows its row count and row
-//! height. That is how Zed's `ui::Scrollbars` does it, and why it carries a
-//! `ScrollbarPrepaintState`.
+//! The arithmetic is right and tested. The `Element` lays out and prepaints.
+//! It is **not wired into a pane**, because the mouse handlers registered in
+//! `paint` never fire: an `eprintln` as the first statement of the
+//! `MouseDownEvent` closure, before any guard, printed nothing across several
+//! runs. Wrapping the body in `with_content_mask`, which is what Zed's own
+//! scrollbar does, did not change that.
+//!
+//! What is not yet known is whether the thumb paints at all. A faint block did
+//! appear near the right edge and tracked the wheel, but it sat at x≈1382-1390
+//! in a 1400px window while this bar occupies 1390-1400, so it was most likely
+//! the selected row's highlight and not the thumb.
+//!
+//! The next thing to establish, before any more guessing: paint a full-height
+//! quad in a loud colour and confirm it is on screen. Everything else follows
+//! from whether `paint` reaches the screen at all.
+
+use std::panic::Location;
 
 use gpui::{
-    Bounds, Context, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, UniformListScrollHandle, div, prelude::*, px,
+    App, Bounds, Element, ElementId, Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
+    InspectorElementId, IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Point, Style, UniformListScrollHandle, Window, fill, point, px, size,
 };
 use theme::ActiveTheme;
 
@@ -86,132 +102,232 @@ pub fn offset_for(y: f32, grab: f32, max_offset: f32, track_height: f32) -> f32 
 #[derive(Default)]
 pub struct ScrollbarState {
     /// Where in the thumb the press landed, while a drag is in progress.
+    ///
+    /// The only thing worth remembering between frames. Hover comes from the
+    /// hitbox, which knows it without being told.
     grab: Option<f32>,
-    hovered: bool,
 }
 
-/// Read the four numbers out of the handle.
+/// A scrollbar over a `uniform_list`.
 ///
-/// gpui's offsets grow *downward as negatives*, which is the one thing here
-/// worth stating: scrolled to the top is zero and scrolled to the bottom is
-/// `-max`. Everything below works in positives, so this is where the sign goes.
-fn geometry(handle: &UniformListScrollHandle) -> (f32, f32, Bounds<Pixels>) {
-    let state = handle.0.borrow();
-    let offset = -f32::from(state.base_handle.offset().y);
-    let max = f32::from(state.base_handle.max_offset().y);
-    (offset.max(0.), max.max(0.), state.base_handle.bounds())
-}
-
-/// The bar itself, to be laid over the right edge of the list.
-///
-/// Rendered by the owner rather than wrapping the list, because a
-/// `uniform_list` measures itself and putting it inside another scroller would
-/// give it a viewport that is not the one the user sees.
-///
-/// `bar` is read now and `state` reaches the same field from inside the
-/// listeners, which fire later against `&mut T`. One argument cannot do both.
-pub fn render<T: 'static>(
+/// Laid over the list rather than beside it: one that took width would reflow
+/// every row the moment a directory grew past one screen.
+pub struct Scrollbar<T: 'static> {
     handle: UniformListScrollHandle,
-    bar: &ScrollbarState,
-    state: impl Fn(&mut T) -> &mut ScrollbarState + Copy + 'static,
-    cx: &mut Context<T>,
-) -> Option<gpui::AnyElement> {
-    let (offset, max, bounds) = geometry(&handle);
-    let track_height = f32::from(bounds.size.height);
-    let (top, height) = thumb(offset, max, track_height)?;
-
-    let colors = cx.theme().colors();
-    let fill: Hsla = if bar.grab.is_some() {
-        colors.scrollbar_thumb_active_background
-    } else if bar.hovered {
-        colors.scrollbar_thumb_hover_background
-    } else {
-        colors.scrollbar_thumb_background
-    };
-
-    let track_top = bounds.origin.y;
-    let for_down = handle.clone();
-    let for_move = handle;
-
-    Some(
-        div()
-            .id("scrollbar")
-            .occlude()
-            .absolute()
-            .top(track_top)
-            .right_0()
-            .w(px(WIDTH))
-            .h(px(track_height))
-            .on_hover(cx.listener(move |this, over: &bool, _, cx| {
-                state(this).hovered = *over;
-                cx.notify();
-            }))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    let y = f32::from(event.position.y - track_top);
-                    let grab = if y >= top && y < top + height {
-                        // On the thumb: remember where, so it does not jump
-                        // under the cursor on the first pixel of movement.
-                        y - top
-                    } else {
-                        // On the track: centre the thumb here and carry on as
-                        // though it had been grabbed in the middle, which is
-                        // what every other scrollbar does.
-                        let grab = height / 2.;
-                        let (_, max, bounds) = geometry(&for_down);
-                        let to = offset_for(y, grab, max, f32::from(bounds.size.height));
-                        set_offset(&for_down, to);
-                        grab
-                    };
-                    state(this).grab = Some(grab);
-                    cx.notify();
-                }),
-            )
-            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                let Some(grab) = state(this).grab else { return };
-                let (_, max, bounds) = geometry(&for_move);
-                let y = f32::from(event.position.y - track_top);
-                set_offset(
-                    &for_move,
-                    offset_for(y, grab, max, f32::from(bounds.size.height)),
-                );
-                cx.notify();
-            }))
-            // Both, because a drag that ends off the bar is the common one:
-            // the cursor leaves sideways long before the button comes up.
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                    state(this).grab = None;
-                    cx.notify();
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                    state(this).grab = None;
-                    cx.notify();
-                }),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top(px(top))
-                    .w(px(WIDTH))
-                    .h(px(height))
-                    .rounded_full()
-                    .bg(fill),
-            )
-            .into_any_element(),
-    )
+    /// Every row, laid end to end. The caller knows this; the handle does not.
+    content_height: f32,
+    owner: Entity<T>,
+    state: fn(&mut T) -> &mut ScrollbarState,
 }
 
-fn set_offset(handle: &UniformListScrollHandle, offset: f32) {
+pub fn scrollbar<T: 'static>(
+    handle: UniformListScrollHandle,
+    content_height: f32,
+    owner: Entity<T>,
+    state: fn(&mut T) -> &mut ScrollbarState,
+) -> Scrollbar<T> {
+    Scrollbar {
+        handle,
+        content_height,
+        owner,
+        state,
+    }
+}
+
+/// What `prepaint` worked out and `paint` needs.
+pub struct Prepainted {
+    hitbox: Hitbox,
+    /// `None` when the content fits and there is nothing to drag.
+    thumb: Option<(f32, f32)>,
+    max_offset: f32,
+    track_height: f32,
+}
+
+impl<T: 'static> Scrollbar<T> {
+    /// How far down we are. gpui's offsets grow downward as negatives, so this
+    /// is where the sign goes; everything else here works in positives.
+    fn offset(&self) -> f32 {
+        (-f32::from(self.handle.0.borrow().base_handle.offset().y)).max(0.)
+    }
+}
+
+/// Put the list somewhere. The sign flip lives here and in `offset` above.
+fn scroll_to(handle: &UniformListScrollHandle, offset: f32) {
     let state = handle.0.borrow();
     let mut point: Point<Pixels> = state.base_handle.offset();
     point.y = px(-offset);
     state.base_handle.set_offset(point);
+}
+
+impl<T: 'static> IntoElement for Scrollbar<T> {
+    type Element = Self;
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl<T: 'static> Element for Scrollbar<T> {
+    type RequestLayoutState = ();
+    type PrepaintState = Prepainted;
+
+    fn id(&self) -> Option<ElementId> {
+        Some(ElementId::Name("scrollbar".into()))
+    }
+
+    fn source_location(&self) -> Option<&'static Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        // Absolute and pinned to the right edge over the full height of the
+        // parent, so the track is the list's own viewport without measuring it.
+        let style = Style {
+            position: gpui::Position::Absolute,
+            inset: gpui::Edges {
+                top: px(0.).into(),
+                right: px(0.).into(),
+                bottom: px(0.).into(),
+                ..Default::default()
+            },
+            size: gpui::Size {
+                width: px(WIDTH).into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        _: &mut App,
+    ) -> Prepainted {
+        // Our own bounds, and by now the list beside us has been laid out, so
+        // this is the height a reader actually sees.
+        let track_height = f32::from(bounds.size.height);
+        let max_offset = (self.content_height - track_height).max(0.);
+        Prepainted {
+            hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            thumb: thumb(self.offset(), max_offset, track_height),
+            max_offset,
+            track_height,
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        prepaint: &mut Prepainted,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let Some((top, height)) = prepaint.thumb else {
+            return;
+        };
+        let owner = self.owner.clone();
+        let state = self.state;
+        let hovered = prepaint.hitbox.is_hovered(window);
+        // Through `update` because the accessor hands out `&mut`; nothing is
+        // changed here, so no notify follows.
+        let dragging = owner.update(cx, |this, _| state(this).grab.is_some());
+
+        let colors = cx.theme().colors();
+        let fill_color: Hsla = if dragging {
+            colors.scrollbar_thumb_active_background
+        } else if hovered {
+            colors.scrollbar_thumb_hover_background
+        } else {
+            colors.scrollbar_thumb_background
+        };
+
+        // Inside a content mask, which is how Zed's own scrollbar does it:
+        // handlers registered outside one never see an event.
+        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+            let thumb_bounds = Bounds::new(
+                point(bounds.origin.x, bounds.origin.y + px(top)),
+                size(bounds.size.width, px(height)),
+            );
+            // Square. A rounded thumb reads as a pill floating over the listing;
+            // square, it reads as the edge of the pane, which is what it is.
+            window.paint_quad(fill(thumb_bounds, fill_color));
+
+            let track_top = f32::from(bounds.origin.y);
+            let (max_offset, track_height) = (prepaint.max_offset, prepaint.track_height);
+            let handle = self.handle.clone();
+            let hitbox = prepaint.hitbox.clone();
+
+            // Registered here rather than on a `div`, because a raw element has no
+            // interactivity layer to hang listeners on.
+            window.on_mouse_event({
+                let owner = owner.clone();
+                let handle = handle.clone();
+                move |event: &MouseDownEvent, phase, window, cx| {
+                    if !phase.bubble() || !hitbox.is_hovered(window) {
+                        return;
+                    }
+                    let y = f32::from(event.position.y) - track_top;
+                    let grab = if y >= top && y < top + height {
+                        // On the thumb: remember where, so it does not jump under
+                        // the cursor on the first pixel of movement.
+                        y - top
+                    } else {
+                        // On the track: centre the thumb here and carry on as
+                        // though it had been grabbed in the middle.
+                        let grab = height / 2.;
+                        scroll_to(&handle, offset_for(y, grab, max_offset, track_height));
+                        grab
+                    };
+                    owner.update(cx, |this, cx| {
+                        state(this).grab = Some(grab);
+                        cx.notify();
+                    });
+                }
+            });
+
+            window.on_mouse_event({
+                let owner = owner.clone();
+                let handle = handle.clone();
+                move |event: &MouseMoveEvent, phase, _window, cx| {
+                    if !phase.bubble() {
+                        return;
+                    }
+                    let Some(grab) = owner.update(cx, |this, _| state(this).grab) else {
+                        return;
+                    };
+                    let y = f32::from(event.position.y) - track_top;
+                    scroll_to(&handle, offset_for(y, grab, max_offset, track_height));
+                    owner.update(cx, |_, cx| cx.notify());
+                }
+            });
+
+            // Anywhere, because a drag that ends off the bar is the common one: the
+            // cursor leaves sideways long before the button comes up.
+            window.on_mouse_event(move |_: &MouseUpEvent, phase, _window, cx| {
+                if !phase.bubble() {
+                    return;
+                }
+                owner.update(cx, |this, cx| {
+                    if state(this).grab.take().is_some() {
+                        cx.notify();
+                    }
+                });
+            });
+        });
+    }
 }
 
 #[cfg(test)]
