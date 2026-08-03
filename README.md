@@ -340,7 +340,8 @@ These features are planned and not complete:
 
 - Parallel copy for many small files
 - A job journal, for undo of a transfer and resume after a crash
-- A relative time option for the Modified column, such as "2 hours ago"
+- Opening an archive like a folder: browsing a zip or a tarball in a pane and
+  copying out of it without unpacking the whole thing first
 - Optional columns for the owner, the group, and the permissions
 - Tabs, previews, and thumbnails
 - Delta sync between machines
