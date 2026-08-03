@@ -387,7 +387,7 @@ impl Workspace {
                         this.state.window = Some(resized);
                         this.dirty.window = true;
                     }
-                    this.remember_view(&this.active_pane.clone(), cx);
+                    this.remember_settings_only(cx);
                 }),
                 // The throttled write is a `Task` this entity owns, so closing
                 // the window drops it: cancelling the timer before it ever
@@ -1139,7 +1139,9 @@ impl Workspace {
         for pane in &self.panes {
             pane.update(cx, |pane, cx| pane.set_view_settings(view, cx));
         }
-        self.remember_view(&self.active_pane.clone(), cx);
+        // Every pane just took the same `view`, so any of them says the same
+        // thing; the widths are nobody's to republish here.
+        self.remember_settings_only(cx);
         cx.notify();
     }
 
@@ -1154,12 +1156,34 @@ impl Workspace {
     /// a single resize would be a few hundred writes.
     pub fn remember_view(&mut self, pane: &Entity<DirPane>, cx: &mut Context<Self>) {
         let pane = pane.read(cx);
-        let view = pane.view_settings();
+        let (view, widths) = (pane.view_settings(), pane.column_widths());
+        self.remember(view, Some(widths), cx);
+    }
+
+    /// Record the view settings without republishing anyone's column widths.
+    ///
+    /// For a change that did not come from a pane: the window moving, or the
+    /// settings file being saved. Those used to go through `remember_view` with
+    /// the active pane, which reassigned `state.column_widths` from whichever
+    /// pane happened to hold focus. A width dragged in the *other* pane was
+    /// already recorded and waiting behind the save throttle, so moving the
+    /// window before it landed replaced it, and the next start handed the
+    /// focused pane's widths to every pane.
+    fn remember_settings_only(&mut self, cx: &mut Context<Self>) {
+        let view = self.active_pane.read(cx).view_settings();
+        self.remember(view, None, cx);
+    }
+
+    fn remember(
+        &mut self,
+        view: ViewSettings,
+        column_widths: Option<std::collections::HashMap<String, f32>>,
+        cx: &mut Context<Self>,
+    ) {
         let sort = config::SortSetting {
             key: view.sort.key.into(),
             direction: view.sort.dir.into(),
         };
-        let column_widths = pane.column_widths();
 
         // Field by field, because a second hoja may own the ones this one never
         // touched. Assigning all of them unconditionally and writing the lot is
@@ -1167,12 +1191,15 @@ impl Workspace {
         self.dirty.sort |= self.state.sort != Some(sort);
         self.dirty.show_hidden |= self.state.show_hidden != Some(view.show_hidden);
         self.dirty.folders_first |= self.state.folders_first != Some(view.folders_first);
-        self.dirty.column_widths |= self.state.column_widths != column_widths;
 
         self.state.sort = Some(sort);
         self.state.show_hidden = Some(view.show_hidden);
         self.state.folders_first = Some(view.folders_first);
-        self.state.column_widths = column_widths;
+
+        if let Some(column_widths) = column_widths {
+            self.dirty.column_widths |= self.state.column_widths != column_widths;
+            self.state.column_widths = column_widths;
+        }
 
         if !self.dirty.any() {
             return;
@@ -1199,8 +1226,10 @@ impl Workspace {
     }
 
     /// The warning icon on a job row: everything that job could not transfer.
-    fn show_failures(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(job) = self.jobs.get(ix) else { return };
+    fn show_failures(&mut self, job: JobId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(job) = self.jobs.iter().find(|j| j.handle.id() == job) else {
+            return;
+        };
         // Copied rather than borrowed by index: the row underneath can be
         // dismissed while the report is open, and a still-running job keeps
         // collecting. Either would move the ground under a live index.
@@ -1290,6 +1319,12 @@ impl Workspace {
             .iter()
             .enumerate()
             .map(|(ix, job)| {
+                // Captured by the click handlers below instead of `ix`.
+                // `poll_jobs` drops finished clean jobs from the vector, which
+                // shifts every later index down while the handlers built for
+                // the previous frame still hold the old one. A click landing in
+                // that window cancelled a different transfer.
+                let job_id = job.handle.id();
                 let progress = job.handle.progress();
                 let bytes_done = progress
                     .bytes_done
@@ -1494,7 +1529,7 @@ impl Workspace {
                                             )
                                         })
                                         .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.show_failures(ix, window, cx)
+                                            this.show_failures(job_id, window, cx)
                                         })),
                                 ),
                         )
@@ -1508,15 +1543,18 @@ impl Workspace {
                             .hover(|s| s.bg(colors.element_hover))
                             .child("✕")
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                let Some(job) = this.jobs.get(ix) else { return };
-                                let id = job.handle.id();
-                                if job.done.is_some() {
-                                    this.jobs.remove(ix);
+                                let Some(at) =
+                                    this.jobs.iter().position(|j| j.handle.id() == job_id)
+                                else {
+                                    return;
+                                };
+                                if this.jobs[at].done.is_some() {
+                                    this.jobs.remove(at);
                                 } else {
-                                    job.handle.cancel();
+                                    this.jobs[at].handle.cancel();
                                 }
                                 // Either way the worker stops answering.
-                                this.purge_conflicts(id);
+                                this.purge_conflicts(job_id);
                                 cx.notify();
                             })),
                     )
@@ -1824,7 +1862,14 @@ mod tests {
         fits(&wide.rate.value, RATE_VALUE_W);
         fits(&wide.rate.unit, RATE_UNIT_W);
         // The longest forms of the remaining time, which decide its two cells.
-        fits("1h 59m", LEFT_VALUE_W);
+        // Every one `format_remaining` can return, not a shape it used to: the
+        // old check pinned "1h 59m", which is un-padded and one character short
+        // of what the function had already started printing, and the cell it
+        // guards clips from the leading edge rather than the trailing one, so an
+        // overflow there is a wrong number rather than a visible ellipsis.
+        for longest in ["59m 59s", "23h 59m", "99d 23h", "99d+"] {
+            fits(longest, LEFT_VALUE_W);
+        }
         fits("left", LEFT_UNIT_W);
     }
 

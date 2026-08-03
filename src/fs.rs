@@ -418,13 +418,28 @@ pub fn format_remaining(seconds: f64) -> String {
     }
     // Two digits throughout, so the figure is the same width at nine seconds
     // as at fifty, and counting down does not shuffle the words after it.
+    //
+    // Days exist so the hours field cannot grow a third digit. Without them a
+    // few hundred gigabytes onto a slow mount produced "460h 20m", eight
+    // characters in a cell sized for seven, and because the cell is
+    // right-justified the overflow was clipped off the *leading* edge: the
+    // strip read "0h 20m left" for a transfer with nineteen days to go.
+    //
+    // Past ninety-nine days the estimate is not an estimate, so it says so
+    // rather than growing the cell to hold a number nobody would believe.
     let s = seconds.round() as u64;
     match s {
         0..=59 => format!("{s:02}s"),
         60..=3599 => format!("{:02}m {:02}s", s / 60, s % 60),
-        _ => format!("{:02}h {:02}m", s / 3600, (s % 3600) / 60),
+        3600..=86_399 => format!("{:02}h {:02}m", s / 3600, (s % 3600) / 60),
+        _ => match s / 86_400 {
+            0..=99 => format!("{:02}d {:02}h", s / 86_400, (s % 86_400) / 3600),
+            _ => "99d+".to_string(),
+        },
     }
 }
+
+const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
 
 /// One tenth, always, for anything measured in a unit prefix.
 ///
@@ -435,17 +450,34 @@ pub fn format_remaining(seconds: f64) -> String {
 ///
 /// Plain bytes keep no tenth. There is no such thing as a tenth of a byte.
 pub fn format_size(bytes: u64) -> String {
-    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
     if bytes < 1024 {
         return format!("{bytes} B");
     }
-    let mut value = bytes as f64;
+    let (value, unit) = scale(bytes as f64, 1);
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+/// Reduce to a unit, accounting for what rounding will do to it afterwards.
+///
+/// The loop divides while the value is at or above 1024, but the caller then
+/// rounds, and a value just under the boundary rounds up through it: 1048575
+/// bytes left the loop as 1023.999 KB and printed "1024.0 KB". The reading was
+/// never wrong by much and always wrong in the same way, and sorting by size
+/// put "1024.0 KB" directly under "1.0 MB", which looks like a broken sort with
+/// nothing on screen to explain it.
+///
+/// So the promotion test is against the number as it will be *shown*, not as it
+/// is held. `places` is the decimals the caller will print.
+fn scale(mut value: f64, places: u32) -> (f64, usize) {
+    // Where rounding to `places` first reaches 1024: 1023.95 at one decimal,
+    // 1023.5 at none.
+    let ceiling = 1024.0 - 0.5 / 10f64.powi(places as i32);
     let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
+    while value >= ceiling && unit < UNITS.len() - 1 {
         value /= 1024.0;
         unit += 1;
     }
-    format!("{value:.1} {}", UNITS[unit])
+    (value, unit)
 }
 
 /// A transfer rate, which wants the opposite of `format_size`.
@@ -454,13 +486,7 @@ pub fn format_size(bytes: u64) -> String {
 /// two-second window and its last digit changes faster than it can be read.
 /// Rounded whole, it holds still long enough to mean something.
 pub fn format_rate(bytes_per_second: u64) -> String {
-    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
-    let mut value = bytes_per_second as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
+    let (value, unit) = scale(bytes_per_second as f64, 0);
     format!("{value:.0} {}", UNITS[unit])
 }
 
@@ -887,6 +913,12 @@ mod tests {
         assert_eq!(format_remaining(135.), "02m 15s");
         assert_eq!(format_remaining(3600.), "01h 00m");
         assert_eq!(format_remaining(4800.), "01h 20m");
+        assert_eq!(format_remaining(86_400. - 1.), "23h 59m");
+        assert_eq!(format_remaining(86_400.), "01d 00h");
+        // The case that clipped: 460 hours is nineteen days, not "460h 20m".
+        assert_eq!(format_remaining(460. * 3600.), "19d 04h");
+        assert_eq!(format_remaining(99. * 86_400.), "99d 00h");
+        assert_eq!(format_remaining(100. * 86_400.), "99d+");
         // A rate of zero divides to infinity; that is not a duration.
         assert_eq!(format_remaining(f64::INFINITY), "");
         assert_eq!(format_remaining(f64::NAN), "");
@@ -1198,6 +1230,23 @@ mod tests {
         // points that came and went and never lined up with each other.
         assert_eq!(format_size(150 * 1024 * 1024), "150.0 MB");
         assert_eq!(format_size(1023 * 1024 * 1024), "1023.0 MB");
+    }
+
+    #[test]
+    fn a_value_that_rounds_up_to_1024_moves_to_the_next_unit() {
+        // The loop divides while the value is at or above 1024, but the format
+        // rounds afterwards, so these used to print "1024.0 KB" and "1024 MB":
+        // a unit the ladder never names, sorting directly under "1.0 MB".
+        assert_eq!(format_size(1_048_575), "1.0 MB");
+        assert_eq!(format_size(1_073_741_823), "1.0 GB");
+        assert_eq!(format_size(1_099_511_627_775), "1.0 TB");
+        assert_eq!(format_rate(1_073_741_800), "1 GB");
+        // The window is wider with no decimals, so a rate promotes earlier:
+        // 1023.5 KB rounds to 1024 and has to move, 1023.4 does not.
+        assert_eq!(format_rate(1_048_100), "1 MB");
+        assert_eq!(format_rate(1_048_000), "1023 KB");
+        // Just below it, the reading still belongs to the smaller unit.
+        assert_eq!(format_size(1_048_524), "1023.9 KB");
     }
 
     #[test]

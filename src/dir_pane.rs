@@ -414,6 +414,26 @@ impl Column {
         }
     }
 
+    /// How narrow this column may be dragged, and the floor a width restored
+    /// from disk is lifted to.
+    ///
+    /// Per column, because a default is not reachable once anyone has used the
+    /// program: `remember_view` writes all three widths on any view change, so
+    /// every existing install carries the previous release's numbers, and
+    /// raising a default only helps someone installing for the first time. The
+    /// Size column widened for the monospaced face and everybody kept 90, which
+    /// is two pixels short of "1023.0 MB".
+    ///
+    /// Kind keeps the bare minimum: its content is words of no fixed length and
+    /// eliding them is what the column is for.
+    fn min_width(self) -> Pixels {
+        match self {
+            Column::Kind => px(COL_MIN_WIDTH),
+            Column::Size => px(94.),
+            Column::Modified => px(124.),
+        }
+    }
+
     /// The longest string this column ever holds, for the width test.
     #[cfg(test)]
     fn widest(self) -> &'static str {
@@ -443,9 +463,10 @@ impl Column {
                 .map(fs::format_size)
                 .unwrap_or_default(),
             Column::Kind => entry.kind(),
-            // Read once per frame and passed down, rather than a clock call per
-            // row: the answer must be the same for every row in a listing, or
-            // two files written in the same second can disagree.
+            // Read once for the batch of rows being built and passed down,
+            // rather than a clock call per row: the answer must be the same for
+            // every row in a listing, or two files written in the same second
+            // can disagree about how long ago that was.
             Column::Modified => entry
                 .modified
                 .map(|at| fs::format_time_ago(at, now))
@@ -478,7 +499,7 @@ impl ColumnWidths {
     }
 
     fn set(&mut self, column: Column, width: Pixels) {
-        self.0[column as usize] = width.clamp(px(COL_MIN_WIDTH), px(COL_MAX_WIDTH));
+        self.0[column as usize] = width.clamp(column.min_width(), px(COL_MAX_WIDTH));
     }
 }
 
@@ -2523,7 +2544,7 @@ impl DirPane {
     /// `use<>` opts out of capturing the `&self` / `&Context` lifetimes: the returned
     /// element owns every value it needs, and `uniform_list`'s callback must return
     /// something with no borrows outstanding.
-    fn render_entry(&self, ix: usize, cx: &Context<Self>) -> impl IntoElement + use<> {
+    fn render_entry(&self, ix: usize, now: SystemTime, cx: &Context<Self>) -> impl IntoElement + use<> {
         let entry = &self.entries[ix];
         let rename_editor = self
             .renaming
@@ -2644,7 +2665,6 @@ impl DirPane {
         let folder_bytes = self.folder_bytes(ix);
         let numeric = crate::theming::numeric_font(cx);
         let counting = self.counting_size(ix);
-        let now = SystemTime::now();
         let cells = Column::ALL.map(|column| Cell {
             width: self.widths.get(column),
             text: column.value(entry, folder_bytes, now),
@@ -2875,7 +2895,15 @@ impl DirPane {
             "entries",
             self.entries.len(),
             cx.processor(|this, range: Range<usize>, _window, cx| {
-                range.map(|ix| this.render_entry(ix, cx)).collect()
+                // One reading for the whole batch. Called inside `render_entry`
+                // it was a clock call per row, which is exactly what the
+                // Modified column's own comment says was avoided: two files
+                // written in the same second must not disagree about how long
+                // ago that was, and across a 60-second boundary they did.
+                let now = SystemTime::now();
+                range
+                    .map(|ix| this.render_entry(ix, now, cx))
+                    .collect()
             }),
         )
         .track_scroll(&self.scroll)
@@ -3065,22 +3093,30 @@ mod tests {
                 PROPORTIONAL_CHAR_W
             };
             let needed = widest.chars().count() as f32 * advance + CELL_PADDING;
+            // Against the minimum, not the default. A default only reaches
+            // someone installing for the first time; everyone else restores a
+            // width from disk, and the minimum is the floor that applies to it.
             assert!(
-                needed <= f32::from(column.default_width()),
-                "{:?} needs {needed}px for {widest:?} but starts at {:?}",
+                needed <= f32::from(column.min_width()),
+                "{:?} needs {needed}px for {widest:?} but its floor is {:?}",
                 column,
-                column.default_width()
+                column.min_width()
+            );
+            assert!(
+                column.min_width() <= column.default_width(),
+                "{column:?} starts narrower than it is allowed to be"
             );
         }
     }
 
     #[test]
-    fn a_column_can_still_be_dragged_narrower_than_its_content() {
-        // Deliberate: the minimum is a floor on the handle, not a promise that
-        // text fits. Someone who does not care about the date should be able to
-        // reclaim the space.
+    fn only_kind_may_be_dragged_narrower_than_its_content() {
+        // Kind alone: its content has no fixed length, so a floor sized to it
+        // would be a guess. The other two hold figures of a known widest form
+        // and their floors are those.
+        assert_eq!(Column::Kind.min_width(), px(COL_MIN_WIDTH));
         for column in Column::ALL {
-            assert!(COL_MIN_WIDTH < f32::from(column.default_width()));
+            assert!(f32::from(column.min_width()) <= f32::from(column.default_width()));
         }
     }
 }
