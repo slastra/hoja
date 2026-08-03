@@ -1,4 +1,4 @@
-wait_for 'len(p[0]["rows"]) == 9'
+wait_for 'p[0]["row_count"] == 9'
 expect 'p[0]["rows"][0] == "aurora"' "folders sort first"
 expect 'p[0]["footer"] == "9 items · 4.9 GB"' "footer totals the listing"
 

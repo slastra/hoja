@@ -19,6 +19,7 @@ mod picker;
 mod place_finder;
 mod places;
 mod probe;
+mod scrollbar;
 mod search;
 mod theming;
 mod workspace;

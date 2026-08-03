@@ -23,12 +23,24 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+/// Rows carried per pane.
+///
+/// Bounded because a directory can hold any number of them and this is written
+/// from `render`: serializing a hundred thousand rows would make the program
+/// slower in exactly the case a test is most likely to be measuring. Nothing
+/// asserts on the ten-thousandth row anyway. `row_count` stays exact, so a test
+/// that cares how many there are still gets the truth.
+pub const MAX_ROWS: usize = 200;
+
 /// A pane, as a test sees it.
 #[derive(Serialize, PartialEq, Eq)]
 pub struct PaneProbe {
     pub dir: PathBuf,
     pub active: bool,
-    /// Row labels in display order, which is what an assertion names.
+    /// Every row, however many are carried below.
+    pub row_count: usize,
+    /// Row labels in display order, which is what an assertion names. The first
+    /// `MAX_ROWS` of them.
     pub rows: Vec<String>,
     /// The Size column as printed, so a test checks the text a person reads
     /// rather than the bytes behind it. Empty where a cell is blank, which is
