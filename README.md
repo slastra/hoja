@@ -4,7 +4,7 @@
   <img alt="hoja" src="docs/hoja-light.png" width="360">
 </picture>
 
-<br>
+<br><br>
 
 **Hoja** (OH-hah) is a file manager for Linux. It runs on Wayland and renders
 via [GPUI](https://www.gpui.rs/), the GPU-accelerated framework from the Zed
