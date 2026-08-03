@@ -195,13 +195,13 @@ Keys work on the pane that has focus.
 
 | Keys | Action |
 | :-- | :-- |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Move the selection one row |
-| <kbd>Page Up</kbd> <kbd>Page Down</kbd> | Move the selection one screen |
-| <kbd>Home</kbd> <kbd>End</kbd> | Move to the first or the last entry |
+| <kbd>↑</kbd> / <kbd>↓</kbd> | Move the selection one row |
+| <kbd>Page Up</kbd> / <kbd>Page Down</kbd> | Move the selection one screen |
+| <kbd>Home</kbd> / <kbd>End</kbd> | Move to the first or the last entry |
 | <kbd>Enter</kbd> | Open the selected entry. A folder or a `.zip` opens in the pane. |
 | Type a name | Jump to the first match. Repeat one letter to cycle the matches. |
-| <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>Alt</kbd> + <kbd>→</kbd> | Go back and forward in the history |
-| <kbd>Alt</kbd> + <kbd>↑</kbd> or <kbd>Backspace</kbd> | Go to the parent directory |
+| <kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>Alt</kbd> + <kbd>→</kbd> | Go back and forward in the history |
+| <kbd>Alt</kbd> + <kbd>↑</kbd> / <kbd>Backspace</kbd> | Go to the parent directory |
 | <kbd>Alt</kbd> + <kbd>Home</kbd> | Go to the home directory |
 | <kbd>Ctrl</kbd> + <kbd>L</kbd> | Edit the path |
 | <kbd>Ctrl</kbd> + <kbd>F</kbd> | Search this folder and everything below it |
@@ -215,10 +215,10 @@ a selection of entries that are not next to each other.
 
 | Keys | Action |
 | :-- | :-- |
-| <kbd>Shift</kbd> + <kbd>↑</kbd> <kbd>Shift</kbd> + <kbd>↓</kbd> | Extend the selection one row |
-| <kbd>Shift</kbd> + <kbd>Page Up</kbd> <kbd>Shift</kbd> + <kbd>Page Down</kbd> | Extend the selection one screen |
-| <kbd>Shift</kbd> + <kbd>Home</kbd> <kbd>Shift</kbd> + <kbd>End</kbd> | Extend the selection to the first or the last entry |
-| <kbd>Ctrl</kbd> + <kbd>↑</kbd> <kbd>Ctrl</kbd> + <kbd>↓</kbd> | Move the outline and keep the selection |
+| <kbd>Shift</kbd> + <kbd>↑</kbd> / <kbd>Shift</kbd> + <kbd>↓</kbd> | Extend the selection one row |
+| <kbd>Shift</kbd> + <kbd>Page Up</kbd> / <kbd>Shift</kbd> + <kbd>Page Down</kbd> | Extend the selection one screen |
+| <kbd>Shift</kbd> + <kbd>Home</kbd> / <kbd>Shift</kbd> + <kbd>End</kbd> | Extend the selection to the first or the last entry |
+| <kbd>Ctrl</kbd> + <kbd>↑</kbd> / <kbd>Ctrl</kbd> + <kbd>↓</kbd> | Move the outline and keep the selection |
 | <kbd>Ctrl</kbd> + <kbd>Space</kbd> | Add or remove the outlined entry |
 | <kbd>Ctrl</kbd> + <kbd>A</kbd> | Select all |
 | <kbd>Escape</kbd> | Stop searching, or clear the selection |
@@ -230,7 +230,7 @@ a selection of entries that are not next to each other.
 | <kbd>F2</kbd> | Rename the selected entry |
 | <kbd>Delete</kbd> | Delete the selection |
 | <kbd>Ctrl</kbd> + <kbd>Z</kbd> | Undo the last delete |
-| <kbd>Ctrl</kbd> + <kbd>C</kbd> <kbd>Ctrl</kbd> + <kbd>X</kbd> <kbd>Ctrl</kbd> + <kbd>V</kbd> | Copy, cut, paste |
+| <kbd>Ctrl</kbd> + <kbd>C</kbd> / <kbd>Ctrl</kbd> + <kbd>X</kbd> / <kbd>Ctrl</kbd> + <kbd>V</kbd> | Copy, cut, paste |
 
 #### Panes and view
 
@@ -270,18 +270,18 @@ because they are rare.
 
 | Keys | Action |
 | :-- | :-- |
-| <kbd>←</kbd> <kbd>→</kbd> or <kbd>Ctrl</kbd> + <kbd>←</kbd> <kbd>Ctrl</kbd> + <kbd>→</kbd> | Move one character or one word |
-| <kbd>Home</kbd> <kbd>End</kbd> | Move to the start or the end |
+| <kbd>←</kbd> / <kbd>→</kbd> / <kbd>Ctrl</kbd> + <kbd>←</kbd> / <kbd>Ctrl</kbd> + <kbd>→</kbd> | Move one character or one word |
+| <kbd>Home</kbd> / <kbd>End</kbd> | Move to the start or the end |
 | add <kbd>Shift</kbd> | Extend the selection instead |
-| <kbd>Ctrl</kbd> + <kbd>Backspace</kbd> <kbd>Ctrl</kbd> + <kbd>Delete</kbd> | Delete one word |
-| <kbd>Enter</kbd> or <kbd>Escape</kbd> | Go to the path, or cancel |
+| <kbd>Ctrl</kbd> + <kbd>Backspace</kbd> / <kbd>Ctrl</kbd> + <kbd>Delete</kbd> | Delete one word |
+| <kbd>Enter</kbd> / <kbd>Escape</kbd> | Go to the path, or cancel |
 
 #### In a menu, a dialog, or the command palette
 
 | Keys | Action |
 | :-- | :-- |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Move the highlight |
-| <kbd>Enter</kbd> or <kbd>Escape</kbd> | Choose, or close |
+| <kbd>↑</kbd> / <kbd>↓</kbd> | Move the highlight |
+| <kbd>Enter</kbd> / <kbd>Escape</kbd> | Choose, or close |
 
 ## Build
 
