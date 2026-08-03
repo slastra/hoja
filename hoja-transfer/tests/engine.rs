@@ -792,3 +792,41 @@ fn a_name_that_only_just_fits_still_copies() {
     assert_eq!(std::fs::read(dest.path().join("zzz.txt")).unwrap(), b"after");
     no_partials_under(dest.path());
 }
+
+#[test]
+fn keep_both_on_a_name_that_only_just_fits_still_copies() {
+    // The partial file's budget was not enough on its own: `keep_both_name`
+    // built the real destination, and an over-long one there is not caught by
+    // `resolve_dest`'s existence probe, which reads ENAMETOOLONG as "nothing is
+    // there". The file copied in full and failed at the closing rename.
+    let src = ext4_dir();
+    let dest = ext4_dir();
+    let long = format!("{}.tar.gz", "n".repeat(248)); // 255 bytes: the limit itself
+    write_file(src.path(), &long, b"payload");
+    write_file(dest.path(), &long, b"already here");
+
+    let handle = spawn_job(JobSpec {
+        op: Operation::Copy,
+        sources: vec![src.path().join(&long)],
+        dest_dir: dest.path().to_path_buf(),
+        policy: JobPolicy {
+            conflict: Some(ConflictChoice::KeepBoth),
+            ..JobPolicy::default()
+        },
+    })
+    .unwrap();
+    let (_, summary) = drain(&handle, never_conflict);
+
+    assert_eq!(summary.outcome, Outcome::Completed);
+    assert!(summary.errors.is_empty(), "{:?}", summary.errors);
+    // The original is untouched and the copy landed beside it under some name.
+    assert_eq!(std::fs::read(dest.path().join(&long)).unwrap(), b"already here");
+    let copies: Vec<_> = std::fs::read_dir(dest.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().contains("(copy"))
+        .collect();
+    assert_eq!(copies.len(), 1, "one keep-both copy");
+    assert_eq!(std::fs::read(copies[0].path()).unwrap(), b"payload");
+    no_partials_under(dest.path());
+}

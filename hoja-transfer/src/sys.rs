@@ -205,6 +205,17 @@ pub fn stem_end(name: &str) -> usize {
 }
 
 /// `foo.tar.gz` → `foo (copy).tar.gz`, then `foo (copy 2).tar.gz`, …
+///
+/// Budgeted against `NAME_MAX` like `partial_path`, and against a worse failure
+/// than that one had. `resolve_dest` picks a candidate by asking whether
+/// anything is already there, and a name too long for the filesystem answers
+/// that question with ENAMETOOLONG, which reads as "nothing is there". The
+/// candidate is accepted, `partial_path` shortens its own name enough to open,
+/// the whole file copies, and only the closing rename onto the real name fails.
+/// So the cost of getting this wrong is paid after the bytes are written.
+///
+/// The suffix is what makes this a keep-both and the extension decides what the
+/// file is, so the stem is what gives way.
 pub fn keep_both_name(dest: &Path, attempt: u32) -> PathBuf {
     let name = dest
         .file_name()
@@ -218,6 +229,8 @@ pub fn keep_both_name(dest: &Path, attempt: u32) -> PathBuf {
     } else {
         format!(" (copy {attempt})")
     };
+    let budget = NAME_MAX.saturating_sub(suffix.len() + ext.len());
+    let stem = truncate_on_char_boundary(stem, budget);
     dest.with_file_name(format!("{stem}{suffix}{ext}"))
 }
 
@@ -236,6 +249,40 @@ mod tests {
             name.len()
         );
         assert!(super::is_partial_name(name));
+    }
+
+    #[test]
+    fn a_keep_both_name_stays_within_the_filesystem_limit() {
+        // A source name at the limit: the suffix alone pushes it over, which is
+        // the case that copied the whole file and then failed at the rename.
+        let dest = std::path::PathBuf::from("/dest").join(format!("{}.tar.gz", "n".repeat(248)));
+        for attempt in [1, 2, 999] {
+            let built = super::keep_both_name(&dest, attempt);
+            let name = built.file_name().unwrap().to_str().unwrap();
+            assert!(
+                name.len() <= super::NAME_MAX,
+                "attempt {attempt}: {} bytes is over NAME_MAX",
+                name.len()
+            );
+            assert!(name.ends_with(".tar.gz"), "the extension survives: {name}");
+            assert!(name.contains("(copy"), "the suffix survives: {name}");
+        }
+    }
+
+    #[test]
+    fn each_keep_both_attempt_is_a_different_name() {
+        // Truncation eats the tail of the stem, which is what would otherwise
+        // distinguish them, so the suffix has to keep the attempts apart alone.
+        let dest = std::path::PathBuf::from("/dest").join("n".repeat(255));
+        let names: std::collections::HashSet<_> =
+            (1..=8).map(|a| super::keep_both_name(&dest, a)).collect();
+        assert_eq!(names.len(), 8);
+    }
+
+    #[test]
+    fn a_short_keep_both_name_is_left_whole() {
+        let built = super::keep_both_name(std::path::Path::new("/dest/foo.tar.gz"), 1);
+        assert_eq!(built.file_name().unwrap(), "foo (copy).tar.gz");
     }
 
     #[test]
