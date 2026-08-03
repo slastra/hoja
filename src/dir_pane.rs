@@ -2271,14 +2271,31 @@ impl DirPane {
     }
 
     fn open_selected(&mut self, _: &OpenSelected, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(entry) = self.cursor_ix.and_then(|ix| self.entries.get(ix)) else {
+        let Some(ix) = self.cursor_ix else { return };
+        self.activate(ix, cx);
+    }
+
+    /// Open what a row holds: enter a directory, hand a file to the desktop.
+    ///
+    /// Shared by enter and by double-click, which is the point. They were two
+    /// pieces of code doing nearly the same thing, and the difference was that
+    /// double-click tested `is_dir` and did nothing at all when the answer was
+    /// no, so a file opened from the keyboard and not from the mouse.
+    fn activate(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(entry) = self.entries.get(ix) else {
             return;
         };
         let path = entry.path.clone();
         if entry.is_dir {
             self.navigate_to(path, cx);
-        } else if let Err(err) = crate::opener::open(&path) {
-            eprintln!("[hoja] open failed: {err}");
+            return;
+        }
+        if let Err(err) = crate::opener::open(&path) {
+            // On the strip rather than only on stderr: a double-click that
+            // silently does nothing reads as the click not registering, and
+            // there is no other sign that anything was attempted.
+            let name = entry.name.clone();
+            cx.emit(PaneEvent::Notice(format!("Could not open {name}: {err}")));
         }
     }
 
@@ -2853,8 +2870,8 @@ impl DirPane {
                 } else {
                     this.selected.only(ix);
                     this.place_cursor(ix);
-                    if event.click_count() >= 2 && is_dir {
-                        this.navigate_to(path.clone(), cx);
+                    if event.click_count() >= 2 {
+                        this.activate(ix, cx);
                     }
                 }
                 cx.notify();
