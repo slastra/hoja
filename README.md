@@ -1,20 +1,23 @@
+<div align="center">
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/hoja-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/hoja-light.png">
   <img alt="hoja" src="docs/hoja-light.png" width="360">
 </picture>
 
-**hoja** (OH-hah) is a file manager for Linux. It runs on Wayland and renders
+</div>
+
+**Hoja** (OH-hah) is a file manager for Linux. It runs on Wayland and renders
 via [GPUI](https://www.gpui.rs/), the GPU-accelerated framework from the Zed
 editor. Split the window into multiple panes. Each folder calculates real
 recursive sizes. File transfers select the optimal method automatically.
 Deletions are undoable, and archives browse like folders.
 
 > [!WARNING]
-> hoja is experimental software. Do not use it as your only tool for
-> important data.
+> Hoja is experimental software. Use at your own risk.
 
-![Two panes side by side in the Rosé Pine theme: a home directory on the left, where every folder shows a real recursive size, and hoja's own source on the right. Modified says how long ago rather than what o'clock, and each pane's footer totals exactly the rows above it.](docs/screenshot.png)
+![Two panes side by side in the Rosé Pine theme: a home directory on the left, where every folder shows a real recursive size, and Hoja's own source on the right. Modified says how long ago rather than what o'clock, and each pane's footer totals exactly the rows above it.](docs/screenshot.png)
 
 ## Features
 
@@ -27,7 +30,7 @@ Deletions are undoable, and archives browse like folders.
 - **Navigation.** Each pane has its own history. Use the back, forward, up, and
   home buttons. Click the path, then type a new path.
 - **Folder sizes.** The Size column shows a real, recursive size for folders,
-  not a blank. hoja walks the tree to find one, in parallel and in the
+  not a blank. Hoja walks the tree to find one, in parallel and in the
   background, and each folder's cell fills in when its own subtree is counted,
   so no number ever climbs in the listing. Sorting by size reorders once, when
   every folder is final.
@@ -41,7 +44,7 @@ Deletions are undoable, and archives browse like folders.
   holds at half strength, so two panes with selections cannot be mistaken for
   each other. A name coloured by git status keeps its colour, only fainter.
 - **View settings.** Each pane has a menu at the right end of the toolbar.
-  It controls hidden files, folder grouping, and the sort order. hoja does
+  It controls hidden files, folder grouping, and the sort order. Hoja does
   not show hidden files by default.
 - **Archives as folders.** Press enter on a `.zip` or a tarball and the pane goes
   into it: `.tar`, and `.tar.gz`, `.tar.bz2`, `.tar.xz` and `.tar.zst` with all
@@ -63,36 +66,36 @@ Deletions are undoable, and archives browse like folders.
   not in a pane. Opening a file that lives inside one asks first: opening means
   extracting a temporary copy, and anything written back to that copy never
   reaches the archive.
-- **Live listings.** hoja watches the directory it shows. If another program
+- **Live listings.** Hoja watches the directory it shows. If another program
   adds, removes, or changes a file, the pane re-lists and keeps your selection.
   If the directory itself goes away, the pane moves to the nearest directory
   above it that still exists and tells you.
 
 ### Moving files
 
-- **File transfer.** hoja selects the fastest correct method for each file:
+- **File transfer.** Hoja selects the fastest correct method for each file:
   - A move on one filesystem uses `rename()`. This is instant.
   - A copy on btrfs or XFS uses reflink. This is instant for all file sizes.
   - All other copies use `copy_file_range` with a fallback. Sparse files stay
     sparse.
-  - hoja keeps permissions, times, extended attributes, symlinks, and
-    hardlinks. Writes are atomic. On removable media, hoja flushes data before
+  - Hoja keeps permissions, times, extended attributes, symlinks, and
+    hardlinks. Writes are atomic. On removable media, Hoja flushes data before
     it reports success.
 - **Delete with undo.** `delete` removes the selection and `ctrl-z` puts it
-  back. hoja moves the files to the trash directory of the freedesktop
+  back. Hoja moves the files to the trash directory of the freedesktop
   specification, on the same filesystem, so a delete is instant and other
-  file managers can empty what hoja deletes. hoja has no other trash
+  file managers can empty what Hoja deletes. Hoja has no other trash
   controls: no browser, no restore list, no empty command.
 - **Drag and drop.** Drag rows to another pane, onto a folder, or to another
   application. Drag files from another application into a pane. A drag moves
   the files on one filesystem and copies them across filesystems, which is the
   usual behaviour. Hold `ctrl` to copy or `shift` to move. Files that come from
   another application are always copied.
-- **Clipboard.** Copy and paste files between hoja and other file managers.
-  hoja reads and writes the GNOME clipboard format.
+- **Clipboard.** Copy and paste files between Hoja and other file managers.
+  Hoja reads and writes the GNOME clipboard format.
 - **Transfer progress.** The bar along the bottom shows how far a transfer has
   got, how fast it is going, and how much longer it has: `365.4 MB / 680.1 MB
-  82 MB/s  04s left`. hoja counts the files before it starts copying, so the
+  82 MB/s  04s left`. Hoja counts the files before it starts copying, so the
   bar is true from the first file rather than jumping at the end. The figures
   are monospaced and every column is fixed, so nothing shifts as they climb.
 - **What failed, and why.** A transfer that could not copy everything keeps its
@@ -101,17 +104,17 @@ Deletions are undoable, and archives browse like folders.
   all under.
 - **Notifications.** A transfer that runs for more than a few seconds tells
   your desktop when it finishes, and a failed one tells you whatever its
-  length. hoja uses the freedesktop notification service, so the notification
+  length. Hoja uses the freedesktop notification service, so the notification
   looks like every other notification on your desktop.
 
 ### Finding things
 
-- **Search.** Press `ctrl-f` and type. hoja searches every folder below the one
+- **Search.** Press `ctrl-f` and type. Hoja searches every folder below the one
   the pane shows and lists what it finds, with the path of each result. Results
   appear while the search runs. Press enter to go back to the list, then enter
   again to open. Press escape to stop searching.
 - **Places.** Press `ctrl-p` to go to your home directory, a bookmark, or an
-  attached drive. hoja reads the same bookmarks file the GTK file dialogs use,
+  attached drive. Hoja reads the same bookmarks file the GTK file dialogs use,
   so what you bookmark in Files appears here with no setup. A drive that is
   plugged in but not mounted is listed too; choosing it mounts the drive first.
   Highlight a mounted, removable drive and press `ctrl-e` to eject it; any pane
@@ -126,15 +129,15 @@ Deletions are undoable, and archives browse like folders.
   `3 hours ago`, `2 months ago`.
 - **Git status.** In a git repository, the colour of a file name shows its
   status: added, modified, deleted, renamed, or in conflict. A folder shows
-  the status of the files in it. Ignored files are dim. hoja asks `git`
+  the status of the files in it. Ignored files are dim. Hoja asks `git`
   itself, so the result always agrees with the command line.
-- **Themes.** hoja reads Zed theme files. Put a theme file in
-  `~/.config/hoja/themes/`. hoja applies changes to these files immediately.
+- **Themes.** Hoja reads Zed theme files. Put a theme file in
+  `~/.config/hoja/themes/`. Hoja applies changes to these files immediately.
   The Rosé Pine themes are included.
 - **Icons.** File icons follow the Zed icon system. The theme sets the icon
   color.
 - **Settings.** `~/.config/hoja/settings.json` sets the theme and what a new
-  pane shows. hoja never writes this file, so your comments and your layout
+  pane shows. Hoja never writes this file, so your comments and your layout
   stay. It applies changes to the file immediately.
 
 ## Install
@@ -158,7 +161,7 @@ The `HOJA_THEME` environment variable also sets the theme.
 ## Settings
 
 Write `~/.config/hoja/settings.json`. Every field is optional, comments are
-allowed, and hoja applies a change as soon as you save.
+allowed, and Hoja applies a change as soon as you save.
 
 ```jsonc
 {
@@ -176,111 +179,111 @@ allowed, and hoja applies a change as soon as you save.
 
 `--theme` on the command line, then `$HOJA_THEME`, then this file.
 
-hoja keeps what you change through the interface (the sort order, hidden
+Hoja keeps what you change through the interface (the sort order, hidden
 files, and the column widths you drag) in `~/.local/state/hoja/state.json`,
 and reads it back at the next start. It writes that file and you write the
 other one, so neither can overwrite the other. When both have an answer, the
 more recent one applies: what you last toggled survives a restart, and editing
 the settings file takes effect over it.
 
-Two hoja windows share that file safely. Each one writes only the settings you
+Two Hoja windows share that file safely. Each one writes only the settings you
 changed in it, so a change made in one window is not undone by the other.
 
 ## Keys
 
 Keys work on the pane that has focus.
 
-**Move**
+#### Move
 
-| Key | Function |
-|---|---|
-| `↑` `↓` | Move the selection one row |
-| `pageup` `pagedown` | Move the selection one screen |
-| `home` `end` | Move to the first or the last entry |
-| `enter` | Open the selected entry. A folder or a `.zip` opens in the pane. |
-| type a name | Jump to the first match. Repeat one letter to cycle the matches. |
-| `alt-←` `alt-→` | Go back and forward in the history |
-| `alt-↑` or `backspace` | Go to the parent directory |
-| `alt-home` | Go to the home directory |
-| `ctrl-l` | Edit the path |
-| `ctrl-f` | Search this folder and everything below it |
+| Keys | Action |
+| :-- | :-- |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Move the selection one row |
+| <kbd>Page Up</kbd> <kbd>Page Down</kbd> | Move the selection one screen |
+| <kbd>Home</kbd> <kbd>End</kbd> | Move to the first or the last entry |
+| <kbd>Enter</kbd> | Open the selected entry. A folder or a `.zip` opens in the pane. |
+| Type a name | Jump to the first match. Repeat one letter to cycle the matches. |
+| <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>Alt</kbd> + <kbd>→</kbd> | Go back and forward in the history |
+| <kbd>Alt</kbd> + <kbd>↑</kbd> or <kbd>Backspace</kbd> | Go to the parent directory |
+| <kbd>Alt</kbd> + <kbd>Home</kbd> | Go to the home directory |
+| <kbd>Ctrl</kbd> + <kbd>L</kbd> | Edit the path |
+| <kbd>Ctrl</kbd> + <kbd>F</kbd> | Search this folder and everything below it |
 
-**Select**
+#### Select
 
 An outline marks the entry that the keys act on. It is usually also selected.
-Use `ctrl` with the movement keys to move the outline alone, and `ctrl-space`
-to add or remove that one entry. This builds a selection of entries that are
-not next to each other.
+Use <kbd>Ctrl</kbd> with the movement keys to move the outline alone, and
+<kbd>Ctrl</kbd> + <kbd>Space</kbd> to add or remove that one entry. This builds
+a selection of entries that are not next to each other.
 
-| Key | Function |
-|---|---|
-| `shift-↑` `shift-↓` | Extend the selection one row |
-| `shift-pageup` `shift-pagedown` | Extend the selection one screen |
-| `shift-home` `shift-end` | Extend the selection to the first or the last entry |
-| `ctrl-↑` `ctrl-↓` | Move the outline and keep the selection |
-| `ctrl-space` | Add or remove the outlined entry |
-| `ctrl-a` | Select all |
-| `escape` | Stop searching, or clear the selection |
+| Keys | Action |
+| :-- | :-- |
+| <kbd>Shift</kbd> + <kbd>↑</kbd> <kbd>Shift</kbd> + <kbd>↓</kbd> | Extend the selection one row |
+| <kbd>Shift</kbd> + <kbd>Page Up</kbd> <kbd>Shift</kbd> + <kbd>Page Down</kbd> | Extend the selection one screen |
+| <kbd>Shift</kbd> + <kbd>Home</kbd> <kbd>Shift</kbd> + <kbd>End</kbd> | Extend the selection to the first or the last entry |
+| <kbd>Ctrl</kbd> + <kbd>↑</kbd> <kbd>Ctrl</kbd> + <kbd>↓</kbd> | Move the outline and keep the selection |
+| <kbd>Ctrl</kbd> + <kbd>Space</kbd> | Add or remove the outlined entry |
+| <kbd>Ctrl</kbd> + <kbd>A</kbd> | Select all |
+| <kbd>Escape</kbd> | Stop searching, or clear the selection |
 
-**Change files**
+#### Change files
 
-| Key | Function |
-|---|---|
-| `f2` | Rename the selected entry |
-| `delete` | Delete the selection |
-| `ctrl-z` | Undo the last delete |
-| `ctrl-c` `ctrl-x` `ctrl-v` | Copy, cut, paste |
+| Keys | Action |
+| :-- | :-- |
+| <kbd>F2</kbd> | Rename the selected entry |
+| <kbd>Delete</kbd> | Delete the selection |
+| <kbd>Ctrl</kbd> + <kbd>Z</kbd> | Undo the last delete |
+| <kbd>Ctrl</kbd> + <kbd>C</kbd> <kbd>Ctrl</kbd> + <kbd>X</kbd> <kbd>Ctrl</kbd> + <kbd>V</kbd> | Copy, cut, paste |
 
-**Panes and view**
+#### Panes and view
 
 To split in another direction, or to move to the pane above or to the left,
 open the command palette and type the name. These commands are not on a key
 because they are rare.
 
-| Key | Function |
-|---|---|
-| `tab` / `shift-tab` | Move to the next or the previous pane |
-| `f3` | Split the active pane |
-| `ctrl-w` | Close the active pane |
-| `ctrl-h` | Show or hide hidden files |
-| `ctrl-shift-d` | Dismiss finished transfers |
-| `ctrl-shift-p` | Open the command palette |
-| `ctrl-p` | Go to a place: home, a bookmark, or a drive |
-| `ctrl-e` | In that list, eject the highlighted drive |
+| Keys | Action |
+| :-- | :-- |
+| <kbd>Tab</kbd> / <kbd>Shift</kbd> + <kbd>Tab</kbd> | Move to the next or the previous pane |
+| <kbd>F3</kbd> | Split the active pane |
+| <kbd>Ctrl</kbd> + <kbd>W</kbd> | Close the active pane |
+| <kbd>Ctrl</kbd> + <kbd>H</kbd> | Show or hide hidden files |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd> | Dismiss finished transfers |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd> | Open the command palette |
+| <kbd>Ctrl</kbd> + <kbd>P</kbd> | Go to a place: home, a bookmark, or a drive |
+| <kbd>Ctrl</kbd> + <kbd>E</kbd> | In that list, eject the highlighted drive |
 
-**Mouse**
+#### Mouse
 
-| Action | Function |
-|---|---|
+| Mouse | Action |
+| :-- | :-- |
 | Click | Select the row |
-| `ctrl`-click | Add or remove one row |
-| `shift`-click | Select a range |
+| <kbd>Ctrl</kbd> + Click | Add or remove one row |
+| <kbd>Shift</kbd> + Click | Select a range |
 | Double-click | Open the entry |
 | Right-click | Open the context menu |
 | Click a column header | Sort. Click again to reverse the order. |
 | Drag a header divider | Resize the column |
 | Click the magnifier | Start or stop a search |
-| Drag rows | Move them. Across filesystems, hoja copies them. |
-| `ctrl`-drag / `shift`-drag | Always copy / always move |
+| Drag rows | Move them. Across filesystems, Hoja copies them. |
+| <kbd>Ctrl</kbd> + Drag / <kbd>Shift</kbd> + Drag | Always copy / always move |
 | Drop on a folder row | Put the files in that folder |
 | Back and forward buttons | Go back and forward in the history |
 
-**While you edit a path**
+#### While you edit a path
 
-| Key | Function |
-|---|---|
-| `←` `→` or `ctrl-←` `ctrl-→` | Move one character or one word |
-| `home` `end` | Move to the start or the end |
-| add `shift` | Extend the selection instead |
-| `ctrl-backspace` `ctrl-delete` | Delete one word |
-| `enter` or `escape` | Go to the path, or cancel |
+| Keys | Action |
+| :-- | :-- |
+| <kbd>←</kbd> <kbd>→</kbd> or <kbd>Ctrl</kbd> + <kbd>←</kbd> <kbd>Ctrl</kbd> + <kbd>→</kbd> | Move one character or one word |
+| <kbd>Home</kbd> <kbd>End</kbd> | Move to the start or the end |
+| add <kbd>Shift</kbd> | Extend the selection instead |
+| <kbd>Ctrl</kbd> + <kbd>Backspace</kbd> <kbd>Ctrl</kbd> + <kbd>Delete</kbd> | Delete one word |
+| <kbd>Enter</kbd> or <kbd>Escape</kbd> | Go to the path, or cancel |
 
-**In a menu, a dialog, or the command palette**
+#### In a menu, a dialog, or the command palette
 
-| Key | Function |
-|---|---|
-| `↑` `↓` | Move the highlight |
-| `enter` or `escape` | Choose, or close |
+| Keys | Action |
+| :-- | :-- |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Move the highlight |
+| <kbd>Enter</kbd> or <kbd>Escape</kbd> | Choose, or close |
 
 ## Build
 
@@ -310,7 +313,7 @@ not the other.
 
 ## Testing the interface
 
-`scripts/sway-harness.sh` runs hoja in a compositor of its own, so a test of
+`scripts/sway-harness.sh` runs Hoja in a compositor of its own, so a test of
 the interface does not touch the desktop you are using. It takes a directory to
 open and a script of things to do, and prints where the screenshots went:
 
@@ -320,7 +323,7 @@ scripts/sway-harness.sh ~/some/dir my-test.sh
 ```
 
 It needs `sway`, `grim`, `wtype` and `wlrctl`, and it exercises the Wayland
-backend hoja actually ships on. The test script can click rows, send keys, and
+backend Hoja actually ships on. The test script can click rows, send keys, and
 capture the window or just its footer; nothing takes your focus, because every
 one of those tools is scoped to the nested display rather than to whatever the
 real session has focused. `HOJA_TEST_WIDTH` and `HOJA_TEST_HEIGHT` size the
@@ -396,7 +399,6 @@ Planned and not complete:
 - **Searching inside an archive**, which the recursive search does not do yet.
   The whole member list is already in memory, so filtering it is cheaper than
   searching a directory.
-- **Opening a file inside an archive**, which needs somewhere to put it first.
 - **Writing to an archive.** Everything here reads; rename, delete and paste
   inside one are refusals rather than half-features.
 - **Owner, group and permission columns**, for anyone who wants them.
@@ -404,7 +406,7 @@ Planned and not complete:
 - **Query history in the pickers**, and modal geometry that persists.
 - **Explicit sync between two directories**, chunked so that repeating it moves
   only what changed.
-- **Sync between two machines**, hoja to hoja.
+- **Sync between two machines**, Hoja to Hoja.
 
 Planned once, and now in doubt:
 
@@ -417,10 +419,10 @@ Planned once, and now in doubt:
 
 ## License
 
-The license of hoja is GPL-3.0-or-later. See the `LICENSE` file.
+The license of Hoja is GPL-3.0-or-later. See the `LICENSE` file.
 
 GPUI has the Apache-2.0 license. The Zed `theme` and `file_icons` crates have
-the GPL-3.0-or-later license. This is why hoja uses the GPL.
+the GPL-3.0-or-later license. This is why Hoja uses the GPL.
 
 The included assets have their own licenses:
 
