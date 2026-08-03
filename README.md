@@ -336,17 +336,27 @@ HOJA_TEST_BTRFS=/tmp/hoja-btrfs/mnt cargo test -p hoja-transfer -- --ignored
 
 ## Roadmap
 
-These features are planned and not complete:
+Planned and not complete:
 
-- Parallel copy for many small files
-- A job journal, for undo of a transfer and resume after a crash
-- Opening an archive like a folder: browsing a zip or a tarball in a pane and
-  copying out of it without unpacking the whole thing first
-- Optional columns for the owner, the group, and the permissions
-- Tabs, previews, and thumbnails
-- Delta sync between machines
+- **A job journal.** Pause, resume and undo a transfer, and survive a crash
+  partway through one.
+- **Opening an archive like a folder.** Browse a zip or a tarball in a pane and
+  copy out of it without unpacking the whole thing first.
+- **Owner, group and permission columns**, for anyone who wants them.
+- **Tabs, previews and thumbnails.**
+- **Query history in the pickers**, and modal geometry that persists.
+- **Explicit sync between two directories**, chunked so that repeating it moves
+  only what changed.
+- **Sync between two machines**, hoja to hoja.
 
-See [`docs/transfer-plan.md`](docs/transfer-plan.md) for the full design.
+Planned once, and now in doubt:
+
+- **Parallel copy for many small files.** Measured against `xcp`: 4.7x faster on
+  tmpfs, and *slower* than a single thread on real devices. The win was the RAM
+  disk rather than the parallelism, so this needs a benchmark that is not a
+  tmpfs before it is worth building. What the same measurements did point at is
+  the atomic temp-file rename, which was half the time of an exFAT copy.
+- **io_uring underneath it**, which was always conditional on that benchmark.
 
 ## License
 

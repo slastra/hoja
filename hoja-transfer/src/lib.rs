@@ -1,6 +1,6 @@
 //! Tiered file transfer engine for the pane file manager.
 //!
-//! Design (see `docs/transfer-plan.md` in the repository): boring fast paths are
+//! Design: boring fast paths are
 //! the default: rename for same-mount moves, FICLONE reflink for same-fs
 //! copies, `copy_file_range` for the rest, with attempt-and-fallback instead of
 //! filesystem sniffing, and a correctness layer (metadata, symlinks, hardlinks,
