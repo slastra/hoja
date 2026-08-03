@@ -18,6 +18,7 @@ mod path_editor;
 mod picker;
 mod place_finder;
 mod places;
+mod probe;
 mod search;
 mod theming;
 mod workspace;

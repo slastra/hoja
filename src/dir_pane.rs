@@ -722,6 +722,42 @@ impl DirPane {
     }
 
     /// Mark this pane active or not. The workspace owns which one it is.
+    /// What this pane is showing, for `HOJA_PROBE`. See `crate::probe`.
+    ///
+    /// The columns are read through `Column::value`, the same call the rows
+    /// render through, so a test asserts the text a person reads rather than
+    /// the bytes behind it. A probe built from the underlying data instead
+    /// would pass while the screen showed something else, which is the one
+    /// thing it must not do.
+    pub fn probe(&self, now: std::time::SystemTime) -> crate::probe::PaneProbe {
+        let column = |which: Column| {
+            self.entries
+                .iter()
+                .enumerate()
+                .map(|(ix, entry)| which.value(entry, self.folder_bytes(ix), now))
+                .collect()
+        };
+        crate::probe::PaneProbe {
+            dir: self.dir.clone(),
+            active: self.active,
+            rows: self
+                .entries
+                .iter()
+                .map(|entry| entry.relative.clone().unwrap_or_else(|| entry.name.clone()))
+                .collect(),
+            sizes: column(Column::Size),
+            modified: column(Column::Modified),
+            selected: self.selected.iter().collect(),
+            cursor: self.cursor_ix,
+            footer: self.footer.text.clone(),
+            counting: (0..self.entries.len())
+                .filter(|ix| self.counting_size(*ix))
+                .collect(),
+            searching: self.searching(),
+            error: self.error.clone(),
+        }
+    }
+
     pub fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
         if self.active != active {
             self.active = active;

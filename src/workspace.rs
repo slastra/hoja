@@ -1273,6 +1273,49 @@ impl Workspace {
 
     /// The scrim both modals sit in. `conflict_dialog` keeps its own, since it
     /// centres rather than anchoring near the top.
+    /// Publish what the window is showing, when `HOJA_PROBE` asked for it.
+    ///
+    /// Asked for from `render`, which is the one place that runs after every
+    /// change, but *deferred*: a workspace renders before the panes inside it,
+    /// so reading them here reports the frame before this one. The pane footer
+    /// is computed in `sync_footer` during the pane's own render and would
+    /// always have trailed by one, which is worse than useless, because
+    /// `sync_footer` deliberately does not notify and so nothing would have
+    /// forced the frame that caught up.
+    fn schedule_probe(&self, window: &mut Window) {
+        if crate::probe::path().is_none() {
+            return;
+        }
+        let panes: Vec<_> = self.panes.clone();
+        let jobs: Vec<_> = self
+            .jobs
+            .iter()
+            .map(|job| crate::probe::JobProbe {
+                label: job.handle.label().to_string(),
+                done: job.done.is_some(),
+                errors: job.errors,
+            })
+            .collect();
+        let modal = self.modal.as_ref().map(|modal| match modal {
+            Modal::Palette(_) => "palette",
+            Modal::Places(_) => "places",
+            Modal::Failures(_) => "failures",
+        });
+        let notice = self.notice.as_ref().map(|n| n.text().to_string());
+        window.on_next_frame(move |_, cx| {
+            // One reading for every pane, so two cannot disagree about how long
+            // ago a file was written.
+            let now = std::time::SystemTime::now();
+            crate::probe::write(&mut crate::probe::Probe {
+                panes: panes.iter().map(|pane| pane.read(cx).probe(now)).collect(),
+                jobs,
+                modal,
+                notice,
+                revision: 0, // `write` owns this
+            });
+        });
+    }
+
     fn modal_scrim(&self, child: gpui::AnyElement, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .occlude()
@@ -1721,6 +1764,8 @@ impl Render for Workspace {
             window.set_window_title(&title);
             self.title = title;
         }
+
+        self.schedule_probe(window);
 
         // Bindings are scoped to the focused pane's "DirPane" context, but the actions
         // bubble from the focused pane up to here, so the handlers live on the

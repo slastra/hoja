@@ -115,6 +115,11 @@ import sys, json
 r = json.load(sys.stdin)[0]['rect']
 print(f\"W={r['width']}; H={r['height']}\")" 2>/dev/null)"
 
+# What the window is showing, rewritten whenever it changes. This is what lets
+# a test assert and wait rather than screenshot and sleep; see `src/probe.rs`.
+export HOJA_PROBE="$OUT/probe.json"
+rm -f "$HOJA_PROBE"
+
 # Its own config and state, so a test can never write through to the real ones.
 export XDG_STATE_HOME="$OUT/state" XDG_CONFIG_HOME="$OUT/config"
 rm -rf "$XDG_STATE_HOME" "$XDG_CONFIG_HOME"
@@ -161,7 +166,96 @@ click() {
 # shellcheck disable=SC2317
 key()   { wtype "$@"; }
 
+# --- pointer -----------------------------------------------------------------
+# wlrctl's absolute positioning is a corner reset followed by a relative move,
+# which is why every one of these starts by slamming into the top-left.
+
+# shellcheck disable=SC2317
+# at X Y: click a point in window coordinates.
+at() {
+    wlrctl pointer move 100000 100000 >/dev/null 2>&1
+    wlrctl pointer move -100000 -100000 >/dev/null 2>&1
+    wlrctl pointer move "$((WX + $1))" "$((WY + $2))" >/dev/null 2>&1
+    wlrctl pointer click left >/dev/null 2>&1
+}
+# shellcheck disable=SC2317
+# dbl N: double-click listing row N. One move, two clicks: a reset between them
+# reads as two singles.
+dbl() {
+    wlrctl pointer move 100000 100000 >/dev/null 2>&1
+    wlrctl pointer move -100000 -100000 >/dev/null 2>&1
+    wlrctl pointer move "$((WX + 150))" "$(row "$1")" >/dev/null 2>&1
+    wlrctl pointer click left >/dev/null 2>&1
+    wlrctl pointer click left >/dev/null 2>&1
+}
+# shellcheck disable=SC2317
+# divider N: x of the handle left of fixed column N, counting 0 from the right.
+# Derived from the app's own constants rather than hunted for: the handle is
+# 5px wide, and being three out lands on the header instead, which silently
+# toggles the sort and looks like the drag did nothing.
+divider() {
+    python3 -c "
+import sys
+widths = [100, 90, 132]           # Column::default_width, left to right
+handle = 5
+right = int(sys.argv[1]) + int(sys.argv[2])
+edge = right
+for w in reversed(widths[int(sys.argv[3]):]):
+    edge -= w + handle
+print(edge + handle // 2)" "$WX" "$WW" "$1"
+}
+
+# --- the probe ---------------------------------------------------------------
+
+# shellcheck disable=SC2317
+# probe EXPR: evaluate a python expression over the probe. `d` is the document,
+# `p` the panes. Prints the result, or nothing if the file is not there yet.
+probe() {
+    python3 -c "
+import json, sys, pathlib
+f = pathlib.Path(sys.argv[1])
+if not f.exists():
+    sys.exit(1)
+d = json.loads(f.read_text())
+p = d['panes']
+print(eval(sys.argv[2]))" "$HOJA_PROBE" "$1" 2>/dev/null
+}
+
+# shellcheck disable=SC2317
+# wait_for EXPR [seconds]: poll until the expression is true. Replaces a sleep
+# that was guessing; a test that waits for what it needs does not get slower on
+# a loaded machine and does not pass by accident on a fast one.
+wait_for() {
+    local deadline=$(( SECONDS + ${2:-10} ))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        [ "$(probe "$1")" = "True" ] && return 0
+        sleep 0.1
+    done
+    echo "TIMEOUT waiting for: $1" >&2
+    FAILED=$((FAILED + 1))
+    return 1
+}
+
+# shellcheck disable=SC2317
+# expect EXPR DESCRIPTION: assert, and remember if it failed.
+expect() {
+    if [ "$(probe "$1")" = "True" ]; then
+        echo "  ok   $2"
+    else
+        echo "  FAIL $2" >&2
+        echo "       $1 -> $(probe "$1")" >&2
+        FAILED=$((FAILED + 1))
+    fi
+}
+
+FAILED=0
+
 # shellcheck source=/dev/null
 . "$BODY"
 
+if [ "$FAILED" -gt 0 ]; then
+    echo "$FAILED check(s) failed; artifacts in $OUT" >&2
+    echo "$OUT"
+    exit 1
+fi
 echo "$OUT"
