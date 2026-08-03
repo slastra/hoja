@@ -10,7 +10,7 @@ shows files in panes, so the word says both halves of it.
 **Warning:** hoja is experimental software. Do not use hoja as your only tool
 for important data.
 
-![Two panes on this repository. The colour of a name is its git status: green for untracked, orange for modified, dim for ignored.](docs/screenshot.png)
+![Two panes side by side in the Rosé Pine theme: a home directory on the left, where every folder shows a real recursive size, and hoja's own source on the right. Modified says how long ago rather than what o'clock, and each pane's footer totals exactly the rows above it.](docs/screenshot.png)
 
 ## Features
 
