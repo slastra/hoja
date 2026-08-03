@@ -516,6 +516,22 @@ struct ColumnDrag {
     start_width: Pixels,
 }
 
+/// One fixed-width cell of a listing row, resolved before the element is built.
+///
+/// A struct rather than a tuple because the call site was passing five
+/// positional arguments, two of them bare bools, and `cell(w, t, n, true, false)`
+/// says nothing about which of those is the alignment.
+struct Cell {
+    width: Pixels,
+    text: String,
+    /// The monospaced family, for a column that prints figures.
+    numeric: Option<gpui::SharedString>,
+    /// Show the breathing bar rather than `text`, which is empty anyway while
+    /// the size behind it is still being counted.
+    counting: bool,
+    right: bool,
+}
+
 /// Drags need a preview view; column resizing shows nothing.
 struct EmptyDrag;
 
@@ -2539,11 +2555,14 @@ impl DirPane {
         // Cells line up with the header by using the same widths and the same
         // handle-sized spacers where the dividers sit.
         let spacer = || div().w(px(COL_HANDLE_WIDTH)).flex_none();
-        let cell = move |width: Pixels,
-                          text: String,
-                          numeric: Option<gpui::SharedString>,
-                          counting: bool,
-                          right: bool| {
+        let cell = move |cell: Cell| {
+            let Cell {
+                width,
+                text,
+                numeric,
+                counting,
+                right,
+            } = cell;
             let body = div()
                 .w(width)
                 .flex_none()
@@ -2596,14 +2615,13 @@ impl DirPane {
         let numeric = crate::theming::numeric_font(cx);
         let counting = self.counting_size(ix);
         let now = SystemTime::now();
-        let cells = Column::ALL.map(|column| {
-            (
-                self.widths.get(column),
-                column.value(entry, folder_bytes, now),
-                column.is_numeric().then(|| numeric.clone()).flatten(),
-                counting && column == Column::Size,
-                column.aligns_right(),
-            )
+        let cells = Column::ALL.map(|column| Cell {
+            width: self.widths.get(column),
+            text: column.value(entry, folder_bytes, now),
+            numeric: column.is_numeric().then(|| numeric.clone()).flatten(),
+            // Only the column that holds a folder size has anything to wait for.
+            counting: counting && column == Column::Size,
+            right: column.aligns_right(),
         });
 
         // A search result is labelled by where it sits; everything else by its
@@ -2684,10 +2702,7 @@ impl DirPane {
 
         cells
             .into_iter()
-            .fold(row, |row, (width, text, numeric, counting, right)| {
-                row.child(spacer())
-                    .child(cell(width, text, numeric, counting, right))
-            })
+            .fold(row, |row, spec| row.child(spacer()).child(cell(spec)))
             .when(is_dir, |row| {
                 let target = path.clone();
                 let highlight = colors.drop_target_background;
