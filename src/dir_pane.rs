@@ -864,6 +864,7 @@ impl DirPane {
             searching: self.searching(),
             reading: self.reading_bytes.is_some(),
             error: self.error.clone(),
+            menu_open: self.context_menu.is_some(),
         }
     }
 
@@ -1236,6 +1237,15 @@ impl DirPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A right-click with nothing to offer, an archive's empty space being
+        // the one place this happens today, gets no menu rather than an empty
+        // one: the same "shorter menu over one that all says no" reasoning
+        // `open_context_menu` already applies to individual items, one level
+        // further out.
+        if items.is_empty() {
+            return;
+        }
+
         let menu = cx.new(|cx| FileMenu::new(items, window, cx));
 
         cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {

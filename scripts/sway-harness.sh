@@ -9,7 +9,7 @@
 #   $OUT         where shots are written    shot NAME   the whole output
 #   $W $H        the nested output size     strip NAME  just hoja's footer
 #   row N        y of listing row N         click N     click listing row N
-#   named NAME   index of the row called NAME
+#   named NAME   index of the row called NAME            right N  right-click row N
 #   key ...      wtype arguments, e.g. -M ctrl -P a -m ctrl
 #
 # Nested rather than headless, so the sway window sits on your desktop and the
@@ -163,6 +163,15 @@ click() {
     wlrctl pointer move -100000 -100000 >/dev/null 2>&1
     wlrctl pointer move "$((WX + 150))" "$(row "$1")" >/dev/null 2>&1
     wlrctl pointer click left >/dev/null 2>&1
+}
+# shellcheck disable=SC2317
+# right N: right-click listing row N, or empty space below the last row for
+# an index past the end, to open (or fail to open) a context menu.
+right() {
+    wlrctl pointer move 100000 100000 >/dev/null 2>&1
+    wlrctl pointer move -100000 -100000 >/dev/null 2>&1
+    wlrctl pointer move "$((WX + 150))" "$(row "$1")" >/dev/null 2>&1
+    wlrctl pointer click right >/dev/null 2>&1
 }
 # shellcheck disable=SC2317
 key()   { wtype "$@"; }

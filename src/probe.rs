@@ -61,6 +61,10 @@ pub struct PaneProbe {
     /// is", which is exactly the distinction a progressive listing creates.
     pub reading: bool,
     pub error: Option<String>,
+    /// Whether the context or view-settings menu is up for this pane. Needed
+    /// to tell "right-click did nothing" from "right-click did something",
+    /// which a row count or a footer string can't distinguish.
+    pub menu_open: bool,
 }
 
 /// A transfer, as a test sees it.

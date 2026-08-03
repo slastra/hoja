@@ -141,3 +141,24 @@ expect 'p[0]["sizes"][p[0]["rows"].index("ttf")] == "6.0 KB"' "with everything t
 # The staging directory is named the way a part-written file is, so it is
 # hidden while it exists and gone afterwards either way.
 expect 'not any(r.startswith(".hoja-") for r in p[0]["rows"])' "and nothing is left staged"
+
+# --- an empty context menu stays closed -----------------------------------
+# Nothing here can be renamed, deleted, cut, pasted, or turned into a new
+# folder, and empty space has no row to offer Copy on either, so there is
+# nothing at all to put in a menu. It should not open rather than open empty.
+dbl "$(named fonts.zip)"
+wait_for 'p[0]["rows"] == ["ttf", "LICENSE"]'
+right 5
+expect 'not p[0]["menu_open"]' "right-click on empty archive space opens no menu"
+
+# A row still gets one, which is what proves the right-click above actually
+# landed rather than the check passing by accident.
+right "$(named ttf)"
+wait_for 'p[0]["menu_open"]'
+key -k Escape
+wait_for 'not p[0]["menu_open"]'
+
+# Back to the fixture root as it stood after "copying out" above: the "ttf"
+# pasted there sorts first now, folders before files, not "bare.zip".
+key -k BackSpace
+wait_for 'p[0]["row_count"] == 10'
