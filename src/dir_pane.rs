@@ -3005,7 +3005,8 @@ impl DirPane {
             .child(list)
             .child(crate::scrollbar::scrollbar(
                 self.scroll.clone(),
-                self.entries.len() as f32 * ROW_HEIGHT,
+                self.entries.len(),
+                ROW_HEIGHT,
                 cx.entity(),
                 |this: &mut Self| &mut this.scrollbar,
             ))

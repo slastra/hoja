@@ -30,27 +30,26 @@
 //! taken from the handle, and that one uniform_list does maintain. This is what
 //! Zed's `ScrollbarPrepaintState` is for.
 //!
-//! # Where this stands
+//! # Two things that cost a long time
 //!
-//! It draws, on the right edge, and it follows the list as you scroll. Clicking
-//! and dragging it do not work yet: the `MouseDownEvent` handler registered in
-//! `paint` never fires, and neither wrapping the body in `with_content_mask`,
-//! as Zed's own scrollbar does, nor checking the hitbox changed that. So the
-//! bar is an indicator of position and not yet a control.
+//! `Length::default()` is `Definite(0px)` and not `Auto`, so filling the rest
+//! of an `Edges` from `Default` pins `left` to zero alongside `right`. Both at
+//! zero resolves to left, and the bar drew itself down the far side of the
+//! pane, outside every screenshot taken of the right edge. Start from
+//! `Edges::auto()`.
 //!
-//! Everything above was invisible for a long time for one reason worth writing
-//! down: `Length::default()` is `Definite(0px)` and not `Auto`, so filling the
-//! rest of an `Edges` from `Default` pinned `left` to zero alongside `right`.
-//! Left and right both at zero resolves to left, and the bar drew itself down
-//! the far side of the pane, out of every screenshot taken of the right edge.
-//! Start from `Edges::auto()`.
+//! A hitbox inserted as `HitboxBehavior::Normal` does not stop the press
+//! reaching what is behind it, so clicking the bar grabbed the file underneath
+//! and started dragging it, and this element's own handlers never ran.
+//! `BlockMouseExceptScroll` fixes both: it blocks the row, and it still lets
+//! the wheel through with the cursor over the bar.
 
 use std::panic::Location;
 
 use gpui::{
     App, Bounds, Element, ElementId, Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
     InspectorElementId, IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, Style, UniformListScrollHandle, Window, fill, point, px, size,
+    Pixels, Style, UniformListScrollHandle, Window, fill, point, px, size,
 };
 use theme::ActiveTheme;
 
@@ -111,21 +110,25 @@ pub struct ScrollbarState {
 /// every row the moment a directory grew past one screen.
 pub struct Scrollbar<T: 'static> {
     handle: UniformListScrollHandle,
-    /// Every row, laid end to end. The caller knows this; the handle does not.
-    content_height: f32,
+    rows: usize,
+    /// Needed to turn a position on the track back into a row, which is the
+    /// only thing a `uniform_list` will actually scroll to.
+    row_height: f32,
     owner: Entity<T>,
     state: fn(&mut T) -> &mut ScrollbarState,
 }
 
 pub fn scrollbar<T: 'static>(
     handle: UniformListScrollHandle,
-    content_height: f32,
+    rows: usize,
+    row_height: f32,
     owner: Entity<T>,
     state: fn(&mut T) -> &mut ScrollbarState,
 ) -> Scrollbar<T> {
     Scrollbar {
         handle,
-        content_height,
+        rows,
+        row_height,
         owner,
         state,
     }
@@ -148,12 +151,22 @@ impl<T: 'static> Scrollbar<T> {
     }
 }
 
-/// Put the list somewhere. The sign flip lives here and in `offset` above.
-fn scroll_to(handle: &UniformListScrollHandle, offset: f32) {
-    let state = handle.0.borrow();
-    let mut point: Point<Pixels> = state.base_handle.offset();
-    point.y = px(-offset);
-    state.base_handle.set_offset(point);
+/// Put the list somewhere.
+///
+/// By row, because a `uniform_list` will not be moved any other way. Writing
+/// `base_handle.set_offset` takes: read it back and the new value is there.
+/// The list simply does not consult it when deciding what to draw, so the rows
+/// stay exactly where they were. `scroll_to_item` sets `deferred_scroll_to_item`,
+/// which its prepaint does consult, and which is what `reveal` already uses.
+///
+/// The cost is that a drag lands on row boundaries instead of pixels. In a
+/// listing of fixed-height rows that is invisible.
+fn scroll_to(handle: &UniformListScrollHandle, offset: f32, row_height: f32, rows: usize) {
+    if rows == 0 {
+        return;
+    }
+    let ix = ((offset / row_height).round() as usize).min(rows - 1);
+    handle.scroll_to_item(ix, gpui::ScrollStrategy::Top);
 }
 
 impl<T: 'static> IntoElement for Scrollbar<T> {
@@ -217,9 +230,13 @@ impl<T: 'static> Element for Scrollbar<T> {
         // Our own bounds, and by now the list beside us has been laid out, so
         // this is the height a reader actually sees.
         let track_height = f32::from(bounds.size.height);
-        let max_offset = (self.content_height - track_height).max(0.);
+        let max_offset = (self.rows as f32 * self.row_height - track_height).max(0.);
         Prepainted {
-            hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            // Blocks what is underneath, or a press on the bar reaches the row
+            // behind it and starts dragging a file. Except scroll, so the wheel
+            // still works with the cursor over the bar, which is what every
+            // other scrollbar does.
+            hitbox: window.insert_hitbox(bounds, HitboxBehavior::BlockMouseExceptScroll),
             thumb: thumb(self.offset(), max_offset, track_height),
             max_offset,
             track_height,
@@ -267,6 +284,7 @@ impl<T: 'static> Element for Scrollbar<T> {
             window.paint_quad(fill(thumb_bounds, fill_color));
 
             let track_top = f32::from(bounds.origin.y);
+            let (row_height, rows) = (self.row_height, self.rows);
             let (max_offset, track_height) = (prepaint.max_offset, prepaint.track_height);
             let handle = self.handle.clone();
             let hitbox = prepaint.hitbox.clone();
@@ -289,7 +307,12 @@ impl<T: 'static> Element for Scrollbar<T> {
                         // On the track: centre the thumb here and carry on as
                         // though it had been grabbed in the middle.
                         let grab = height / 2.;
-                        scroll_to(&handle, offset_for(y, grab, max_offset, track_height));
+                        scroll_to(
+                            &handle,
+                            offset_for(y, grab, max_offset, track_height),
+                            row_height,
+                            rows,
+                        );
                         grab
                     };
                     owner.update(cx, |this, cx| {
@@ -310,7 +333,12 @@ impl<T: 'static> Element for Scrollbar<T> {
                         return;
                     };
                     let y = f32::from(event.position.y) - track_top;
-                    scroll_to(&handle, offset_for(y, grab, max_offset, track_height));
+                    scroll_to(
+                        &handle,
+                        offset_for(y, grab, max_offset, track_height),
+                        row_height,
+                        rows,
+                    );
                     owner.update(cx, |_, cx| cx.notify());
                 }
             });
