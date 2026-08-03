@@ -17,8 +17,8 @@ for important data.
 
 - **Panes.** Split the window into panes. Each pane shows one directory. The
   split tree is recursive, in the same shape as the Zed editor.
-- **Fast lists.** A pane shows a directory of 100,000 files in less than one
-  second. The list stays smooth when you scroll.
+- **Fast lists.** Rows are virtualized, so only what is on screen is built, and
+  the listing stays smooth as you scroll a large directory.
 - **Navigation.** Each pane has its own history. Use the back, forward, up, and
   home buttons. Click the path, then type a new path.
 - **Folder sizes.** The Size column shows a real, recursive size for folders,
