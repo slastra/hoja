@@ -32,21 +32,18 @@
 //!
 //! # Where this stands
 //!
-//! The arithmetic is right and tested. The `Element` lays out and prepaints.
-//! It is **not wired into a pane**, because the mouse handlers registered in
-//! `paint` never fire: an `eprintln` as the first statement of the
-//! `MouseDownEvent` closure, before any guard, printed nothing across several
-//! runs. Wrapping the body in `with_content_mask`, which is what Zed's own
-//! scrollbar does, did not change that.
+//! It draws, on the right edge, and it follows the list as you scroll. Clicking
+//! and dragging it do not work yet: the `MouseDownEvent` handler registered in
+//! `paint` never fires, and neither wrapping the body in `with_content_mask`,
+//! as Zed's own scrollbar does, nor checking the hitbox changed that. So the
+//! bar is an indicator of position and not yet a control.
 //!
-//! What is not yet known is whether the thumb paints at all. A faint block did
-//! appear near the right edge and tracked the wheel, but it sat at x≈1382-1390
-//! in a 1400px window while this bar occupies 1390-1400, so it was most likely
-//! the selected row's highlight and not the thumb.
-//!
-//! The next thing to establish, before any more guessing: paint a full-height
-//! quad in a loud colour and confirm it is on screen. Everything else follows
-//! from whether `paint` reaches the screen at all.
+//! Everything above was invisible for a long time for one reason worth writing
+//! down: `Length::default()` is `Definite(0px)` and not `Auto`, so filling the
+//! rest of an `Edges` from `Default` pinned `left` to zero alongside `right`.
+//! Left and right both at zero resolves to left, and the bar drew itself down
+//! the far side of the pane, out of every screenshot taken of the right edge.
+//! Start from `Edges::auto()`.
 
 use std::panic::Location;
 
@@ -187,17 +184,21 @@ impl<T: 'static> Element for Scrollbar<T> {
     ) -> (LayoutId, ()) {
         // Absolute and pinned to the right edge over the full height of the
         // parent, so the track is the list's own viewport without measuring it.
+        // From `Edges::auto()`, never `Edges::default()`. `Length::default()`
+        // is `Definite(0px)` rather than `Auto`, so filling the rest of the
+        // struct from `Default` pinned `left` to zero as well; left and right
+        // both at zero resolves to left, and the bar drew itself down the far
+        // side of the pane. Every screenshot I took was of the right edge.
         let style = Style {
             position: gpui::Position::Absolute,
             inset: gpui::Edges {
                 top: px(0.).into(),
                 right: px(0.).into(),
-                bottom: px(0.).into(),
-                ..Default::default()
+                ..gpui::Edges::auto()
             },
             size: gpui::Size {
                 width: px(WIDTH).into(),
-                ..Default::default()
+                height: gpui::relative(1.).into(),
             },
             ..Default::default()
         };

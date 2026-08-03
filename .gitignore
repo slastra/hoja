@@ -5,8 +5,12 @@
 # and leaves the built tarballs beside the PKGBUILD. It also rewrites pkgver=
 # in the PKGBUILD after running pkgver() — that one has to be reverted by hand,
 # since the file itself is tracked.
-/packaging/hoja/
-/packaging/src/
-/packaging/pkg/
-/packaging/*.pkg.tar.zst
-/packaging/*.log
+# Unanchored: makepkg leaves these wherever it is run, and a stray run inside
+# hoja-transfer/ once put 2.5GB of them past rules that were pinned to the
+# repository root.
+packaging/hoja/
+packaging/src/
+packaging/pkg/
+packaging/*.pkg.tar.zst
+packaging/*.log
+packaging/*-debug-*
