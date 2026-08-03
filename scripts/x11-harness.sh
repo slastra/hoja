@@ -2,6 +2,14 @@
 # Drive hoja on a private X display, for testing the interface without touching
 # the one you are sitting in front of.
 #
+# DOES NOT CURRENTLY RUN. `Xvfb` provides no DRI3, so gpui cannot get a GPU
+# context and the window never opens: the harness times out waiting for it and
+# `app.log` holds "libEGL warning: DRI3 error: Could not get DRI3 device". Kept
+# because everything below it is still right, and because testing gpui's X11
+# backend remains worth doing the day there is a real X server to do it on.
+# Until then use `sway-harness.sh`, which works and exercises the backend hoja
+# actually ships on.
+#
 #   scripts/x11-harness.sh <start-dir> <script-file> [out-dir]
 #
 # The script file is sourced with these in scope:
@@ -16,12 +24,8 @@
 # session has focused — which means a test steals your focus and can type into
 # your windows. `xdotool` speaks the X protocol and is scoped by `$DISPLAY`, as
 # is `import`, so both the keystrokes and the screenshots stay inside a display
-# that is not on any screen. hoja already builds with gpui's x11 backend, so
-# nothing has to change for it to run here.
-#
-# The alternative that also works is `sway` headless plus `swaymsg seat - cursor`,
-# which is the only Wayland compositor exposing scoped pointer injection. It
-# needs installing; this does not.
+# that is not on any screen. hoja does build with gpui's x11 backend, so the
+# only thing missing here is the GPU.
 set -u
 
 START_DIR=${1:?usage: x11-harness.sh <start-dir> <script-file> [out-dir]}

@@ -1,13 +1,10 @@
 # hoja
 
-hoja (OH-hah) is a file manager for Linux. It runs on Wayland and draws with
-[GPUI](https://www.gpui.rs/), the GPU-accelerated UI framework from the Zed
-editor, so a directory of 100,000 files opens in under a second and stays
-smooth as you scroll it.
-
-Split the window into as many panes as you like. Every folder shows a real
-recursive size, transfers pick the fastest correct method for each file, and
-deleting is undoable.
+hoja (OH-hah) is a file manager for Linux. It runs on Wayland and renders via
+[GPUI](https://www.gpui.rs/), the GPU-accelerated framework from the Zed editor.
+Split the window into multiple panes. Each folder calculates real recursive
+sizes. File transfers select the optimal method automatically. Deletions are
+undoable.
 
 **Warning:** hoja is experimental software. Do not use hoja as your only tool
 for important data.
@@ -287,27 +284,36 @@ not the other.
 
 ## Testing the interface
 
-Two harnesses run hoja in a compositor of its own, so a test of the interface
-does not touch the desktop you are using. Both take a directory to open and a
-script of things to do, and print where the screenshots went:
+`scripts/sway-harness.sh` runs hoja in a compositor of its own, so a test of
+the interface does not touch the desktop you are using. It takes a directory to
+open and a script of things to do, and prints where the screenshots went:
 
 ```sh
 cargo build
-scripts/sway-harness.sh ~/some/dir my-test.sh   # a nested sway you can watch
-scripts/x11-harness.sh  ~/some/dir my-test.sh   # a private X display
+scripts/sway-harness.sh ~/some/dir my-test.sh
 ```
 
-The test script can click rows, send keys, and capture the window or just its
-footer. Nothing takes your focus either way: the sway harness drives the app
-through the virtual keyboard and pointer protocols, and the X11 one through
-`xdotool`, both scoped to a display that is not the one you are looking at.
+It needs `sway`, `grim`, `wtype` and `wlrctl`, and it exercises the Wayland
+backend hoja actually ships on. The test script can click rows, send keys, and
+capture the window or just its footer; nothing takes your focus, because every
+one of those tools is scoped to the nested display rather than to whatever the
+real session has focused. `HOJA_TEST_WIDTH` and `HOJA_TEST_HEIGHT` size the
+window, which is how `docs/screenshot.png` is made. `HOJA_TEST_HEADLESS=1` hides
+it, at the cost of keyboard input, which does not reach the app there.
 
-Prefer the sway harness, which exercises the Wayland backend hoja actually
-ships on; it needs `sway`, `grim`, `wtype` and `wlrctl`. Nested, its window
-presents to the host as class `wlroots`, so float it at a fixed size or a tiling
-compositor will stretch it and move the rows a test clicks. The X11 one needs only
-`Xvfb`, `xdotool` and ImageMagick, but tests gpui's X11 backend instead, so it
-cannot say anything about drag and drop, the clipboard, or window state.
+Nested, its window presents to the host as class `wlroots`, so float it at a
+fixed size or a tiling compositor will stretch it and move the rows a test
+clicks.
+
+Two things it cannot do. It cannot synthesise a drag: `wlrctl` only clicks, and
+`swaymsg seat - cursor` moves the pointer without gpui starting a drag from it,
+so column resizing and drag-and-drop need a person. And it has no second
+application to drag from or paste into, so inbound drops and clipboard interop
+have to be tried in a real session.
+
+`scripts/x11-harness.sh` is kept but does not currently run: `Xvfb` offers no
+DRI3, gpui never gets a GPU context, and the window never opens. Testing the
+X11 backend needs a real X server.
 
 ## Transfer engine
 
