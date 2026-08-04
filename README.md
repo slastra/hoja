@@ -8,9 +8,9 @@
 
 **Hoja** (OH-hah) is a file manager for Linux. It runs on Wayland and renders
 via [GPUI](https://www.gpui.rs/), the GPU-accelerated framework from the Zed
-editor. Split the window into multiple panes. Each folder calculates real
-recursive sizes. File transfers select the optimal method automatically.
-Deletions are undoable, and archives browse like folders.
+editor. It features recursive pane layouts, background folder size
+calculation, optimized file transfers, undoable deletes, live directory
+updates, and archive browsing that feels like working with ordinary folders.
 
 > [!WARNING]
 > Hoja is experimental software. Use at your own risk.
@@ -19,124 +19,85 @@ Deletions are undoable, and archives browse like folders.
 
 ## Features
 
-### The panes
+### Panes
 
-- **Panes.** Split the window into panes. Each pane shows one directory. The
-  split tree is recursive, in the same shape as the Zed editor.
-- **Fast lists.** Rows are virtualized, so only what is on screen is built, and
-  the listing stays smooth as you scroll a large directory.
-- **Navigation.** Each pane has its own history. Use the back, forward, up, and
-  home buttons. Click the path, then type a new path.
-- **Folder sizes.** The Size column shows a real, recursive size for folders,
-  not a blank. Hoja walks the tree to find one, in parallel and in the
-  background, and each folder's cell fills in when its own subtree is counted,
-  so no number ever climbs in the listing. Sorting by size reorders once, when
-  every folder is final.
-- **Pane footer.** Each pane says what it is holding: `14 items · 1.2 GB` for
-  the folder, `3 selected · 259 MB` for several. It totals exactly the rows
-  above it, so it is the sum of the Size column. For a single row it says the
-  things no column shows instead: `-rw-r--r-- · shaun · shaun`. A running
-  search reports here too, in the pane doing the searching.
-- **The active pane.** The pane your keys act on keeps the full text colour.
-  In the others the names, the icons, and the path go quiet, and the selection
-  holds at half strength, so two panes with selections cannot be mistaken for
-  each other. A name coloured by git status keeps its colour, only fainter.
-- **View settings.** Each pane has a menu at the right end of the toolbar.
-  It controls hidden files, folder grouping, and the sort order. Hoja does
-  not show hidden files by default.
-- **Archives as folders.** Press enter on a `.zip` or a tarball and the pane goes
-  into it: `.tar`, and `.tar.gz`, `.tar.bz2`, `.tar.xz` and `.tar.zst` with all
-  their short spellings. Every codec is pure Rust, so there is no C library to
-  install and nothing shells out.
-  The rows have names, sizes and dates like any other listing, and a folder
-  inside an archive carries its exact recursive size immediately, because the
-  archive already said what is in it. A tarball has no index, so listing one is
-  decompressing all of it: the rows go up as they are found rather than after,
-  and the footer says how far through it has got. Measured here, the largest
-  `.tar.bz2` on this machine takes a minute to read and shows its first rows in
-  under a second. Copy out with `ctrl-c` and `ctrl-v`, the context menu, or by
-  dragging a row onto another pane: the members are extracted and then moved
-  into place by the same engine as any other transfer, so conflicts, progress
-  and errors all behave the way they do everywhere else. Symlinks come out as
-  symlinks. Nothing writes to an archive, so rename, delete and cut say so
-  rather than half working, and the document formats that are zip files
-  underneath are deliberately left alone: a `.docx` opens in a word processor,
-  not in a pane. Opening a file that lives inside one asks first: opening means
-  extracting a temporary copy, and anything written back to that copy never
-  reaches the archive.
-- **Live listings.** Hoja watches the directory it shows. If another program
-  adds, removes, or changes a file, the pane re-lists and keeps your selection.
-  If the directory itself goes away, the pane moves to the nearest directory
-  above it that still exists and tells you.
+- **Recursive pane layout.** Split the window into panes. Each pane shows one
+  directory, and panes can be split recursively into any layout.
+- **Fast directory listings.** Rows are virtualized, so even very large
+  directories stay smooth while scrolling.
+- **Independent navigation.** Every pane has its own history. Go back,
+  forward, up, or home, or click the path to jump to another location.
+- **Recursive folder sizes.** Folder sizes are calculated in the background
+  and appear only when complete, so values never count upward in the listing.
+  Sorting by size happens once, after every folder has a final value.
+- **Pane footer.** Each pane summarizes exactly what it contains: total items
+  and size, selected files, permissions and ownership for a single file, or
+  live search progress.
+- **Clear active pane.** The active pane keeps full emphasis while inactive
+  panes dim their names, icons, paths, and selections. Git status colours are
+  preserved.
+- **Per-pane view settings.** Hidden files, folder grouping, and sort order
+  are configured independently for each pane. Hidden files are off by
+  default.
+- **Archives as folders.** Browse `.zip`, `.tar`, `.tar.gz`, `.tar.bz2`,
+  `.tar.xz`, and `.tar.zst` archives like directories. Tar archives stream
+  while loading so files appear immediately, and archive folders report their
+  recursive sizes instantly. Copy files out using the keyboard, context menu,
+  or drag and drop. Archives are always read-only.
+- **Live listings.** Hoja watches every directory it displays. If another
+  program changes the contents, the pane refreshes without losing your
+  selection. If the directory disappears, Hoja moves to the nearest existing
+  parent.
 
-### Moving files
+### File operations
 
-- **File transfer.** Hoja selects the fastest correct method for each file:
-  - A move on one filesystem uses `rename()`. This is instant.
-  - A copy on btrfs or XFS uses reflink. This is instant for all file sizes.
-  - All other copies use `copy_file_range` with a fallback. Sparse files stay
-    sparse.
-  - Hoja keeps permissions, times, extended attributes, symlinks, and
-    hardlinks. Writes are atomic. On removable media, Hoja flushes data before
-    it reports success.
-- **Delete with undo.** `delete` removes the selection and `ctrl-z` puts it
-  back. Hoja moves the files to the trash directory of the freedesktop
-  specification, on the same filesystem, so a delete is instant and other
-  file managers can empty what Hoja deletes. Hoja has no other trash
-  controls: no browser, no restore list, no empty command.
-- **Drag and drop.** Drag rows to another pane, onto a folder, or to another
-  application. Drag files from another application into a pane. A drag moves
-  the files on one filesystem and copies them across filesystems, which is the
-  usual behaviour. Hold `ctrl` to copy or `shift` to move. Files that come from
-  another application are always copied.
-- **Clipboard.** Copy and paste files between Hoja and other file managers.
-  Hoja reads and writes the GNOME clipboard format.
-- **Transfer progress.** The bar along the bottom shows how far a transfer has
-  got, how fast it is going, and how much longer it has: `365.4 MB / 680.1 MB
-  82 MB/s  04s left`. Hoja counts the files before it starts copying, so the
-  bar is true from the first file rather than jumping at the end. The figures
-  are monospaced and every column is fixed, so nothing shifts as they climb.
-- **What failed, and why.** A transfer that could not copy everything keeps its
-  row on the strip with a warning icon and a count. Click the icon for the list:
-  every file that failed, what went wrong with it, and the directory they were
-  all under.
-- **Notifications.** A transfer that runs for more than a few seconds tells
-  your desktop when it finishes, and a failed one tells you whatever its
-  length. Hoja uses the freedesktop notification service, so the notification
-  looks like every other notification on your desktop.
+- **Optimized transfers.** Hoja automatically chooses the fastest correct
+  method for every transfer: `rename()` for moves on the same filesystem,
+  reflinks on supported filesystems, and `copy_file_range()` elsewhere with
+  fallbacks. Sparse files, permissions, timestamps, extended attributes,
+  symlinks, and hardlinks are preserved.
+- **Delete with undo.** Press `delete` to move files to the freedesktop
+  trash, then `ctrl-z` to restore them. Deletes are instant on the same
+  filesystem and remain compatible with other Linux file managers.
+- **Drag and drop.** Drag files between panes, onto folders, or into other
+  applications. Moves stay on one filesystem, copies cross filesystems, and
+  modifier keys override the default behaviour.
+- **Clipboard integration.** Copy and paste files between Hoja and other file
+  managers using the standard GNOME clipboard format.
+- **Transfer progress.** Progress reports bytes copied, transfer speed, time
+  remaining, and file counts from the start of the operation. Fixed-width
+  columns keep everything from shifting while values change.
+- **Transfer errors.** Failed transfers stay in the progress list with a
+  warning. Open the details to see every failed file and its error.
+- **Desktop notifications.** Long-running transfers notify you when they
+  finish, and failures always generate a notification using the standard
+  freedesktop notification service.
 
-### Finding things
+### Navigation & search
 
-- **Search.** Press `ctrl-f` and type. Hoja searches every folder below the one
-  the pane shows and lists what it finds, with the path of each result. Results
-  appear while the search runs. Press enter to go back to the list, then enter
-  again to open. Press escape to stop searching.
-- **Places.** Press `ctrl-p` to go to your home directory, a bookmark, or an
-  attached drive. Hoja reads the same bookmarks file the GTK file dialogs use,
-  so what you bookmark in Files appears here with no setup. A drive that is
-  plugged in but not mounted is listed too; choosing it mounts the drive first.
-  Highlight a mounted, removable drive and press `ctrl-e` to eject it; any pane
-  sitting inside it moves to the directory that held it.
-- **Command palette.** Press `ctrl-shift-p`, type part of a command name, and
-  press enter. The list shows only the commands that apply right now, with
-  their keys. Commands you use often move to the top.
+- **Recursive search.** Press `ctrl-f` to search every directory below the
+  current one. Results appear as they are found, and pressing `enter` opens
+  the selected result.
+- **Places.** Press `ctrl-p` to jump to your home directory, bookmarks, or
+  attached drives. Hoja reads the same bookmarks used by GTK file dialogs and
+  can mount or eject removable drives.
+- **Command palette.** Press `ctrl-shift-p` to search available commands.
+  Frequently used commands naturally rise to the top.
 
-### How it looks
+### Appearance
 
-- **Modified.** The column says how long ago, not what o'clock: `just now`,
-  `3 hours ago`, `2 months ago`.
-- **Git status.** In a git repository, the colour of a file name shows its
-  status: added, modified, deleted, renamed, or in conflict. A folder shows
-  the status of the files in it. Ignored files are dim. Hoja asks `git`
-  itself, so the result always agrees with the command line.
-- **Themes.** Hoja reads Zed theme files. Put a theme file in
-  `~/.config/hoja/themes/`. Hoja applies changes to these files immediately.
-  The Rosé Pine themes are included.
-- **Icons.** File icons follow the Zed icon system. The theme sets the icon
-  color.
-- **Settings.** `~/.config/hoja/settings.json` sets the theme and what a new
-  pane shows. Hoja never writes this file, so your comments and your layout
-  stay. It applies changes to the file immediately.
+- **Human-friendly dates.** The Modified column shows relative times such as
+  `just now`, `3 hours ago`, or `2 months ago`.
+- **Git status.** File names are coloured by Git status, including folders,
+  using Git's own status information so Hoja always matches the command
+  line.
+- **Themes.** Hoja reads Zed theme files from `~/.config/hoja/themes/` and
+  reloads them automatically. Rosé Pine themes are included.
+- **Icons.** File icons follow the Zed icon system and inherit colours from
+  the active theme.
+- **Settings.** Configure Hoja with `~/.config/hoja/settings.json`. Hoja
+  never rewrites the file, preserves your comments, and reloads changes
+  automatically.
 
 ## Install
 
