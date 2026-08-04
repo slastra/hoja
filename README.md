@@ -1,5 +1,5 @@
 
-![Hoja](docs/hoja-dark.png)
+![Hoja](docs/header.png)
 
 ![Platform: Linux](https://img.shields.io/badge/Platform-Linux-56949f?logo=linux&logoColor=white)
 [![Built with GPUI](https://img.shields.io/badge/Built%20with-GPUI-56949f)](https://www.gpui.rs/)
@@ -12,8 +12,6 @@ updates, and archive browsing that feels like working with ordinary folders.
 
 > [!WARNING]
 > Hoja is experimental software. Use at your own risk.
-
-![Two panes side by side](docs/screenshot.png)
 
 ## Features
 
