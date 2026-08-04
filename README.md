@@ -4,6 +4,9 @@
   <img alt="hoja" src="docs/hoja-light.png" width="360">
 </picture>
 
+![Platform: Linux](https://img.shields.io/badge/Platform-Linux-56949f?logo=linux&logoColor=white)
+[![Built with GPUI](https://img.shields.io/badge/Built%20with-GPUI-56949f)](https://www.gpui.rs/)
+
 <br><br>
 
 **Hoja** (OH-hah) is a file manager for Linux. It runs on Wayland and renders
