@@ -1,15 +1,8 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/hoja-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/hoja-light.png">
-  <img alt="hoja" src="docs/hoja-light.png" width="360">
-</picture>
 
-<br><br>
+![Hoja](docs/hoja-dark.png)
 
 ![Platform: Linux](https://img.shields.io/badge/Platform-Linux-56949f?logo=linux&logoColor=white)
 [![Built with GPUI](https://img.shields.io/badge/Built%20with-GPUI-56949f)](https://www.gpui.rs/)
-
-<br><br>
 
 **Hoja** (OH-hah) is a file manager for Linux. It runs on Wayland and renders
 via [GPUI](https://www.gpui.rs/), the GPU-accelerated framework from the Zed
@@ -20,7 +13,7 @@ updates, and archive browsing that feels like working with ordinary folders.
 > [!WARNING]
 > Hoja is experimental software. Use at your own risk.
 
-![Two panes side by side in the Rosé Pine theme: a home directory on the left, where every folder shows a real recursive size, and Hoja's own source on the right. Modified says how long ago rather than what o'clock, and each pane's footer totals exactly the rows above it.](docs/screenshot.png)
+![Two panes side by side](docs/screenshot.png)
 
 ## Features
 
