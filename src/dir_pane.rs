@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use file_icons::FileIcons;
@@ -184,6 +185,20 @@ struct ActiveSearch {
     /// copy of a large directory is not free but a second `read_dir` is worse.
     listing: Vec<DirEntry>,
     work: SearchWork,
+}
+
+/// An archive a pane has read, and how much of it.
+struct HeldIndex {
+    /// Which archive, so a pane that has moved on does not answer for it.
+    archive: PathBuf,
+    // Both read by the search that comes next; holding the arrangement is
+    // what that slice needs and this one only has to get right.
+    #[allow(dead_code)]
+    index: Arc<crate::archive::Index>,
+    /// False while the read behind it is still streaming members in, so a
+    /// caller can tell "that is all of it" from "that is all of it so far".
+    #[allow(dead_code)]
+    complete: bool,
 }
 
 /// Which of the two kinds of search this is.
@@ -715,6 +730,17 @@ pub struct DirPane {
     error: Option<String>,
     /// Held so that navigating away cancels an in-flight read by dropping its task.
     load_task: Option<Task<()>>,
+    /// The arranged archive this pane is showing, kept from the read that
+    /// listed it.
+    ///
+    /// Cleared on leaving. Shared with `archive`'s own cache rather than a
+    /// second copy of it, so once a read finishes this costs a pointer: what
+    /// it buys is that the listing stays available at all. The cache holds two
+    /// archives and this pane's watcher drops entries whenever anything beside
+    /// the file changes — a download finishing in the same directory is
+    /// enough — so nothing that wants the member list later can rely on it
+    /// still being there.
+    held: Option<HeldIndex>,
     /// Uncompressed bytes an archive read has accounted for, while it runs.
     ///
     /// `None` when nothing is being read, which is what the footer reads as
@@ -801,6 +827,7 @@ impl DirPane {
             loaded_dir: None,
             error: None,
             load_task: None,
+            held: None,
             reading_bytes: None,
             reading: None,
             sort_task: None,
@@ -1515,6 +1542,11 @@ impl DirPane {
         // this and every later directory's footer reading "reading… N items"
         // forever, for a load that has nothing to do with any archive.
         self.reading_bytes = None;
+        // Whatever is arranged now belongs to where the pane was, not where it
+        // is going. Dropped here rather than on arrival so leaving an archive
+        // releases it immediately, which is when its megabytes stop earning
+        // their keep.
+        self.held = None;
 
         // An archive is read a piece at a time, because reading one can take a
         // minute and a pane showing nothing for a minute looks broken. See
@@ -1887,7 +1919,7 @@ impl DirPane {
                     members: members.clone(),
                     skipped: reading.skipped(),
                 };
-                let index = crate::archive::Index::build(listing);
+                let index = Arc::new(crate::archive::Index::build(listing));
 
                 let alive = this.update(cx, |this, cx| {
                     if let Some(fault) = reading.fault() {
@@ -1954,6 +1986,24 @@ impl DirPane {
                     }
                     this.listing_moved += 1;
                     this.reading_bytes = (!finished).then(|| reading.bytes());
+
+                    // Kept every tick, not only at the end: a read of a large
+                    // tarball is the case where having the members early is
+                    // worth most, and a partial arrangement is a true answer
+                    // about the part that has arrived.
+                    this.held = Some(HeldIndex {
+                        archive: archive.clone(),
+                        // On the last tick, the reader has already put an
+                        // identical arrangement in the cache — it does that
+                        // before saying it is done, on purpose — so this holds
+                        // that one instead and the two stop being two.
+                        index: if finished {
+                            crate::archive::remembered(&archive).unwrap_or_else(|| index.clone())
+                        } else {
+                            index.clone()
+                        },
+                        complete: finished,
+                    });
 
                     if finished {
                         // The tail a directory read runs too, once.
@@ -2310,7 +2360,21 @@ impl DirPane {
                 self.listing_moved += 1;
                 self.clear_cursor();
                 self.restore_selection();
-                self.reload(cx);
+                // Except in an archive whose arrangement this pane is holding,
+                // where the listing put back above is already the truth and
+                // re-reading would be worse than pointless. `reload` cancels
+                // the read in flight and starts another from nothing, so
+                // escaping a search begun during a slow one threw away the
+                // decompression so far and began it again — `remember` only
+                // runs on a clean finish, so none of that work was kept.
+                //
+                // Falling through when there is no arrangement is what keeps a
+                // broken archive honest: nothing was ever built for it, so the
+                // read has to run again to put its error back.
+                if !self.holding_this_archive() {
+                    self.reload(cx);
+                }
+                cx.notify();
                 return;
             }
             self.clear_cursor();
@@ -2741,6 +2805,17 @@ impl DirPane {
         }
         self.set_filter(None, cx);
         window.focus(&self.focus_handle, cx);
+    }
+
+    /// Whether this pane holds an arrangement of the archive it is in.
+    ///
+    /// The archive is checked, not merely the presence of one: a pane that has
+    /// moved on still holds the last one until its next read replaces it.
+    fn holding_this_archive(&self) -> bool {
+        match (&self.dir, &self.held) {
+            (Location::Archive { archive, .. }, Some(held)) => held.archive == *archive,
+            _ => false,
+        }
     }
 
     /// A word about the results, since the listing is no longer this directory.

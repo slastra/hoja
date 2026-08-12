@@ -536,6 +536,18 @@ pub fn index(path: &Path, cancel: &Cancel) -> anyhow::Result<Arc<Index>> {
 /// Without this, an archive a pane is sitting in right now could still be the
 /// one dropped, because nothing ever recorded that navigating between its own
 /// folders had touched it since it was first read.
+/// The arranged contents of `path`, but only if they are already known.
+///
+/// Never reads, so it is safe to call from anywhere. The pane uses it to point
+/// at the same allocation the cache holds rather than keeping a second copy of
+/// what it just built: the cache holds two archives and the pane's watcher
+/// drops entries whenever anything beside the file changes, so a pane that
+/// wants its own listing to stay available has to hold a reference, and this
+/// is how it holds *the* one instead of another.
+pub fn remembered(path: &Path) -> Option<Arc<Index>> {
+    cached(path)
+}
+
 fn cached(path: &Path) -> Option<Arc<Index>> {
     let stamp = stamp(path)?;
     touch(&mut CACHE.lock(), &stamp)
