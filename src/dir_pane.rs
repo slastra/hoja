@@ -1936,6 +1936,24 @@ impl DirPane {
                         return false;
                     }
 
+                    // Kept every tick, not only at the end: a read of a large
+                    // tarball is the case where having the members early is
+                    // worth most, and a partial arrangement is a true answer
+                    // about the part that has arrived.
+                    this.held = Some(HeldIndex {
+                        archive: archive.clone(),
+                        // On the last tick, the reader has already put an
+                        // identical arrangement in the cache — it does that
+                        // before saying it is done, on purpose — so this holds
+                        // that one instead and the two stop being two.
+                        index: if finished {
+                            crate::archive::remembered(&archive).unwrap_or_else(|| index.clone())
+                        } else {
+                            index.clone()
+                        },
+                        complete: finished,
+                    });
+
                     // Read fresh on every tick, for the same reason the sort
                     // below is: toggling hidden files mid-read must take
                     // effect on the next batch, not wait for a stale value
@@ -1951,7 +1969,25 @@ impl DirPane {
                             // stale copy here would silently overwrite that
                             // resort on the very next batch.
                             fs::sort_entries(&mut entries, this.view.sort, this.view.folders_first);
-                            this.entries = entries;
+                            // A search is standing in for the listing, so what
+                            // is on screen is results and must not be replaced
+                            // by the directory. Re-running it against what has
+                            // arrived is what makes results grow with the read
+                            // rather than being wiped by it every eighty
+                            // milliseconds — which is what used to happen, and
+                            // left the footer counting matches for a listing
+                            // nobody had searched.
+                            match this.search.as_ref().map(|s| s.query.clone()) {
+                                Some(query) => {
+                                    let capped = this.filter_archive(&query);
+                                    if let Some(SearchWork::Filtered { capped: at }) =
+                                        this.search.as_mut().map(|s| &mut s.work)
+                                    {
+                                        *at = capped;
+                                    }
+                                }
+                                None => this.entries = entries,
+                            }
                             this.error = None;
                             if finished && rows.skipped > 0 {
                                 cx.emit(PaneEvent::Notice {
@@ -1989,24 +2025,6 @@ impl DirPane {
                     }
                     this.listing_moved += 1;
                     this.reading_bytes = (!finished).then(|| reading.bytes());
-
-                    // Kept every tick, not only at the end: a read of a large
-                    // tarball is the case where having the members early is
-                    // worth most, and a partial arrangement is a true answer
-                    // about the part that has arrived.
-                    this.held = Some(HeldIndex {
-                        archive: archive.clone(),
-                        // On the last tick, the reader has already put an
-                        // identical arrangement in the cache — it does that
-                        // before saying it is done, on purpose — so this holds
-                        // that one instead and the two stop being two.
-                        index: if finished {
-                            crate::archive::remembered(&archive).unwrap_or_else(|| index.clone())
-                        } else {
-                            index.clone()
-                        },
-                        complete: finished,
-                    });
 
                     if finished {
                         // The tail a directory read runs too, once.
@@ -2359,7 +2377,13 @@ impl DirPane {
                 // The watcher stands down while a search runs, so this listing
                 // is as old as the search: showing it immediately keeps the
                 // pane from blanking, and the read behind it makes it true.
+                // Rebuilt from the arrangement where there is one, rather
+                // than put back from the copy taken when the search began:
+                // inside an archive that copy can be older than the read is,
+                // since a search started mid-read saved whatever had arrived
+                // by then and the read has gone on since.
                 self.entries = previous.listing;
+                self.rebuild_from_held();
                 self.listing_moved += 1;
                 self.clear_cursor();
                 self.restore_selection();
@@ -2834,6 +2858,27 @@ impl DirPane {
         found.capped
     }
 
+    /// Put the rows of this directory back from the arrangement being held.
+    ///
+    /// A no-op anywhere there is no arrangement, which leaves the caller's own
+    /// listing in place.
+    fn rebuild_from_held(&mut self) {
+        let Location::Archive { archive, inside } = &self.dir else {
+            return;
+        };
+        let Some(held) = self.held.as_ref().filter(|h| h.archive == *archive) else {
+            return;
+        };
+        let Some(rows) =
+            crate::archive::rows_in(&held.index, archive, inside, self.view.show_hidden)
+        else {
+            return;
+        };
+        let mut entries = rows.entries;
+        fs::sort_entries(&mut entries, self.view.sort, self.view.folders_first);
+        self.entries = entries;
+    }
+
     /// Whether this pane holds an arrangement of the archive it is in.
     ///
     /// The archive is checked, not merely the presence of one: a pane that has
@@ -2859,6 +2904,12 @@ impl DirPane {
         match &search.work {
             // Nothing is still arriving, so there is no "searching…" to
             // report: only how many there were.
+            // Still arriving, so the count is "so far" rather than the
+            // answer, and saying "3 matches" over an archive that is still
+            // being read would be a number that quietly changes.
+            SearchWork::Filtered { .. } if self.reading_bytes.is_some() => {
+                Some(format!("searching… {found}"))
+            }
             SearchWork::Filtered { capped: true } => Some(format!("first {found} matches")),
             SearchWork::Filtered { capped: false } => Some(counted()),
             // No handle yet means the debounce has not elapsed.
