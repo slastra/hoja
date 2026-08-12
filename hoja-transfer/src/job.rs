@@ -18,6 +18,7 @@ use crate::events::{
 };
 use crate::meta;
 use crate::sys::{self, MountKey};
+use crate::trash::{TrashDir, TrashedItem};
 
 /// How many changes a job may record before it stops offering to undo itself.
 ///
@@ -310,6 +311,14 @@ struct Worker {
     /// anything this job did that it cannot take back — today that is an
     /// overwrite, which unlinks what was there.
     undoable: bool,
+    /// The trash for the destination filesystem. Outer `None` means not yet
+    /// looked for, inner `None` means looked for and not there.
+    trash_dir: Option<Option<TrashDir>>,
+    /// Basename → the counter that last claimed a trash name for it.
+    trash_names: HashMap<String, u32>,
+    /// One warning per job, not one per file: a sync over a filesystem with no
+    /// trash would otherwise raise thousands of identical ones.
+    warned_no_trash: bool,
     /// Whether everything being written now sits under a directory this job
     /// created, in which case that one record already accounts for it.
     ///
@@ -349,6 +358,9 @@ impl Worker {
             mount_keys: HashMap::new(),
             undone: Vec::new(),
             undoable: true,
+            trash_dir: None,
+            trash_names: HashMap::new(),
+            warned_no_trash: false,
             claimed: false,
         }
     }
@@ -618,8 +630,8 @@ impl Worker {
         if !counted && !self.scanned {
             self.progress.files_total.fetch_add(1, Ordering::Relaxed);
         }
-        let (dest, existed) = match self.resolve_dest(src, dest) {
-            DestPlan::Proceed { path, existed } => (path, existed),
+        let (dest, displaced) = match self.resolve_dest(src, dest) {
+            DestPlan::Proceed { path, displaced } => (path, displaced),
             DestPlan::Skip => {
                 self.files_skipped += 1;
                 self.progress.files_done.fetch_add(1, Ordering::Relaxed);
@@ -631,16 +643,17 @@ impl Worker {
         // replace semantics. Only when the plan actually says to overwrite —
         // this used to unlink whatever was at `dest` unconditionally, which
         // was invisible while nothing needed to put it back.
-        if existed {
+        if displaced.is_some() {
+            // Whatever was here is in the trash now, so this only clears the
+            // name. symlink() has no replace semantics, hence doing it at all.
             let _ = std::fs::remove_file(&dest);
-            self.cannot_undo();
         }
         match meta::copy_symlink(src, &dest) {
             Ok(()) => {
                 self.stats.symlinks += 1;
                 if let Ok(meta) = std::fs::symlink_metadata(&dest) {
                     self.undone(Undone::Created {
-                        path: dest.clone(),
+                        path: dest.to_path_buf(),
                         from: (self.spec.op == Operation::Move).then(|| src.to_path_buf()),
                         dev: meta.dev(),
                         ino: meta.ino(),
@@ -810,10 +823,12 @@ impl Worker {
                 DestPlan::Cancel => return Step::Cancelled,
             };
             // An Overwrite decision means the user asked for the replacement,
-            // so unlink first; NOREPLACE would otherwise refuse it.
+            // so clear the name first; NOREPLACE would otherwise refuse it.
+            // What was there has already been moved to the trash by
+            // `resolve_dest`, so this usually finds nothing and is here for
+            // the case where it could not be.
             if planned == *dest && std::fs::symlink_metadata(&planned).is_ok() {
                 let _ = std::fs::remove_file(&planned);
-                self.cannot_undo();
             }
             let mut renamed = sys::rename_no_replace(src, &planned);
             if matches!(&renamed, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
@@ -862,8 +877,8 @@ impl Worker {
             }
         }
 
-        let (planned, existed) = match self.resolve_dest(src, dest) {
-            DestPlan::Proceed { path, existed } => (path, existed),
+        let (planned, displaced) = match self.resolve_dest(src, dest) {
+            DestPlan::Proceed { path, displaced } => (path, displaced),
             DestPlan::Skip => {
                 self.files_skipped += 1;
                 self.progress.files_done.fetch_add(1, Ordering::Relaxed);
@@ -876,7 +891,7 @@ impl Worker {
             &planned,
             src_meta,
             self.spec.op == Operation::Move,
-            existed,
+            displaced.is_some(),
         )
     }
 
@@ -999,13 +1014,9 @@ impl Worker {
                     return self.continue_or_fatal();
                 }
 
-                if dest_existed {
-                    // The rename above replaced something, and what it
-                    // replaced is gone. Nothing here can put it back, so the
-                    // job stops claiming it can. Trashing it first, which is
-                    // what makes this reversible, is the next slice.
-                    self.cannot_undo();
-                } else if let Some(meta) = landed {
+                // Whatever the rename replaced is in the trash and already
+                // recorded, so this is simply a file that was not here before.
+                if let Some(meta) = landed {
                     self.undone(Undone::Created {
                         path: dest.to_path_buf(),
                         from: delete_source.then(|| src.to_path_buf()),
@@ -1075,7 +1086,7 @@ impl Worker {
         if std::fs::symlink_metadata(dest).is_err() {
             return DestPlan::Proceed {
                 path: dest.to_path_buf(),
-                existed: false,
+                displaced: None,
             };
         }
         self.progress.set_phase(Phase::AwaitingConflict);
@@ -1085,8 +1096,8 @@ impl Worker {
             Resolution::CancelJob => DestPlan::Cancel,
             Resolution::Proceed(ConflictChoice::Skip) => DestPlan::Skip,
             Resolution::Proceed(ConflictChoice::Overwrite) => DestPlan::Proceed {
+                displaced: self.displace(dest),
                 path: dest.to_path_buf(),
-                existed: true,
             },
             Resolution::Proceed(ConflictChoice::KeepBoth) => {
                 for attempt in 1..1000 {
@@ -1095,7 +1106,7 @@ impl Worker {
                         // Chosen because nothing is there.
                         return DestPlan::Proceed {
                             path: candidate,
-                            existed: false,
+                            displaced: None,
                         };
                     }
                 }
@@ -1103,15 +1114,69 @@ impl Worker {
             }
         }
     }
+
+    /// Move whatever is at `dest` into the trash, so replacing it is
+    /// reversible.
+    ///
+    /// Falls back to leaving it in place — the caller then overwrites it as
+    /// before — when this filesystem has nowhere to put it. `trash` only ever
+    /// renames and refuses rather than copying across a boundary, which is the
+    /// behaviour that keeps a delete instant, and the same refusal here is a
+    /// FAT stick or a mount owned by root. Failing the paste instead would be
+    /// a regression nobody asked for, so it warns once and carries on.
+    fn displace(&mut self, dest: &Path) -> Option<TrashedItem> {
+        if self.trash_dir.is_none() {
+            self.trash_dir = Some(TrashDir::for_path(dest).ok());
+        }
+        if self.trash_dir.as_ref().is_some_and(Option::is_none) {
+            if !self.warned_no_trash {
+                self.warned_no_trash = true;
+                self.warn(
+                    dest,
+                    "nothing here can hold a trash, so replaced files cannot be restored"
+                        .to_string(),
+                );
+            }
+            self.undone(Undone::Lost(dest.to_path_buf()));
+            return None;
+        }
+        // Names repeat: a sync of one tree over another overwrites a thousand
+        // files called `index.html`, and each would otherwise rescan the whole
+        // run of `.2`, `.3`, … from the start. Remembering where the last one
+        // landed makes that linear overall instead of quadratic.
+        let name = dest.file_name()?.to_string_lossy().into_owned();
+        let start = self.trash_names.get(&name).copied().unwrap_or(1);
+        // Scoped so the loan on `self` ends before the records below.
+        let put = {
+            let bin = self.trash_dir.as_ref().and_then(Option::as_ref)?;
+            bin.put(dest, start)
+        };
+        match put {
+            Ok((item, attempt)) => {
+                self.trash_names.insert(name, attempt);
+                self.undone(Undone::Displaced(item.clone()));
+                Some(item)
+            }
+            Err(err) => {
+                self.warn(dest, format!("could not be moved to the trash: {err}"));
+                self.undone(Undone::Lost(dest.to_path_buf()));
+                None
+            }
+        }
+    }
 }
 
 enum DestPlan {
-    /// `existed` answers what a second `dest.exists()` used to ask: resolving a
-    /// destination already stats it, so asking again was a syscall per file for
-    /// something we had just learned.
+    /// `displaced` answers what a second `dest.exists()` used to ask: resolving
+    /// a destination already stats it, so asking again was a syscall per file
+    /// for something we had just learned. It is `Some` only where the plan was
+    /// to overwrite and the old file was moved to the trash, which is what
+    /// makes the overwrite reversible — and what makes the three sites that
+    /// overwrite get it right by construction rather than by each remembering
+    /// to.
     Proceed {
         path: PathBuf,
-        existed: bool,
+        displaced: Option<TrashedItem>,
     },
     Skip,
     Cancel,

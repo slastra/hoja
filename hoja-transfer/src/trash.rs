@@ -48,18 +48,53 @@ pub struct TrashedItem {
 /// `path` must be absolute. The item keeps its own name where possible, and
 /// gains a `.2`, `.3`, … counter when that name is taken.
 pub fn trash(path: &Path) -> io::Result<TrashedItem> {
-    if !path.is_absolute() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("trash needs an absolute path: {}", path.display()),
-        ));
-    }
-    // Confirm the item exists before building any trash directory for it, so a
-    // typo cannot create `.Trash-1000` on a volume that had none.
-    path.symlink_metadata()?;
+    Ok(TrashDir::for_path(path)?.put(path, 1)?.0)
+}
 
-    let (dir, relative_to) = trash_dir_for(path)?;
-    trash_into(path, &dir, relative_to.as_deref())
+/// A resolved trash directory, for a caller that will fill it.
+///
+/// `trash` answers one file and forgets: it stats the path, walks up to find
+/// the volume root, and probes for `.Trash` every time. That is the right
+/// shape for a delete, where the files come from wherever the selection was.
+/// A transfer is the other shape — every overwrite it makes lands on one
+/// filesystem — so it resolves this once and keeps it.
+pub struct TrashDir {
+    dir: PathBuf,
+    /// The volume root `Path=` entries are relative to, `None` for the home
+    /// trash, whose convention is absolute.
+    relative_to: Option<PathBuf>,
+}
+
+impl TrashDir {
+    /// Where `path` would go, creating the directory if it does not exist.
+    ///
+    /// Fails rather than falling back to a copy when nothing on `path`'s
+    /// filesystem can hold a trash: a trash that crossed filesystems would
+    /// turn every delete into a copy of the whole file, and callers would
+    /// rather be told.
+    pub fn for_path(path: &Path) -> io::Result<TrashDir> {
+        if !path.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("trash needs an absolute path: {}", path.display()),
+            ));
+        }
+        // Confirm the item exists before building any trash directory for it,
+        // so a typo cannot create `.Trash-1000` on a volume that had none.
+        path.symlink_metadata()?;
+        let (dir, relative_to) = trash_dir_for(path)?;
+        Ok(TrashDir { dir, relative_to })
+    }
+
+    /// Move `path` in, and say which attempt number claimed the name.
+    ///
+    /// `start` is where the collision scan begins. Claiming is a linear probe
+    /// from there, so a caller overwriting eight thousand files all called
+    /// `index.html` can hand back the number it last used and turn what would
+    /// be thirty-two million failed opens into eight thousand.
+    pub fn put(&self, path: &Path, start: u32) -> io::Result<(TrashedItem, u32)> {
+        trash_into(path, &self.dir, self.relative_to.as_deref(), start)
+    }
 }
 
 /// Put a trashed item back where it came from.
@@ -165,7 +200,8 @@ fn trash_into(
     path: &Path,
     trash_dir: &Path,
     relative_to: Option<&Path>,
-) -> io::Result<TrashedItem> {
+    start: u32,
+) -> io::Result<(TrashedItem, u32)> {
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?
@@ -185,7 +221,7 @@ fn trash_into(
     // The sidecar is written first, with O_EXCL, and *is* the lock on the name:
     // two processes trashing files called `notes.txt` at the same moment cannot
     // both win, because only one creation succeeds.
-    let (claimed, info_path) = claim(trash_dir, &name, &body)?;
+    let (claimed, info_path, attempt) = claim(trash_dir, &name, &body, start)?;
 
     let dest = trash_dir.join("files").join(&claimed);
     if let Err(err) = sys::rename_no_replace(path, &dest) {
@@ -194,20 +230,34 @@ fn trash_into(
         return Err(err);
     }
 
-    Ok(TrashedItem {
-        original: path.to_path_buf(),
-        file: dest,
-        info: info_path,
-    })
+    Ok((
+        TrashedItem {
+            original: path.to_path_buf(),
+            file: dest,
+            info: info_path,
+        },
+        attempt,
+    ))
 }
 
 /// Claim a free name by creating its `.trashinfo` exclusively.
-fn claim(trash_dir: &Path, name: &str, body: &str) -> io::Result<(String, PathBuf)> {
+///
+/// Probes upwards from `start`, and says which attempt won so a caller filling
+/// the trash with same-named files does not rescan from one every time. Always
+/// tries `1` as well, so a hint that has gone stale — the entries it skipped
+/// having since been emptied — costs one open rather than the name.
+fn claim(
+    trash_dir: &Path,
+    name: &str,
+    body: &str,
+    start: u32,
+) -> io::Result<(String, PathBuf, u32)> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
 
     let info_dir = trash_dir.join("info");
-    for attempt in 1..=10_000u32 {
+    let first = std::iter::once(1).filter(|_| start > 1);
+    for attempt in first.chain(start.max(1)..=10_000u32) {
         let candidate = numbered(name, attempt);
         let path = info_dir.join(format!("{candidate}.trashinfo"));
         match std::fs::OpenOptions::new()
@@ -227,7 +277,7 @@ fn claim(trash_dir: &Path, name: &str, body: &str) -> io::Result<(String, PathBu
                     let _ = std::fs::remove_file(&path);
                     return Err(err);
                 }
-                return Ok((candidate, path));
+                return Ok((candidate, path, attempt));
             }
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),

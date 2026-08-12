@@ -141,6 +141,13 @@ pub enum Undone {
     /// A directory the job made, which stands for everything it went on to put
     /// inside. Undone by removing it whole.
     CreatedDir(PathBuf),
+    /// Something was moved out of the way to make room, and is in the trash.
+    /// Undone by putting it back, once whatever replaced it is gone.
+    Displaced(crate::TrashedItem),
+    /// An overwrite on a filesystem with nowhere to put the old file. Its
+    /// bytes are gone; this is here so undo can say which ones rather than
+    /// quietly restoring less than it claims.
+    Lost(PathBuf),
 }
 
 #[derive(Debug)]

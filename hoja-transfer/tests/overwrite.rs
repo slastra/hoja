@@ -1,8 +1,8 @@
 //! Transfers onto a destination that is already occupied.
 //!
-//! Apart from `engine.rs` because of what an overwrite is about to become: the
-//! old file is moved to the trash rather than unlinked, so every test here
-//! writes into a trash directory. That needs `XDG_DATA_HOME` pointed somewhere
+//! Apart from `engine.rs` because of what an overwrite is: the old file is
+//! moved to the trash rather than unlinked, so every test here writes into a
+//! trash directory. That needs `XDG_DATA_HOME` pointed somewhere
 //! disposable, and pointing it is a `set_var` on a process the test harness is
 //! already running threads in — sound only while nothing else in the binary
 //! reads the environment beside it. `common::trash_env` holds that line by
@@ -13,7 +13,9 @@
 mod common;
 
 use common::*;
-use hoja_transfer::{ConflictChoice, ConflictDecision, JobPolicy, JobSpec, Outcome, spawn_job};
+use hoja_transfer::{
+    ConflictChoice, ConflictDecision, JobPolicy, JobSpec, Outcome, Undone, restore, spawn_job,
+};
 
 #[test]
 fn overwrite_and_keep_both() {
@@ -49,16 +51,14 @@ fn overwrite_and_keep_both() {
 }
 
 #[test]
-fn an_overwrite_cannot_be_undone_yet() {
-    // The rename that replaces the old file unlinks it, and nothing here can
-    // put it back, so the job says so rather than offering an undo that would
-    // leave a hole where the original was. Moving it to the trash first is
-    // what makes this reversible, and that is the next slice.
+fn an_overwrite_records_where_the_old_file_went() {
+    // The point of the whole change: what the rename replaces is not gone, it
+    // is in the trash, and the record says exactly which entry to put back.
     let _trash = trash_env();
     let src_dir = ext4_dir();
     let dst_dir = ext4_dir();
     let src = write_file(src_dir.path(), "z.txt", b"new");
-    write_file(dst_dir.path(), "z.txt", b"old");
+    let dest = write_file(dst_dir.path(), "z.txt", b"old");
 
     let handle = spawn_job(copy_spec(vec![src], dst_dir.path())).unwrap();
     let (_, summary) = drain(&handle, || ConflictDecision::Apply {
@@ -67,14 +67,126 @@ fn an_overwrite_cannot_be_undone_yet() {
     });
 
     assert_eq!(summary.outcome, Outcome::Completed);
+    assert!(summary.undoable);
+    assert_eq!(std::fs::read(&dest).unwrap(), b"new");
+    match summary.undone.as_slice() {
+        [Undone::Displaced(item), Undone::Created { path, .. }] => {
+            assert_eq!(item.original, dest, "it knows where to put it back");
+            assert_eq!(
+                std::fs::read(&item.file).unwrap(),
+                b"old",
+                "and the old bytes are still there to put"
+            );
+            assert_eq!(path, &dest);
+        }
+        other => panic!("expected the old file displaced and the new one made, got {other:?}"),
+    }
+    // Displaced before created, so undo replaying in reverse takes the new
+    // file away before `restore` tries to rename onto the name it holds.
     assert!(
-        !summary.undoable,
-        "it destroyed something it cannot restore"
+        restore(match &summary.undone[0] {
+            Undone::Displaced(item) => item,
+            _ => unreachable!(),
+        })
+        .is_err_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists)
+    );
+}
+
+#[test]
+fn a_destination_with_no_trash_still_overwrites() {
+    // The escape hatch, and it has to be an escape hatch: `trash` refuses
+    // rather than copying across a filesystem, so a FAT stick has nowhere to
+    // put the old file. Failing the paste there would be a regression nobody
+    // asked for, so it overwrites as it always did, warns once, and records
+    // the loss rather than pretending the job can be undone.
+    let _trash = trash_env();
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let src = write_file(src_dir.path(), "n.txt", b"new");
+    let dest = write_file(dst_dir.path(), "n.txt", b"old");
+
+    // A data home that cannot be made into a directory, so resolving a trash
+    // for the destination fails the way an unwritable volume root does.
+    // Safe under the guard this file's tests all take: nothing else in the
+    // process is reading the environment while it changes.
+    let blocked = src_dir.path().join("not-a-dir");
+    std::fs::write(&blocked, b"").unwrap();
+    let previous = std::env::var_os("XDG_DATA_HOME");
+    unsafe { std::env::set_var("XDG_DATA_HOME", &blocked) };
+
+    let handle = spawn_job(copy_spec(vec![src], dst_dir.path())).unwrap();
+    let (events, summary) = drain(&handle, || ConflictDecision::Apply {
+        choice: ConflictChoice::Overwrite,
+        apply_to_all: false,
+    });
+
+    match previous {
+        Some(value) => unsafe { std::env::set_var("XDG_DATA_HOME", value) },
+        None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
+    }
+
+    assert_eq!(summary.outcome, Outcome::Completed);
+    assert_eq!(
+        std::fs::read(&dest).unwrap(),
+        b"new",
+        "the overwrite still happened"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, hoja_transfer::Event::Warning { .. }))
+            .count(),
+        1,
+        "one warning for the job, not one per file"
     );
     assert!(
-        summary.undone.is_empty(),
-        "and it kept no half-log to undo from"
+        summary.undone.contains(&Undone::Lost(dest.clone())),
+        "and it says which file it could not keep: {:?}",
+        summary.undone
     );
+}
+
+#[test]
+fn overwriting_the_same_name_repeatedly_keeps_every_version() {
+    // Names repeat: syncing one tree over another overwrites a thousand files
+    // called `index.html`. Claiming walks `name`, `name.2`, `name.3`, … so
+    // each one starts where the last finished rather than from the top, which
+    // is what keeps a job of these linear instead of quadratic. Correctness is
+    // what is asserted here — that the shortcut never hands back a name that
+    // is taken, and never loses a version.
+    let _trash = trash_env();
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+
+    let mut displaced = Vec::new();
+    for round in 0..8u8 {
+        let src = write_file(src_dir.path(), "same.txt", &[b'a' + round]);
+        let handle = spawn_job(copy_spec(vec![src], dst_dir.path())).unwrap();
+        let (_, summary) = drain(&handle, || ConflictDecision::Apply {
+            choice: ConflictChoice::Overwrite,
+            apply_to_all: false,
+        });
+        for record in &summary.undone {
+            if let Undone::Displaced(item) = record {
+                displaced.push((item.file.clone(), round));
+            }
+        }
+    }
+
+    assert_eq!(
+        displaced.len(),
+        7,
+        "every round after the first displaced one"
+    );
+    let names: std::collections::BTreeSet<_> = displaced.iter().map(|(f, _)| f.clone()).collect();
+    assert_eq!(names.len(), 7, "and each landed on a name of its own");
+    for (file, round) in &displaced {
+        assert_eq!(
+            std::fs::read(file).unwrap(),
+            vec![b'a' + round - 1],
+            "the version it replaced, not some other round's"
+        );
+    }
 }
 
 #[test]
