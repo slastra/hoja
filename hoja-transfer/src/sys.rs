@@ -351,3 +351,102 @@ mod tests {
         ));
     }
 }
+
+/// Percent-encode a path: RFC 3986 unreserved characters and the `/` separator
+/// pass through, every other byte becomes `%XX`.
+///
+/// Here rather than in `trash.rs`, which is where it was written, because two
+/// things now need it and both need it for the same reason: a path is bytes,
+/// not text. A file named with stray bytes is legal on ext4, and any format
+/// that cannot write one down is a format that will fail on a file the user can
+/// plainly see. `serde_json` is exactly such a format — `PathBuf`'s `Serialize`
+/// goes through `to_str` and gives up — which is why the record a job writes
+/// about itself is line-oriented text using this instead.
+///
+/// Verified against `gio trash`, since the trash spec leaves it open: note that
+/// `!*'()` **are** escaped, so this is not RFC 2396's larger "mark" set.
+pub fn percent_encode(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+
+    let bytes = path.as_os_str().as_bytes();
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// The inverse. Anything that is not a well-formed `%XX` is taken literally,
+/// so a hand-edited file degrades to something readable rather than to an
+/// error.
+pub fn percent_decode(text: &str) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+
+    let raw = text.as_bytes();
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == b'%'
+            && i + 2 < raw.len()
+            && let Some(hi) = (raw[i + 1] as char).to_digit(16)
+            && let Some(lo) = (raw[i + 2] as char).to_digit(16)
+        {
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+            continue;
+        }
+        out.push(raw[i]);
+        i += 1;
+    }
+    PathBuf::from(std::ffi::OsString::from_vec(out))
+}
+
+/// The process id baked into a partial file's name by `partial_path`.
+///
+/// What makes the reaper exact rather than a guess: a `.hoja-partial-` left
+/// behind belongs to a particular run, and only the run that is known to be
+/// dead may have its own removed.
+pub fn partial_pid(name: &str) -> Option<u32> {
+    let tail = name.strip_prefix(PARTIAL_PREFIX)?;
+    let (_, stamp) = tail.rsplit_once('.')?;
+    let (pid, _) = stamp.split_once('-')?;
+    pid.parse().ok()
+}
+
+#[cfg(test)]
+mod codec_tests {
+    use super::*;
+
+    #[test]
+    fn a_path_that_is_not_utf8_round_trips() {
+        // The test that justifies not using serde for the job record. These
+        // bytes are a legal filename on ext4 and `PathBuf`'s Serialize refuses
+        // them outright, so a JSON record would fail to write for a file that
+        // is sitting there in the listing.
+        use std::os::unix::ffi::OsStrExt;
+        let awkward = Path::new(std::ffi::OsStr::from_bytes(b"/tmp/x/\xff\xfe/a b.txt"));
+        let text = percent_encode(awkward);
+        assert!(text.is_ascii(), "a record has to be writable as text");
+        assert_eq!(percent_decode(&text), awkward);
+    }
+
+    #[test]
+    fn a_partial_name_says_which_run_left_it() {
+        let name = partial_path(Path::new("/dest/report.pdf"))
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(partial_pid(&name), Some(std::process::id()));
+        assert_eq!(
+            partial_pid("report.pdf"),
+            None,
+            "an ordinary file is nobody's"
+        );
+    }
+}

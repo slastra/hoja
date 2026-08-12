@@ -264,9 +264,11 @@ pub fn read_dir(path: &Path, include_hidden: bool) -> anyhow::Result<Vec<DirEntr
                 // Partial names are dot-prefixed, so this subsumes them.
                 return !dotted;
             }
-            // In-progress transfer temps are an implementation detail; a crash
-            // can orphan them until the journal (M4) grows a reaper, and either
-            // way they should not appear in listings.
+            // In-progress transfer temps are an implementation detail and
+            // should not appear in listings. A crash can still orphan one
+            // between the moment it is created and the moment the record
+            // naming its job lands, but anything a dead run left behind is
+            // taken away at the next start: see `journal::reap`.
             !dotted || !hoja_transfer::is_partial_name(&name.to_string_lossy())
         })
         .map(|e| DirEntry::from_std(&e))

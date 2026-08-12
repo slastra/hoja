@@ -21,6 +21,7 @@ use crate::failure_report::{self, Failure, FailureReport};
 use crate::fs;
 use crate::fs::ViewSettings;
 use crate::icon::Icon;
+use crate::journal;
 use crate::location::Location;
 use crate::notifications;
 use crate::open_prompt::{OpenPrompt, OpenPromptEvent};
@@ -162,6 +163,62 @@ fn superseded(external: &Option<ClipboardSet>, baseline: &Option<ClipboardSet>) 
     }
 }
 
+/// A transfer that was running when hoja last stopped.
+///
+/// Its half-written files have already been cleaned up by the time one of
+/// these exists; what is left is the question of whether to finish it.
+struct Interrupted {
+    record: journal::Record,
+    /// Where the record lives, so accepting or dismissing can remove it.
+    at: PathBuf,
+    /// What the row says, worked out once.
+    label: String,
+}
+
+impl Interrupted {
+    /// Find what the last run left behind, and tidy up after it.
+    ///
+    /// The reaping happens here rather than on accepting, because a
+    /// half-written file is nobody's either way: it is hidden from every
+    /// listing, it can never be finished, and leaving it until someone presses
+    /// a button would mean leaving it forever if they press the other one.
+    /// Nobody wants a prompt about temporary files.
+    ///
+    /// Blocking, and deliberately so: it runs once, before the window opens,
+    /// and it reads a directory that holds one small file per interrupted job.
+    fn collect() -> Vec<Interrupted> {
+        journal::abandoned()
+            .into_iter()
+            .map(|(at, record)| {
+                journal::reap(&record);
+                let what = match record.sources.len() {
+                    1 => record
+                        .sources
+                        .first()
+                        .and_then(|s| s.file_name())
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "1 item".into()),
+                    n => format!("{n} items"),
+                };
+                let verb = match record.op {
+                    Operation::Copy => "Copying",
+                    Operation::Move => "Moving",
+                };
+                let to = record
+                    .dest
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| record.dest.display().to_string());
+                Interrupted {
+                    label: format!("{verb} {what} → {to} was interrupted"),
+                    record,
+                    at,
+                }
+            })
+            .collect()
+    }
+}
+
 /// One thing ctrl-z would take back.
 ///
 /// Deletes and transfers in one stack, so ctrl-z means "undo the last thing I
@@ -200,6 +257,11 @@ struct JobView {
     /// them. There are only ever a handful of distinct reasons, one per stage
     /// per errno, so nothing here needs a cap of its own.
     reasons: HashMap<String, usize>,
+    /// The record on disk saying this job is running, removed when the row is
+    /// dropped — which is when the job has stopped, one way or another. What a
+    /// crash leaves behind is exactly the records of jobs that were still
+    /// going.
+    record: Option<journal::Entry>,
     /// Set when this row is undoing a transfer rather than making one, and
     /// holding the label of the one it is taking back. What it could not
     /// reverse goes back on the stack under that name, so a second ctrl-z
@@ -514,6 +576,9 @@ pub struct Workspace {
     /// interoperate with other applications.
     clipboard: Option<Stash>,
     jobs: Vec<JobView>,
+    /// Transfers that were running when hoja last stopped, waiting to be
+    /// finished or dismissed. Read once, at startup.
+    interrupted: Vec<Interrupted>,
     /// What ctrl-z would take back, newest last.
     ///
     /// One entry per gesture rather than per file: one `Delete` press restores
@@ -573,6 +638,7 @@ impl Workspace {
             pane_subscriptions: HashMap::from([(pane.entity_id(), subscription)]),
             clipboard: None,
             jobs: Vec::new(),
+            interrupted: Interrupted::collect(),
             undo_stack: Vec::new(),
             notice: None,
             modal: None,
@@ -999,9 +1065,12 @@ impl Workspace {
                         return;
                     }
                     this.spawn_transfer_from(
-                        Operation::Move,
-                        sources,
-                        dest_dir,
+                        JobSpec {
+                            op: Operation::Move,
+                            sources,
+                            dest_dir,
+                            policy: JobPolicy::default(),
+                        },
                         Some(temp),
                         window,
                         cx,
@@ -1131,35 +1200,46 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.spawn_transfer_from(op, sources, dest_dir, None, window, cx);
+        self.spawn_transfer_from(
+            JobSpec {
+                op,
+                sources,
+                dest_dir,
+                policy: JobPolicy::default(),
+            },
+            None,
+            window,
+            cx,
+        );
     }
 
     /// `staging` is a directory this job's sources were put in on its behalf,
     /// removed once the job is done with them. Only an extraction has one.
+    ///
+    /// The whole spec rather than its parts: the policy has to come through
+    /// too — a transfer picked up from an interrupted run skips what is
+    /// already there instead of asking about every file the dead one finished
+    /// — and four loose parameters that only ever travel together is what a
+    /// `JobSpec` is.
     fn spawn_transfer_from(
         &mut self,
-        op: Operation,
-        sources: Vec<PathBuf>,
-        dest_dir: PathBuf,
+        spec: JobSpec,
         staging: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let src_parents: Vec<PathBuf> = sources
+        let src_parents: Vec<PathBuf> = spec
+            .sources
             .iter()
             .filter_map(|p| p.parent().map(std::path::Path::to_path_buf))
             .collect();
-
-        let spec = JobSpec {
-            op,
-            sources,
-            dest_dir: dest_dir.clone(),
-            policy: JobPolicy::default(),
-        };
+        let dest_dir = spec.dest_dir.clone();
+        let record = journal::Entry::open(&spec, std::time::SystemTime::now());
         match hoja_transfer::spawn_job(spec) {
             Ok(handle) => {
                 self.jobs.push(JobView {
                     handle,
+                    record,
                     dest_dir,
                     src_parents,
                     staging,
@@ -1258,6 +1338,8 @@ impl Workspace {
                     JobEvent::Warning { .. } => {}
                     JobEvent::Done(summary) => {
                         job.done = Some(summary.outcome);
+                        // Nothing left to pick up, so nothing left to say so.
+                        job.record = None;
                         finished_jobs.push(job_id);
                         // A move empties it, but a cancellation or a refused
                         // conflict can leave things behind, and none of them
@@ -1537,6 +1619,7 @@ impl Workspace {
             Ok(handle) => {
                 self.jobs.push(JobView {
                     handle,
+                    record: None,
                     dest_dir: parents.first().cloned().unwrap_or_default(),
                     src_parents: parents,
                     staging: None,
@@ -2040,6 +2123,7 @@ impl Workspace {
             })
             .collect();
         let undo_depth = self.undo_stack.len();
+        let interrupted = self.interrupted.len();
         // `conflict_dialog` and `open_prompt` sit outside `Modal` (see its own
         // doc comment), so a test that needs to know one is up reads it from
         // here rather than from a field that only ever answers for the three
@@ -2064,6 +2148,7 @@ impl Workspace {
                 jobs,
                 modal,
                 notice,
+                interrupted,
                 undo_depth,
                 revision: 0, // `write` owns this
             });
@@ -2131,6 +2216,86 @@ impl Workspace {
     /// channels lead to a worker that has stopped reading.
     fn purge_conflicts(&mut self, job: JobId) {
         self.pending_conflicts.retain(|pending| pending.job != job);
+    }
+
+    /// Finish what an interrupted transfer had left to do.
+    ///
+    /// A fresh job over what is left, not a resurrection: the dead worker's
+    /// state was a call stack, and its half-written file was reaped at
+    /// startup. So the row says "finish", never "resume".
+    ///
+    /// Skip rather than a prompt for every collision, because everything
+    /// already at the destination is what the interrupted run put there.
+    fn finish_interrupted(&mut self, at: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.interrupted.get(at) else {
+            return;
+        };
+        let Some(spec) = entry.record.remaining() else {
+            self.set_notice(
+                Some(Notice::Info("There is nothing left to finish".to_string())),
+                cx,
+            );
+            self.dismiss_interrupted(at, cx);
+            return;
+        };
+        // The policy matters and is the whole reason `remaining` builds a
+        // spec rather than a list of paths: everything already at the
+        // destination is what the interrupted run put there, so it is skipped
+        // rather than raising a prompt for every file it had finished.
+        self.dismiss_interrupted(at, cx);
+        self.spawn_transfer_from(spec, None, window, cx);
+    }
+
+    /// Drop the offer, and the record behind it.
+    fn dismiss_interrupted(&mut self, at: usize, cx: &mut Context<Self>) {
+        if at < self.interrupted.len() {
+            let entry = self.interrupted.remove(at);
+            let _ = std::fs::remove_file(&entry.at);
+            cx.notify();
+        }
+    }
+
+    /// The offers to finish, above the running jobs.
+    ///
+    /// Its own row kind rather than a `JobView` with the handle made optional:
+    /// that handle is dereferenced at a dozen sites for a label, a progress
+    /// reading or an id, and there is none here. There is no bar either, since
+    /// nothing is moving yet.
+    fn render_interrupted(&self, cx: &Context<Self>) -> Vec<gpui::AnyElement> {
+        let colors = cx.theme().colors();
+        self.interrupted
+            .iter()
+            .enumerate()
+            .map(|(ix, entry)| {
+                let button = |id: &'static str, text: &'static str| {
+                    div()
+                        .id((id, ix))
+                        .flex_none()
+                        .px_1p5()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(colors.element_hover))
+                        .child(text)
+                };
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .h(px(26.))
+                    .text_xs()
+                    .text_color(colors.text)
+                    .child(div().flex_1().truncate().child(entry.label.clone()))
+                    .child(button("finish-interrupted", "Finish").on_click(cx.listener(
+                        move |this, _, window, cx| this.finish_interrupted(ix, window, cx),
+                    )))
+                    .child(button("drop-interrupted", "✕").on_click(
+                        cx.listener(move |this, _, _, cx| this.dismiss_interrupted(ix, cx)),
+                    ))
+                    .into_any_element()
+            })
+            .collect()
     }
 
     fn render_job_strip(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
@@ -2441,6 +2606,9 @@ impl Workspace {
             .bg(colors.title_bar_background)
             .border_t_1()
             .border_color(colors.border)
+            // Above the running jobs: these are from a previous session and
+            // are waiting on an answer, where the rows below are working.
+            .children(self.render_interrupted(cx))
             .when_some(self.notice.as_ref(), |el, notice| {
                 let color = if notice.is_problem() {
                     error_color
@@ -2622,9 +2790,10 @@ impl Render for Workspace {
             // Search progress moved into the pane footer, where it belongs to
             // the pane doing the searching, a background pane's used to be
             // invisible. The strip is now transfers and notices only.
-            .when(!self.jobs.is_empty() || self.notice.is_some(), |el| {
-                el.child(self.render_job_strip(cx))
-            })
+            .when(
+                !self.jobs.is_empty() || self.notice.is_some() || !self.interrupted.is_empty(),
+                |el| el.child(self.render_job_strip(cx)),
+            )
             .when_some(self.modal.as_ref().map(Modal::element), |el, modal| {
                 el.child(self.modal_scrim(modal, cx))
             })

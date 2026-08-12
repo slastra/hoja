@@ -11,6 +11,7 @@ mod fs;
 mod git;
 mod history;
 mod icon;
+mod journal;
 mod location;
 mod measure;
 mod notifications;

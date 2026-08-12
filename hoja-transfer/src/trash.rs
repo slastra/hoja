@@ -214,7 +214,7 @@ fn trash_into(
     };
     let body = format!(
         "[Trash Info]\nPath={}\nDeletionDate={}\n",
-        encode(recorded),
+        sys::percent_encode(recorded),
         chrono::Local::now().format("%Y-%m-%dT%H:%M:%S")
     );
 
@@ -298,24 +298,6 @@ fn numbered(name: &str, attempt: u32) -> String {
     format!("{stem}.{attempt}{ext}")
 }
 
-/// Percent-encode for the `Path=` field: RFC 3986 unreserved characters and the
-/// `/` separator pass through, every other byte becomes `%XX`.
-fn encode(path: &Path) -> String {
-    use std::os::unix::ffi::OsStrExt;
-
-    let bytes = path.as_os_str().as_bytes();
-    let mut out = String::with_capacity(bytes.len());
-    for &b in bytes {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
 fn device_of(path: &Path) -> io::Result<u64> {
     Ok(std::fs::metadata(path)?.dev())
 }
@@ -328,15 +310,18 @@ mod tests {
     fn encodes_like_gio_does() {
         // Verified against `gio trash` output on a real system.
         assert_eq!(
-            encode(Path::new("/home/shaun/weird name #1 %ü.txt")),
+            sys::percent_encode(Path::new("/home/shaun/weird name #1 %ü.txt")),
             "/home/shaun/weird%20name%20%231%20%25%C3%BC.txt"
         );
         assert_eq!(
-            encode(Path::new("/x/punct-_.!~*'()+,;=:@&$[]{}.txt")),
+            sys::percent_encode(Path::new("/x/punct-_.!~*'()+,;=:@&$[]{}.txt")),
             "/x/punct-_.%21~%2A%27%28%29%2B%2C%3B%3D%3A%40%26%24%5B%5D%7B%7D.txt"
         );
         // Unreserved and the separator survive untouched.
-        assert_eq!(encode(Path::new("/a-b_c.d~e/f")), "/a-b_c.d~e/f");
+        assert_eq!(
+            sys::percent_encode(Path::new("/a-b_c.d~e/f")),
+            "/a-b_c.d~e/f"
+        );
     }
 
     #[test]

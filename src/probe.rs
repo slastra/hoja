@@ -96,6 +96,9 @@ pub struct Probe {
     /// `"palette"`, `"places"`, `"failures"`, or absent.
     pub modal: Option<&'static str>,
     pub notice: Option<String>,
+    /// Transfers left unfinished by a previous run and waiting to be picked
+    /// up or dismissed.
+    pub interrupted: usize,
     /// How many things ctrl-z would undo, so a test can tell that a transfer
     /// reached the stack and that undoing it took it off again.
     pub undo_depth: usize,

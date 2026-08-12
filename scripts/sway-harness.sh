@@ -127,7 +127,13 @@ rm -f "$HOJA_PROBE"
 # `$XDG_DATA_HOME/Trash`, so without this a run would put the developer's own
 # files and a test's alike into one bin.
 export XDG_STATE_HOME="$OUT/state" XDG_CONFIG_HOME="$OUT/config" XDG_DATA_HOME="$OUT/data"
-rm -rf "$XDG_STATE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+# HOJA_TEST_KEEP_STATE keeps whatever the last run left, which is how a test
+# gets to be a crash and a restart: run once against an out-dir and let the
+# harness kill the app, then run again against the same one.
+if [ -z "${HOJA_TEST_KEEP_STATE:-}" ]; then
+    rm -rf "$XDG_STATE_HOME" "$XDG_DATA_HOME"
+fi
+rm -rf "$XDG_CONFIG_HOME"
 mkdir -p "$XDG_CONFIG_HOME/hoja" "$XDG_DATA_HOME"
 printf '{ "theme": "Rosé Pine" }\n' > "$XDG_CONFIG_HOME/hoja/settings.json"
 
