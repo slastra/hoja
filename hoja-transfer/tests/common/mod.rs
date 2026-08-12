@@ -126,6 +126,19 @@ pub fn drain(
     }
 }
 
+/// Poll until `cond` holds, and fail saying `what` if it never does.
+///
+/// A deadline rather than a fixed sleep: the thing being waited for is a worker
+/// thread reaching a point, which is fast on a developer machine and not always
+/// fast on a runner.
+pub fn wait_until(mut cond: impl FnMut() -> bool, what: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !cond() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 pub fn conflict_count(events: &[Event]) -> usize {
     events
         .iter()

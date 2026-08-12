@@ -81,6 +81,18 @@ pub struct Progress {
     pub walk_complete: AtomicBool,
     pub phase: AtomicU8,
     pub current_file: Mutex<Option<PathBuf>>,
+    /// Whether the worker has actually stopped, which is not the same question
+    /// as whether it was asked to.
+    ///
+    /// Pause is honoured between files, so a 4 GB file already in flight keeps
+    /// copying for a while after the button is pressed. A UI reading the
+    /// request back would say "paused" over a bar that is visibly still
+    /// moving; this says "paused" when the bytes have in fact stopped, and lets
+    /// the interval between the two read as "pausing…".
+    ///
+    /// Deliberately not a `Phase`: a job can be parked while scanning or while
+    /// transferring, and it resumes into whichever it left.
+    pub paused: AtomicBool,
 }
 
 impl Progress {
@@ -127,7 +139,10 @@ impl JobHandle {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
-    /// Honored between files in M1.
+    /// Ask the worker to stop between files, or to carry on.
+    ///
+    /// A request, not an acknowledgement: a file already in flight finishes
+    /// first. `progress().paused` says when it has actually stopped.
     pub fn set_paused(&self, paused: bool) {
         self.pause.store(paused, Ordering::Relaxed);
     }
@@ -136,6 +151,22 @@ impl JobHandle {
         self.thread
             .as_ref()
             .is_none_or(|thread| thread.is_finished())
+    }
+}
+
+impl Drop for JobHandle {
+    /// Stop the worker rather than abandoning it.
+    ///
+    /// Every `events.send` in the worker discards its result, so a dropped
+    /// receiver is invisible to it and it would run a whole transfer nobody is
+    /// listening to. A *paused* one is worse: it sits in `check_pause_cancel`
+    /// waiting on a flag whose only setter has just been dropped, so it never
+    /// comes back at all.
+    ///
+    /// Signals and returns. Joining here would block whichever thread let the
+    /// handle go — for the UI, that is the window closing on a 200 GB copy.
+    fn drop(&mut self) {
+        self.cancel();
     }
 }
 
@@ -440,8 +471,15 @@ impl Worker {
     }
 
     fn check_pause_cancel(&self) -> bool {
-        while self.pause.load(Ordering::Relaxed) && !self.cancel.load(Ordering::Relaxed) {
-            std::thread::sleep(Duration::from_millis(100));
+        // The store is inside the branch because this runs before every file
+        // and the answer is almost always "not paused", which should stay one
+        // relaxed load and nothing else.
+        if self.pause.load(Ordering::Relaxed) {
+            self.progress.paused.store(true, Ordering::Relaxed);
+            while self.pause.load(Ordering::Relaxed) && !self.cancel.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            self.progress.paused.store(false, Ordering::Relaxed);
         }
         self.cancel.load(Ordering::Relaxed)
     }

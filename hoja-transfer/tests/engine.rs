@@ -578,6 +578,89 @@ fn cancel_leaves_no_partials() {
     no_partials_under(dst_dir.path());
 }
 
+/// A source of many small files, so there are plenty of gaps between files for
+/// a pause to land in. One big file would not do: pause is honoured *between*
+/// files, so a 256 MB source would keep copying straight through it.
+fn many_files(dir: &Path, count: usize) -> std::path::PathBuf {
+    let tree = dir.join("many");
+    std::fs::create_dir(&tree).unwrap();
+    for i in 0..count {
+        write_file(&tree, &format!("f{i:04}.bin"), &vec![b'x'; 32 * 1024]);
+    }
+    tree
+}
+
+#[test]
+fn pause_parks_between_files_and_resume_finishes() {
+    use std::sync::atomic::Ordering;
+
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let tree = many_files(src_dir.path(), 1200);
+
+    let handle = spawn_job(copy_spec(vec![tree], dst_dir.path())).unwrap();
+    let progress = handle.progress().clone();
+
+    // Under way first, so what follows is about parking rather than starting.
+    wait_until(
+        || progress.files_done.load(Ordering::Relaxed) > 0,
+        "the copy never started",
+    );
+    handle.set_paused(true);
+    wait_until(
+        || progress.paused.load(Ordering::Relaxed),
+        "the worker never parked",
+    );
+
+    let parked_at = progress.files_done.load(Ordering::Relaxed);
+    assert!(
+        parked_at < 1200,
+        "parked only after copying everything, which proves nothing"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(
+        progress.files_done.load(Ordering::Relaxed),
+        parked_at,
+        "still copying while paused"
+    );
+
+    handle.set_paused(false);
+    let (_, summary) = drain(&handle, never_conflict);
+    assert_eq!(summary.outcome, Outcome::Completed);
+    assert_eq!(summary.files_copied, 1200);
+    assert!(
+        !progress.paused.load(Ordering::Relaxed),
+        "still flagged as parked after finishing"
+    );
+}
+
+#[test]
+fn pause_then_cancel_still_finishes() {
+    // The wait loop watches the cancel flag as well as the pause one, so
+    // cancelling has to release a job that is already parked. If it did not,
+    // the ✕ on a paused row would hang the transfer and this would sit here
+    // until `drain`'s deadline.
+    use std::sync::atomic::Ordering;
+
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let tree = many_files(src_dir.path(), 400);
+
+    let handle = spawn_job(copy_spec(vec![tree], dst_dir.path())).unwrap();
+    let progress = handle.progress().clone();
+
+    handle.set_paused(true);
+    wait_until(
+        || progress.paused.load(Ordering::Relaxed),
+        "the worker never parked",
+    );
+    handle.cancel();
+
+    let (_, summary) = drain(&handle, never_conflict);
+    assert_eq!(summary.outcome, Outcome::Cancelled);
+    no_partials_under(dst_dir.path());
+}
+
 #[test]
 fn atomic_visibility() {
     // The final name must never exist with partial contents. Poll while copying.
