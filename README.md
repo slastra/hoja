@@ -84,7 +84,11 @@ updates, and archive browsing that feels like working with ordinary folders.
 
 - **Recursive search.** Press `ctrl-f` to search every directory below the
   current one. Results appear as they are found, and pressing `enter` opens
-  the selected result.
+  the selected result. It works inside an archive too, where there is nothing
+  to walk: the member list the pane already read answers immediately, and
+  results keep arriving if the archive is still being read. Each result is
+  labelled by where it sits, and copying one out keeps the structure below the
+  folder you searched.
 - **Places.** Press `ctrl-p` to jump to your home directory, bookmarks, or
   attached drives. Hoja reads the same bookmarks used by GTK file dialogs and
   can mount or eject removable drives.
@@ -307,7 +311,7 @@ the window is, and everything after it is keystrokes sent somewhere unverified.
 An earlier version carried on, walked a pane up to the root of the filesystem
 and pressed paste there; nothing was written only because root is not writable.
 
-There are eight suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
+There are nine suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
 `archive.sh` and `tar.sh` need fixtures, which `scripts/tests/setup-archives.sh`
 builds and prints the path of:
 
@@ -342,15 +346,18 @@ HOJA_TEST_KEEP_STATE=1 \
     scripts/sway-harness.sh "$XFER" scripts/tests/crash-phase2.sh "$OUT"
 ```
 
-`resort-while-reading.sh` and `interrupt-archive-read.sh` need a fixture of
-their own, `setup-slow-archive.sh`, kept separate so a ~15 MB member genuinely
-slow enough to read (bzip2, real pseudo-random content) does not change the row
-count the other two assert on:
+`resort-while-reading.sh`, `interrupt-archive-read.sh` and
+`search-while-reading.sh` all act while an archive is still being read, so they
+need a fixture slow enough to act *in*. `setup-slow-archive.sh` builds it, and
+is kept separate so a ~15 MB member genuinely slow to read (bzip2, real
+pseudo-random content) does not change the row counts the other suites assert
+on:
 
 ```sh
 SLOW=$(scripts/tests/setup-slow-archive.sh)
 scripts/sway-harness.sh "$SLOW" scripts/tests/resort-while-reading.sh
 scripts/sway-harness.sh "$SLOW" scripts/tests/interrupt-archive-read.sh
+scripts/sway-harness.sh "$SLOW" scripts/tests/search-while-reading.sh
 ```
 
 Two things it cannot do. It cannot synthesise a drag: `wlrctl` only clicks, and
@@ -401,9 +408,6 @@ HOJA_TEST_BTRFS=/tmp/hoja-btrfs/mnt cargo test -p hoja-transfer -- --ignored
 
 Planned and not complete:
 
-- **Searching inside an archive**, which the recursive search does not do yet.
-  The whole member list is already in memory, so filtering it is cheaper than
-  searching a directory.
 - **Writing to an archive.** Everything here reads; rename, delete and paste
   inside one are refusals rather than half-features.
 - **Owner, group and permission columns**, for anyone who wants them.
