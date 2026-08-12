@@ -121,10 +121,14 @@ print(f\"W={r['width']}; H={r['height']}\")" 2>/dev/null)"
 export HOJA_PROBE="$OUT/probe.json"
 rm -f "$HOJA_PROBE"
 
-# Its own config and state, so a test can never write through to the real ones.
-export XDG_STATE_HOME="$OUT/state" XDG_CONFIG_HOME="$OUT/config"
-rm -rf "$XDG_STATE_HOME" "$XDG_CONFIG_HOME"
-mkdir -p "$XDG_CONFIG_HOME/hoja"
+# Its own config, state and data, so a test can never write through to the real
+# ones. Data matters as much as the other two: the command palette's history
+# lives there, and the trash a delete moves files into is
+# `$XDG_DATA_HOME/Trash`, so without this a run would put the developer's own
+# files and a test's alike into one bin.
+export XDG_STATE_HOME="$OUT/state" XDG_CONFIG_HOME="$OUT/config" XDG_DATA_HOME="$OUT/data"
+rm -rf "$XDG_STATE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+mkdir -p "$XDG_CONFIG_HOME/hoja" "$XDG_DATA_HOME"
 printf '{ "theme": "Rosé Pine" }\n' > "$XDG_CONFIG_HOME/hoja/settings.json"
 
 env -u DISPLAY "$BIN" "$START_DIR" >"$OUT/app.log" 2>&1 &

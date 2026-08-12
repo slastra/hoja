@@ -7,10 +7,18 @@
 //! - `/dev/shm` is tmpfs: crossing into it exercises both the rename EXDEV path
 //!   and the cross-fs-type `copy_file_range` fallback.
 
+// Compiled once per test binary, and no binary uses all of it: `trash.rs` wants
+// only `trash_env`, `engine.rs` wants everything but. Without this each binary
+// warns about the half it does not use, and CI runs `-D warnings`.
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
-use hoja_transfer::{ConflictDecision, Event, JobHandle, JobSummary};
+use hoja_transfer::{
+    ConflictDecision, Event, JobHandle, JobPolicy, JobSpec, JobSummary, Operation,
+};
 
 pub fn ext4_dir() -> tempfile::TempDir {
     tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir on target fs")
@@ -34,10 +42,61 @@ pub fn tmpfs_dir() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir on /tmp")
 }
 
+/// Serialises the tests and points `XDG_DATA_HOME` somewhere disposable.
+///
+/// Two things depend on this, and the second is easy to miss.
+///
+/// It keeps the developer's real trash out of the run, which is what it was
+/// written for. But `trash` only ever renames, never copies, and falls back to
+/// a volume trash at the *destination's* top directory when the home trash is
+/// on another filesystem — which for a file under `CARGO_TARGET_TMPDIR` means
+/// trying to make `.Trash-$uid` at the root of the filesystem the checkout is
+/// on. So the root here is under `CARGO_TARGET_TMPDIR` too, sharing a device
+/// with `ext4_dir`, and a destination there gets an ordinary home trash.
+///
+/// **Every test in a binary that calls this has to call it**, because the
+/// safety of the `set_var` below rests on nothing else in the process reading
+/// the environment while it happens. That is why the tests that overwrite live
+/// in `overwrite.rs` rather than beside the rest of the engine's.
+pub fn trash_env() -> MutexGuard<'static, PathBuf> {
+    static ENV: OnceLock<Mutex<PathBuf>> = OnceLock::new();
+    ENV.get_or_init(|| {
+        let root = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("hoja-trash-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        // Safety: set once, before any test body runs, under the lock that
+        // every test in this file takes.
+        unsafe { std::env::set_var("XDG_DATA_HOME", &root) };
+        Mutex::new(root)
+    })
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub fn write_file(dir: &Path, name: &str, contents: &[u8]) -> PathBuf {
     let path = dir.join(name);
     std::fs::write(&path, contents).unwrap();
     path
+}
+
+pub fn copy_spec(sources: Vec<PathBuf>, dest: &Path) -> JobSpec {
+    JobSpec {
+        op: Operation::Copy,
+        sources,
+        dest_dir: dest.to_path_buf(),
+        policy: JobPolicy::default(),
+    }
+}
+
+pub fn move_spec(sources: Vec<PathBuf>, dest: &Path) -> JobSpec {
+    JobSpec {
+        op: Operation::Move,
+        ..copy_spec(sources, dest)
+    }
+}
+
+pub fn never_conflict() -> ConflictDecision {
+    panic!("unexpected conflict event")
 }
 
 /// Drain a job to completion, answering every conflict with `answer`.

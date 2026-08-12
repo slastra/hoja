@@ -5,25 +5,12 @@
 //! that is process-global state, every test here shares one lock and one trash
 //! directory rather than racing on the environment.
 
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
 
+use common::trash_env;
 use hoja_transfer::{TrashedItem, restore, trash};
-
-/// Serialises the tests and points `XDG_DATA_HOME` somewhere disposable.
-fn trash_env() -> MutexGuard<'static, PathBuf> {
-    static ENV: OnceLock<Mutex<PathBuf>> = OnceLock::new();
-    ENV.get_or_init(|| {
-        let root = std::env::temp_dir().join(format!("hoja-trash-test-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        // Safety: set once, before any test body runs, under the lock that
-        // every test in this file takes.
-        unsafe { std::env::set_var("XDG_DATA_HOME", &root) };
-        Mutex::new(root)
-    })
-    .lock()
-    .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
 
 fn trash_dir(root: &Path) -> PathBuf {
     root.join("Trash")

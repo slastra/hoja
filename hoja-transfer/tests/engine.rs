@@ -10,26 +10,6 @@ use hoja_transfer::{
     ConflictChoice, ConflictDecision, Event, JobPolicy, JobSpec, Operation, Outcome, spawn_job,
 };
 
-fn copy_spec(sources: Vec<std::path::PathBuf>, dest: &Path) -> JobSpec {
-    JobSpec {
-        op: Operation::Copy,
-        sources,
-        dest_dir: dest.to_path_buf(),
-        policy: JobPolicy::default(),
-    }
-}
-
-fn move_spec(sources: Vec<std::path::PathBuf>, dest: &Path) -> JobSpec {
-    JobSpec {
-        op: Operation::Move,
-        ..copy_spec(sources, dest)
-    }
-}
-
-fn never_conflict() -> ConflictDecision {
-    panic!("unexpected conflict event")
-}
-
 unsafe extern "C" {
     #[link_name = "geteuid"]
     fn libc_geteuid() -> u32;
@@ -50,7 +30,9 @@ fn a_directory_copy_knows_its_total_before_it_starts() {
     write_file(&tree, "a.bin", &vec![b'x'; 1000]);
     write_file(&tree.join("nested"), "b.bin", &vec![b'y'; 2000]);
 
-    // Pre-create the collision the transfer will stop on.
+    // Pre-create the collision the transfer will stop on. It is scaffolding:
+    // this test is about the totals, and the conflict is only a place to stand
+    // while the job is still running.
     std::fs::create_dir(dst_dir.path().join("tree")).unwrap();
     write_file(&dst_dir.path().join("tree"), "a.bin", b"old");
 
@@ -74,8 +56,12 @@ fn a_directory_copy_knows_its_total_before_it_starts() {
                 progress.bytes_total.load(Ordering::Relaxed),
                 Ordering::Relaxed,
             );
+            // KeepBoth rather than Overwrite, which would answer just as well
+            // and would put this test in the trash: an overwrite displaces the
+            // old file there rather than unlinking it, and only `overwrite.rs`
+            // has a trash directory it is allowed to write into.
             ConflictDecision::Apply {
-                choice: ConflictChoice::Overwrite,
+                choice: ConflictChoice::KeepBoth,
                 apply_to_all: true,
             }
         }
@@ -518,91 +504,8 @@ fn conflicts_prompt_once_with_apply_to_all() {
     }
 }
 
-#[test]
-fn overwrite_and_keep_both() {
-    let src_dir = ext4_dir();
-    let dst_dir = ext4_dir();
-    let src = write_file(src_dir.path(), "x.tar.gz", b"new");
-    write_file(dst_dir.path(), "x.tar.gz", b"old");
-
-    // Overwrite
-    let handle = spawn_job(copy_spec(vec![src.clone()], dst_dir.path())).unwrap();
-    let (_, summary) = drain(&handle, || ConflictDecision::Apply {
-        choice: ConflictChoice::Overwrite,
-        apply_to_all: false,
-    });
-    assert_eq!(summary.files_copied, 1);
-    assert_eq!(
-        std::fs::read(dst_dir.path().join("x.tar.gz")).unwrap(),
-        b"new"
-    );
-
-    // KeepBoth with multi-part extension naming
-    let handle = spawn_job(copy_spec(vec![src], dst_dir.path())).unwrap();
-    let (_, summary) = drain(&handle, || ConflictDecision::Apply {
-        choice: ConflictChoice::KeepBoth,
-        apply_to_all: false,
-    });
-    assert_eq!(summary.files_copied, 1);
-    assert_eq!(
-        std::fs::read(dst_dir.path().join("x (copy).tar.gz")).unwrap(),
-        b"new"
-    );
-}
-
-#[test]
-fn preset_policy_never_prompts() {
-    let src_dir = ext4_dir();
-    let dst_dir = ext4_dir();
-    let src = write_file(src_dir.path(), "y.txt", b"new");
-    write_file(dst_dir.path(), "y.txt", b"old");
-
-    let handle = spawn_job(JobSpec {
-        policy: JobPolicy {
-            conflict: Some(ConflictChoice::Overwrite),
-            ..Default::default()
-        },
-        ..copy_spec(vec![src], dst_dir.path())
-    })
-    .unwrap();
-    let (events, summary) = drain(&handle, never_conflict);
-    assert_eq!(conflict_count(&events), 0);
-    assert_eq!(std::fs::read(dst_dir.path().join("y.txt")).unwrap(), b"new");
-    assert_eq!(summary.outcome, Outcome::Completed);
-}
-
-#[test]
-fn move_overwrite_replaces_and_keep_both_renames() {
-    // The move path renames without replacing, so an Overwrite decision has to
-    // clear the destination explicitly. Both outcomes are checked here because
-    // getting the first wrong silently refuses, and the second silently clobbers.
-    let src_dir = ext4_dir();
-    let dst_dir = ext4_dir();
-
-    let a = write_file(src_dir.path(), "m.txt", b"new");
-    write_file(dst_dir.path(), "m.txt", b"old");
-    let handle = spawn_job(move_spec(vec![a.clone()], dst_dir.path())).unwrap();
-    let (_, summary) = drain(&handle, || ConflictDecision::Apply {
-        choice: ConflictChoice::Overwrite,
-        apply_to_all: false,
-    });
-    assert_eq!(summary.outcome, Outcome::Completed);
-    assert_eq!(std::fs::read(dst_dir.path().join("m.txt")).unwrap(), b"new");
-    assert!(!a.exists(), "source removed after a move");
-
-    let b = write_file(src_dir.path(), "m.txt", b"second");
-    let handle = spawn_job(move_spec(vec![b], dst_dir.path())).unwrap();
-    let (_, summary) = drain(&handle, || ConflictDecision::Apply {
-        choice: ConflictChoice::KeepBoth,
-        apply_to_all: false,
-    });
-    assert_eq!(summary.outcome, Outcome::Completed);
-    assert_eq!(std::fs::read(dst_dir.path().join("m.txt")).unwrap(), b"new");
-    assert_eq!(
-        std::fs::read(dst_dir.path().join("m (copy).txt")).unwrap(),
-        b"second"
-    );
-}
+// Transfers onto an occupied destination live in `overwrite.rs`, which needs a
+// trash directory of its own and so needs every test in its binary serialised.
 
 #[test]
 fn moving_a_directory_onto_an_existing_one_merges() {
