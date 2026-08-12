@@ -208,9 +208,12 @@ struct HeldIndex {
 /// implemented rather than about which one it is — and the next change to
 /// either would have quietly made it wrong.
 enum SearchWork {
-    /// Filtered from rows the pane already had. No walk, no thread, no
-    /// debounce: finished before `set_filter` returned.
-    Filtered,
+    /// Searched through the arrangement the pane is holding. No walk, no
+    /// thread, no debounce: finished before `set_filter` returned.
+    Filtered {
+        /// Whether `RESULT_CAP` cut the answer short, which the footer says.
+        capped: bool,
+    },
     /// A walk over real directories, arriving in batches.
     Walk {
         /// Dropping this stops the walk. `None` until the debounce elapses,
@@ -2395,17 +2398,13 @@ impl DirPane {
         self.error = None;
 
         // The walker reads directories off the disk, so there is nothing for
-        // it to walk inside an archive. The archive's whole listing for this
-        // directory is already sitting in `listing`, though, so this filters
-        // it in place instead: no walk, no debounce, done by the time this
-        // returns. `end_search`'s restore path above needs nothing extra to
-        // put it back, since it only ever looks at `previous.listing`.
+        // it to walk inside an archive. The arrangement the pane is holding
+        // knows every member, though, so this searches that instead: no
+        // thread, no debounce, no cancellation to get right, and done before
+        // this returns. `end_search`'s restore path needs nothing extra,
+        // since it puts `previous.listing` back.
         let Some(dir) = self.dir.disk().map(Path::to_path_buf) else {
-            self.entries = listing
-                .iter()
-                .filter(|entry| fs::matches_filter(&entry.name, &query))
-                .cloned()
-                .collect();
+            let capped = self.filter_archive(&query);
             self.listing_moved += 1;
             // Aim at the first hit as soon as there is one, matching the
             // disk-search behaviour below: enter opens it without arrowing
@@ -2417,7 +2416,7 @@ impl DirPane {
             self.search = Some(ActiveSearch {
                 query,
                 listing,
-                work: SearchWork::Filtered,
+                work: SearchWork::Filtered { capped },
             });
             cx.notify();
             return;
@@ -2807,6 +2806,34 @@ impl DirPane {
         window.focus(&self.focus_handle, cx);
     }
 
+    /// Replace the rows with everything under this directory matching
+    /// `query`, and say whether the cap cut it short.
+    ///
+    /// Falls back to the rows on screen when the pane holds no arrangement —
+    /// an archive that failed to read has none — so a search there filters
+    /// what is there rather than showing nothing.
+    fn filter_archive(&mut self, query: &str) -> bool {
+        let Location::Archive { archive, inside } = &self.dir else {
+            return false;
+        };
+        let Some(held) = self.held.as_ref().filter(|h| h.archive == *archive) else {
+            self.entries
+                .retain(|entry| fs::matches_filter(&entry.name, query));
+            return false;
+        };
+        let found =
+            crate::archive::search_in(&held.index, archive, inside, query, self.view.show_hidden);
+        self.entries = found.entries;
+        // Sorted, unlike the disk search, which leaves results in the order
+        // they arrive. That is right there and wrong here: results stream in
+        // over the life of a walk, so re-sorting would make rows jump under
+        // the cursor, where these are built whole in one pass. Leaving them
+        // unsorted would also make an archive the one place a column header
+        // does nothing.
+        fs::sort_entries(&mut self.entries, self.view.sort, self.view.folders_first);
+        found.capped
+    }
+
     /// Whether this pane holds an arrangement of the archive it is in.
     ///
     /// The archive is checked, not merely the presence of one: a pane that has
@@ -2832,7 +2859,8 @@ impl DirPane {
         match &search.work {
             // Nothing is still arriving, so there is no "searching…" to
             // report: only how many there were.
-            SearchWork::Filtered => Some(counted()),
+            SearchWork::Filtered { capped: true } => Some(format!("first {found} matches")),
+            SearchWork::Filtered { capped: false } => Some(counted()),
             // No handle yet means the debounce has not elapsed.
             SearchWork::Walk { handle: None, .. } => Some("searching…".to_string()),
             SearchWork::Walk {

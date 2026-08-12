@@ -410,6 +410,17 @@ impl Index {
         self.children.get(&key(inside)).map(Vec::as_slice)
     }
 
+    /// Every directory at or after `base`, in key order.
+    ///
+    /// The caller stops when the keys leave the prefix. Exposed as a range
+    /// rather than a filtered list so a search does not walk an archive's
+    /// every directory to find the handful under one of them.
+    pub fn children_from(&self, base: &str) -> impl Iterator<Item = (&str, &[Row])> {
+        self.children
+            .range(base.to_string()..)
+            .map(|(dir, rows)| (dir.as_str(), rows.as_slice()))
+    }
+
     pub fn listing(&self) -> &Listing {
         &self.listing
     }
@@ -734,6 +745,96 @@ pub fn spawn_read(archive: &Path, cancel: Cancel) -> Reading {
 /// Split out so that a reading still in progress can build rows from the
 /// members it has, which is what makes a tarball's listing appear while it is
 /// still being read rather than a minute later.
+/// What a search of an archive found.
+pub struct Found {
+    pub entries: Vec<crate::fs::DirEntry>,
+    /// Whether `RESULT_CAP` cut the answer short.
+    pub capped: bool,
+}
+
+/// Every row at or below `inside` whose name matches `query`.
+///
+/// The sibling of `rows_in`, and it works the same way for the same reasons:
+/// same shared `Arc<Path>`, same hidden-name rule, same exact folder totals
+/// off the arrangement.
+///
+/// It walks the *rows*, not the flat member list, and that is not an
+/// implementation detail. Three of twelve real zip files name no folders at
+/// all, so their directories exist only as rows the index synthesised — and a
+/// search that missed them would fail to find a folder the user can plainly
+/// see listed. The rows also carry the recursive totals, so a found folder has
+/// its size filled in without anything walking anything.
+pub fn search_in(
+    index: &Index,
+    archive: &Path,
+    inside: &Path,
+    query: &str,
+    show_hidden: bool,
+) -> Found {
+    let base = key(inside);
+    let shared: Arc<Path> = Arc::from(archive);
+    let mut entries = Vec::new();
+    let mut capped = false;
+
+    // Range-then-filter, and the two steps cannot be collapsed into one.
+    //
+    // `take_while` on the boundary-aware test would stop at the first key that
+    // is not under `base`, and there can be such a key *between* two that are:
+    // `!` is 0x21 and `/` is 0x2F, so a sibling directory called `ttf!x` sorts
+    // after `ttf` and before `ttf/sub`. Stopping there loses every nested
+    // result and looks exactly like an archive that has none.
+    'outer: for (dir, rows) in index.children_from(&base) {
+        if !dir.starts_with(&base) {
+            break;
+        }
+        let Some(relative_dir) = under_strip(dir, &base) else {
+            continue;
+        };
+        // Hidden directories are skipped whole rather than row by row, which
+        // is what the disk walker does: it never descends into one, so
+        // nothing inside is a result either.
+        if !show_hidden && relative_dir.split('/').any(|part| part.starts_with('.')) {
+            continue;
+        }
+        for row in rows {
+            if !show_hidden && row.name.starts_with('.') {
+                continue;
+            }
+            if !crate::fs::matches_filter(&row.name, query) {
+                continue;
+            }
+            if entries.len() >= crate::search::RESULT_CAP {
+                capped = true;
+                break 'outer;
+            }
+            // Built against the row's *own* directory, so `key` strips back to
+            // the member's real path and copy-out, drag-out and open all
+            // resolve it without knowing a search happened.
+            let mut entry = crate::fs::DirEntry::in_archive(
+                &shared,
+                Path::new(dir),
+                &row.name,
+                row.is_dir,
+                row.member,
+            );
+            entry.size = Some(row.size);
+            entry.modified = row.modified;
+            entry.mode = row.mode;
+            // Where it sits relative to the directory being searched, which is
+            // the label. `name` stays the row's own, because rename, git
+            // colouring, type-ahead and the sort all key on it.
+            entry.relative = Some(if relative_dir.is_empty() {
+                row.name.clone()
+            } else {
+                format!("{relative_dir}/{}", row.name)
+            });
+            entries.push(entry);
+        }
+    }
+
+    Found { entries, capped }
+}
+
 pub fn rows_in(index: &Index, archive: &Path, inside: &Path, show_hidden: bool) -> Option<Rows> {
     let rows = index.rows(inside)?;
     let shared: Arc<Path> = Arc::from(archive);
@@ -1235,5 +1336,175 @@ mod tests {
         assert!(touch(&mut cache, &stamp_for("/nowhere")).is_none());
         assert_eq!(cache.len(), 1);
         assert_eq!(cache[0].0.path, PathBuf::from("/a"));
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    fn file(path: &str, size: u64) -> Member {
+        Member {
+            path: path.to_string(),
+            is_dir: false,
+            link: None,
+            size,
+            modified: None,
+            mode: None,
+            readable: true,
+        }
+    }
+
+    fn zip() -> PathBuf {
+        PathBuf::from("/home/x/pack.zip")
+    }
+
+    fn built(members: Vec<Member>) -> Index {
+        Index::build(Listing {
+            members,
+            skipped: 0,
+        })
+    }
+
+    /// The labels a search produces, which is what a row shows.
+    fn labels(index: &Index, inside: &str, query: &str) -> Vec<String> {
+        search_in(index, &zip(), Path::new(inside), query, false)
+            .entries
+            .iter()
+            .map(|e| {
+                e.relative
+                    .clone()
+                    .expect("a result is labelled by where it sits")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn it_finds_members_at_every_depth_below_the_directory_searched() {
+        let index = built(vec![
+            file("ttf/Inter.ttf", 1),
+            file("ttf/sub/Mono.ttf", 2),
+            file("LICENSE", 3),
+        ]);
+        let mut found = labels(&index, "", "ttf");
+        found.sort();
+        assert_eq!(found, vec!["ttf", "ttf/Inter.ttf", "ttf/sub/Mono.ttf"]);
+    }
+
+    #[test]
+    fn a_result_keeps_its_own_name_and_is_labelled_by_its_path() {
+        // The contract every other part of the pane depends on: rename, git
+        // colouring, type-ahead and the sort all read `name`.
+        let index = built(vec![file("ttf/sub/Mono.ttf", 1)]);
+        let found = search_in(&index, &zip(), Path::new(""), "Mono", false);
+        assert_eq!(found.entries.len(), 1);
+        assert_eq!(found.entries[0].name, "Mono.ttf");
+        assert_eq!(
+            found.entries[0].relative.as_deref(),
+            Some("ttf/sub/Mono.ttf")
+        );
+    }
+
+    #[test]
+    fn every_result_keys_back_to_its_own_member() {
+        // The copy-out contract, tested where it can be: `selected_in_archive`
+        // recovers a member path by stripping the archive off the key, so a
+        // result built against the wrong directory would copy out the wrong
+        // thing — or nothing.
+        let index = built(vec![file("ttf/sub/Mono.ttf", 1), file("ttf/Inter.ttf", 2)]);
+        for entry in search_in(&index, &zip(), Path::new("ttf"), "ttf", false).entries {
+            let member = entry
+                .key()
+                .strip_prefix(zip())
+                .expect("a key is the archive with the member on the end")
+                .to_string_lossy()
+                .into_owned();
+            assert!(
+                index.listing().members.iter().any(|m| m.path == member) || member == "ttf/sub",
+                "{member} is not a member, nor a folder the index made"
+            );
+        }
+    }
+
+    #[test]
+    fn a_directory_the_archive_never_named_is_a_result_too() {
+        // Three of twelve real zips name no folders at all. Their folders are
+        // rows, they are listed, and a search that skipped them would miss
+        // something plainly on screen.
+        let index = built(vec![file("ttf/Inter.ttf", 1)]);
+        let found = search_in(&index, &zip(), Path::new(""), "ttf", false);
+        let folder = found
+            .entries
+            .iter()
+            .find(|e| e.is_dir)
+            .expect("the folder is a result");
+        assert_eq!(folder.name, "ttf");
+        assert_eq!(
+            folder.member().and_then(|m| m.index),
+            None,
+            "it belongs to no member, which is only a statement about provenance"
+        );
+        // And selecting it still copies out what is under it, because
+        // extraction matches by prefix rather than by member index.
+        assert_eq!(
+            members_under(index.listing(), &["ttf".to_string()]).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn nothing_outside_the_directory_searched_is_a_result() {
+        // `!` is 0x21 and `/` is 0x2F, so `ttf!x` sorts between `ttf` and
+        // `ttf/sub`. A scan that stopped at the first key not under `ttf`
+        // would stop there and lose everything nested, which looks exactly
+        // like an archive that has nothing nested.
+        let index = built(vec![
+            file("ttf/sub/Mono.ttf", 1),
+            file("ttf!x/Other.ttf", 2),
+            file("ttfx/Third.ttf", 3),
+        ]);
+        let found = labels(&index, "ttf", "ttf");
+        assert_eq!(
+            found,
+            vec!["sub/Mono.ttf"],
+            "only what is under ttf, and the nested hit is not lost"
+        );
+    }
+
+    #[test]
+    fn hidden_names_follow_the_pane_setting() {
+        let index = built(vec![
+            file(".env", 1),
+            file(".git/config", 2),
+            file("plain/config", 3),
+        ]);
+        let shown = search_in(&index, &zip(), Path::new(""), "config", false);
+        assert_eq!(
+            shown.entries.len(),
+            1,
+            "a hidden directory is not descended into, as on disk"
+        );
+        let all = search_in(&index, &zip(), Path::new(""), "config", true);
+        assert_eq!(all.entries.len(), 2);
+    }
+
+    #[test]
+    fn the_cap_stops_a_runaway_query() {
+        let many: Vec<Member> = (0..crate::search::RESULT_CAP + 500)
+            .map(|i| file(&format!("d/f{i:05}.bin"), 1))
+            .collect();
+        let found = search_in(&built(many), &zip(), Path::new(""), "f", false);
+        assert_eq!(found.entries.len(), crate::search::RESULT_CAP);
+        assert!(found.capped);
+    }
+
+    #[test]
+    fn a_folder_result_carries_the_total_the_index_already_knows() {
+        // So the Size column is filled the moment it appears, and nothing
+        // starts a walk to work out what an archive already stated.
+        let index = built(vec![file("ttf/a.ttf", 40), file("ttf/b.ttf", 60)]);
+        let found = search_in(&index, &zip(), Path::new(""), "ttf", false);
+        let folder = found.entries.iter().find(|e| e.is_dir).unwrap();
+        assert_eq!(folder.size, Some(100));
     }
 }

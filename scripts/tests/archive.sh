@@ -22,15 +22,37 @@ expect 'p[0]["sizes"][0] == "6.0 KB"' "the folder totals its subtree"
 expect 'p[0]["footer"] == "2 items · 6.1 KB"' "the footer is final at once"
 
 # --- searching inside an archive -----------------------------------------
-# There is no directory to walk, but the whole listing is already in memory,
-# so `ctrl-f` filters it in place: no walk, no debounce, and no way to end up
-# staring at a listing that stays empty forever the way an early version of
-# this did.
+# `ctrl-f` searches every member below this directory, the same as it does in
+# a real one. There is nothing to walk: the arrangement the read built knows
+# every member, so this is a pass over memory with no thread and no debounce.
+#
+# `ttf` matches at three depths — the folder, a file in it, and a file one
+# further down — which is what proves the search recurses rather than
+# filtering the rows on screen. `sub` is not a match: names are matched, not
+# paths, so a query does not drag in everything under a folder it happens to
+# name.
 key -M ctrl -P f -m ctrl
+# Settled rather than waited for: the field takes focus a frame after the key,
+# and there is nothing in the probe that says so — `searching` only becomes
+# true once there is a query, which is the thing being typed. Without this the
+# text can land on the listing instead, leaving an empty query that matches
+# everything and reads as a search that found too much.
+sleep 0.3
 key ttf
-wait_for 'p[0]["rows"] == ["ttf"]'
-expect 'p[0]["rows"] == ["ttf"]' "ctrl-f filters the archive listing in place"
-expect 'p[0]["footer"] == "1 match"' "and the footer counts the match"
+wait_for 'p[0]["rows"] == ["ttf", "ttf/Inter.ttf", "ttf/sub/Mono.ttf"]'
+expect 'p[0]["rows"] == ["ttf", "ttf/Inter.ttf", "ttf/sub/Mono.ttf"]' \
+    "ctrl-f finds members at every depth, labelled by where they sit"
+expect 'p[0]["footer"] == "3 matches"' "and the footer counts them"
+expect 'p[0]["counting"] == []' "a found folder already knows its own total"
+
+# One hit reads as one, not "1 matches".
+key -k BackSpace
+key -k BackSpace
+key -k BackSpace
+key Mono
+wait_for 'p[0]["rows"] == ["ttf/sub/Mono.ttf"]'
+expect 'p[0]["footer"] == "1 match"' "a single hit is singular"
+
 key -k Escape
 wait_for 'p[0]["rows"] == ["ttf", "LICENSE"]'
 expect 'p[0]["rows"] == ["ttf", "LICENSE"]' "escape puts the full listing back"
@@ -162,3 +184,44 @@ wait_for 'not p[0]["menu_open"]'
 # pasted there sorts first now, folders before files, not "bare.zip".
 key -k BackSpace
 wait_for 'p[0]["row_count"] == 10'
+
+# --- copying out a search result ------------------------------------------
+# The claim this pins: a search result copies out correctly with no change to
+# extraction at all. A row carries the archive's path with the member's on the
+# end, `selected_in_archive` strips the archive back off, and `extract` strips
+# the directory the row was found *from* — so a hit two levels down lands with
+# the structure below that directory and nothing above it.
+dbl "$(named fonts.zip)"
+wait_for 'p[0]["rows"] == ["ttf", "LICENSE"]'
+dbl "$(named ttf)"
+wait_for 'p[0]["dir"].endswith("/fonts.zip/ttf")'
+
+key -M ctrl -P f -m ctrl
+sleep 0.3
+key Mono
+wait_for 'p[0]["rows"] == ["sub/Mono.ttf"]'
+expect 'p[0]["rows"] == ["sub/Mono.ttf"]' "the nested hit is labelled from the directory searched"
+# Enter keeps the results and gives the listing back the keyboard. Without it
+# the arrow and the copy below go to the search field, where ctrl-c copies
+# text rather than files and the paste later does nothing at all.
+key -k Return
+key -k Down
+wait_for 'p[0]["cursor"] == 0'
+key -M ctrl -P c -m ctrl
+key -k Escape
+
+key -k BackSpace
+key -k BackSpace
+wait_for 'p[0]["row_count"] == 10'
+key -M ctrl -P v -m ctrl
+
+wait_for '"sub" in p[0]["rows"]' 20
+expect 'p[0]["row_count"] == 11' "the folder it was found in arrives, not the path down to it"
+if [ -f "$START_DIR/sub/Mono.ttf" ]; then
+    echo "  ok   and the member itself landed inside it"
+else
+    echo "  FAIL and the member itself landed inside it" >&2
+    echo "       $(find "$START_DIR/sub" 2>&1 | head -3)" >&2
+    FAILED=$((FAILED + 1))
+fi
+expect 'not any(r.startswith(".hoja-") for r in p[0]["rows"])' "with nothing left staged"
