@@ -312,10 +312,14 @@ There are eight suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
 builds and prints the path of:
 
 ```sh
-FIX=$(scripts/tests/setup-archives.sh)
-scripts/sway-harness.sh "$FIX" scripts/tests/archive.sh
-scripts/sway-harness.sh "$FIX" scripts/tests/tar.sh
+scripts/sway-harness.sh "$(scripts/tests/setup-archives.sh)" scripts/tests/archive.sh
+scripts/sway-harness.sh "$(scripts/tests/setup-archives.sh)" scripts/tests/tar.sh
 ```
+
+Rebuilt for each, not shared between them: `archive.sh` copies a folder out of
+an archive and leaves it in the fixture directory, which is the tenth row
+`tar.sh` does not expect. `setup-archives.sh` clears the directory before it
+builds, so calling it twice is the whole fix.
 
 `transfer.sh` needs `setup-transfer.sh`, and pauses a transfer by stopping it
 on a conflict first: four thousand files copy in about 170ms here, so a test

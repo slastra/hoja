@@ -183,15 +183,30 @@ struct ActiveSearch {
     /// Put back when the search ends. Held rather than re-read, since a second
     /// copy of a large directory is not free but a second `read_dir` is worse.
     listing: Vec<DirEntry>,
-    /// Dropping this stops the walk. Always `None` for an archive filter,
-    /// which has no walk to hold a handle to.
-    handle: Option<crate::search::Search>,
-    /// Dropping this stops the poll that drives `handle`. `None` for an
-    /// archive filter: it is done, synchronously, before `set_filter`
-    /// returns, so there is nothing left to poll. This is also what
-    /// `search_status` reads to tell the two apart, since both start out with
-    /// `handle: None` too.
-    poll: Option<Task<()>>,
+    work: SearchWork,
+}
+
+/// Which of the two kinds of search this is.
+///
+/// Stated rather than inferred. These used to be told apart by whether `poll`
+/// happened to be `None`, which is a fact about how one of them is
+/// implemented rather than about which one it is — and the next change to
+/// either would have quietly made it wrong.
+enum SearchWork {
+    /// Filtered from rows the pane already had. No walk, no thread, no
+    /// debounce: finished before `set_filter` returned.
+    Filtered,
+    /// A walk over real directories, arriving in batches.
+    Walk {
+        /// Dropping this stops the walk. `None` until the debounce elapses,
+        /// which is the only window in which this search has no walker.
+        handle: Option<crate::search::Search>,
+        /// Dropping this stops the poll that drives `handle`, which is the
+        /// whole of what it is for: nothing ever reads it, and holding it is
+        /// how a new query abandons the previous one rather than racing it.
+        #[allow(dead_code)]
+        poll: Task<()>,
+    },
 }
 
 /// What the address bar is being used for. Search reuses the same field
@@ -2338,8 +2353,7 @@ impl DirPane {
             self.search = Some(ActiveSearch {
                 query,
                 listing,
-                handle: None,
-                poll: None,
+                work: SearchWork::Filtered,
             });
             cx.notify();
             return;
@@ -2357,8 +2371,10 @@ impl DirPane {
                 .await;
             if this
                 .update(cx, |this, _| {
-                    if let Some(search) = this.search.as_mut() {
-                        search.handle = Some(crate::search::spawn(dir, spawn_query, show_hidden));
+                    if let Some(SearchWork::Walk { handle, .. }) =
+                        this.search.as_mut().map(|s| &mut s.work)
+                    {
+                        *handle = Some(crate::search::spawn(dir, spawn_query, show_hidden));
                     }
                 })
                 .is_err()
@@ -2370,7 +2386,11 @@ impl DirPane {
                     .timer(std::time::Duration::from_millis(60))
                     .await;
                 let keep_going = this.update(cx, |this, cx| {
-                    let Some(handle) = this.search.as_ref().and_then(|s| s.handle.as_ref()) else {
+                    let Some(SearchWork::Walk {
+                        handle: Some(handle),
+                        ..
+                    }) = this.search.as_ref().map(|s| &s.work)
+                    else {
                         return false;
                     };
                     let batch = handle.drain();
@@ -2402,8 +2422,7 @@ impl DirPane {
         self.search = Some(ActiveSearch {
             query,
             listing,
-            handle: None,
-            poll: Some(poll),
+            work: SearchWork::Walk { handle: None, poll },
         });
         cx.notify();
     }
@@ -2730,31 +2749,28 @@ impl DirPane {
     pub fn search_status(&self) -> Option<String> {
         let search = self.search.as_ref()?;
         let found = self.entries.len();
-        // An archive filter has no poll at all: it finished, synchronously,
-        // before `set_filter` returned, so there is no "searching…" state to
-        // report, only the count.
-        if search.poll.is_none() {
-            return Some(match found {
-                0 => "no matches".to_string(),
-                1 => "1 match".to_string(),
-                n => format!("{n} matches"),
-            });
-        }
-        // No handle yet means the debounce has not elapsed.
-        let Some(handle) = search.handle.as_ref() else {
-            return Some("searching…".to_string());
+        let counted = || match found {
+            0 => "no matches".to_string(),
+            1 => "1 match".to_string(),
+            n => format!("{n} matches"),
         };
-        Some(if !handle.is_done() {
-            format!("searching… {found}")
-        } else if handle.hit_cap() {
-            format!("first {found} matches")
-        } else {
-            match found {
-                0 => "no matches".to_string(),
-                1 => "1 match".to_string(),
-                n => format!("{n} matches"),
-            }
-        })
+        match &search.work {
+            // Nothing is still arriving, so there is no "searching…" to
+            // report: only how many there were.
+            SearchWork::Filtered => Some(counted()),
+            // No handle yet means the debounce has not elapsed.
+            SearchWork::Walk { handle: None, .. } => Some("searching…".to_string()),
+            SearchWork::Walk {
+                handle: Some(handle),
+                ..
+            } => Some(if !handle.is_done() {
+                format!("searching… {found}")
+            } else if handle.hit_cap() {
+                format!("first {found} matches")
+            } else {
+                counted()
+            }),
+        }
     }
 
     /// The line the footer actually shows.
