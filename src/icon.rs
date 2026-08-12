@@ -41,7 +41,11 @@ impl Icon {
 
         Self {
             source,
-            // 16px is the icons' native viewBox, so they rasterize without resampling.
+            // The size a row gives an icon. Lucide draws on a 24 grid, so the
+            // chrome icons are scaled down to it: an effective 1.33 stroke
+            // against the 1.2 of Zed's file-type icons, which are drawn at 16
+            // and land on whole pixels. Slightly heavier, and the price of the
+            // chrome being one set rather than two.
             size: px(16.),
             color,
         }

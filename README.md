@@ -435,7 +435,8 @@ the GPL-3.0-or-later license. This is why Hoja uses the GPL.
 
 The included assets have their own licenses:
 
-- The icons come from Lucide and Zed. The license is ISC. See
-  `assets/icons/LICENSES`.
+- The icons Hoja's own interface uses are Lucide, under the ISC license. The
+  file-type icons are Zed's set, which includes brand and language marks
+  belonging to their own projects. See `assets/icons/LICENSES`.
 - The Rosé Pine themes have the MIT license. See
   `assets/themes/rose-pine/LICENSE`.

@@ -7,9 +7,10 @@ use rust_embed::RustEmbed;
 /// Serves bundled assets to GPUI. `svg()` resolves its `.path(...)` through this, and
 /// `ThemeRegistry` uses `list()` to discover bundled themes.
 ///
-/// Icons under `assets/icons/file_icons/` are Lucide-derived and ISC licensed, bar
-/// the two drawn here; see `assets/icons/LICENSES`, which is embedded alongside them
-/// so the notice ships with any binary that includes the art.
+/// Icons under `assets/icons/file_icons/` come from two places: the ones the
+/// interface names are Lucide, and the rest are Zed's file-type set, some of which
+/// are brand marks under their own terms. See `assets/icons/LICENSES`, which is
+/// embedded alongside them so the notice ships with any binary that includes the art.
 #[derive(RustEmbed)]
 #[folder = "assets"]
 #[include = "icons/**/*"]

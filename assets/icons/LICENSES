@@ -10,9 +10,25 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 
 ---
 
-pause.svg and play.svg
+What is what
+------------
 
-These two are not Lucide's and not Zed's. They were drawn for hoja to match
-the house style of the icons beside them: a 16x16 viewBox, no fill, a 1.2
-stroke with round caps and joins, recoloured at render. They carry the
-licence of the project, GPL-3.0-or-later.
+The icons hoja's own interface uses are Lucide, taken from lucide-static
+1.26.0 and covered by the ISC licence above:
+
+  arrow_left, arrow_right, arrow_up, check, chevron_down, chevron_up,
+  house, magnifying_glass (Lucide's `search`), menu, pause, play,
+  warning (Lucide's `triangle-alert`)
+
+Two are renamed to the name hoja refers to them by; the file contents are
+unmodified.
+
+Everything else here is Zed's file-type icon set, reached through the
+`file_icons` crate rather than by name. Those are 16x16 and drawn on their
+own grid, and some of them are Lucide-derived in turn.
+
+A large part of that set is brand and language marks — the Go gopher, the
+Docker whale, the Rust logo, and so on. Those belong to their respective
+projects and are used here as file-type icons under whatever terms each
+project sets. They are not Lucide's, not Zed's, and not covered by the ISC
+licence above.
