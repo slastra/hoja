@@ -52,9 +52,13 @@ updates, and archive browsing that feels like working with ordinary folders.
   reflinks on supported filesystems, and `copy_file_range()` elsewhere with
   fallbacks. Sparse files, permissions, timestamps, extended attributes,
   symlinks, and hardlinks are preserved.
-- **Delete with undo.** Press `delete` to move files to the freedesktop
-  trash, then `ctrl-z` to restore them. Deletes are instant on the same
-  filesystem and remain compatible with other Linux file managers.
+- **Undo.** Press `ctrl-z` to take back the last thing you did, whether that
+  was a delete or a transfer. `delete` moves files to the freedesktop trash,
+  which is instant on the same filesystem and compatible with other Linux file
+  managers. Undoing a transfer removes what it copied and restores anything it
+  replaced. It checks first: a file edited since the transfer is left alone
+  and reported, and what it removes goes to the trash rather than being
+  deleted, so an undo can itself be undone.
 - **Drag and drop.** Drag files between panes, onto folders, or into other
   applications. Moves stay on one filesystem, copies cross filesystems, and
   modifier keys override the default behaviour.
@@ -65,6 +69,13 @@ updates, and archive browsing that feels like working with ordinary folders.
   columns keep everything from shifting while values change.
 - **Transfer errors.** Failed transfers stay in the progress list with a
   warning. Open the details to see every failed file and its error.
+- **Pause and resume.** Every transfer has a pause control, and
+  `ctrl-shift-space` stops or starts them all. A transfer pauses between
+  files, so one already in flight finishes first; the row says `pausing…`
+  until it has actually stopped.
+- **Interrupted transfers.** If Hoja is killed partway through a transfer, the
+  next start clears up the half-written files it left and offers to finish
+  what it had not done.
 - **Desktop notifications.** Long-running transfers notify you when they
   finish, and failures always generate a notification using the standard
   freedesktop notification service.
@@ -186,7 +197,7 @@ a selection of entries that are not next to each other.
 | :-- | :-- |
 | <kbd>F2</kbd> | Rename the selected entry |
 | <kbd>Delete</kbd> | Delete the selection |
-| <kbd>Ctrl</kbd> + <kbd>Z</kbd> | Undo the last delete |
+| <kbd>Ctrl</kbd> + <kbd>Z</kbd> | Undo the last delete or transfer |
 | <kbd>Ctrl</kbd> + <kbd>C</kbd> / <kbd>Ctrl</kbd> + <kbd>X</kbd> / <kbd>Ctrl</kbd> + <kbd>V</kbd> | Copy, cut, paste |
 
 #### Panes and view
@@ -202,6 +213,7 @@ because they are rare.
 | <kbd>Ctrl</kbd> + <kbd>W</kbd> | Close the active pane |
 | <kbd>Ctrl</kbd> + <kbd>H</kbd> | Show or hide hidden files |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd> | Dismiss finished transfers |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> | Pause or resume every transfer |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd> | Open the command palette |
 | <kbd>Ctrl</kbd> + <kbd>P</kbd> | Go to a place: home, a bookmark, or a drive |
 | <kbd>Ctrl</kbd> + <kbd>E</kbd> | In that list, eject the highlighted drive |
@@ -295,7 +307,7 @@ the window is, and everything after it is keystrokes sent somewhere unverified.
 An earlier version carried on, walked a pane up to the root of the filesystem
 and pressed paste there; nothing was written only because root is not writable.
 
-There are five suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
+There are eight suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
 `archive.sh` and `tar.sh` need fixtures, which `scripts/tests/setup-archives.sh`
 builds and prints the path of:
 
@@ -303,6 +315,27 @@ builds and prints the path of:
 FIX=$(scripts/tests/setup-archives.sh)
 scripts/sway-harness.sh "$FIX" scripts/tests/archive.sh
 scripts/sway-harness.sh "$FIX" scripts/tests/tar.sh
+```
+
+`transfer.sh` needs `setup-transfer.sh`, and pauses a transfer by stopping it
+on a conflict first: four thousand files copy in about 170ms here, so a test
+that raced one would lose.
+
+```sh
+XFER=$(scripts/tests/setup-transfer.sh)
+scripts/sway-harness.sh "$XFER" scripts/tests/transfer.sh
+```
+
+`crash-phase1.sh` and `crash-phase2.sh` are one test in two runs against one
+state directory. The harness kills the app when a script returns, which is the
+crash; `HOJA_TEST_KEEP_STATE=1` stops the second run wiping what the first
+left behind.
+
+```sh
+OUT=$(mktemp -d)
+scripts/sway-harness.sh "$XFER" scripts/tests/crash-phase1.sh "$OUT"
+HOJA_TEST_KEEP_STATE=1 \
+    scripts/sway-harness.sh "$XFER" scripts/tests/crash-phase2.sh "$OUT"
 ```
 
 `resort-while-reading.sh` and `interrupt-archive-read.sh` need a fixture of
@@ -322,6 +355,12 @@ so column resizing and drag-and-drop need a person. And it has no second
 application to drag from or paste into, so inbound drops and clipboard interop
 have to be tried in a real session.
 
+One thing to know if the nested window is sent to another workspace by a rule:
+give it `render_unfocused` too. A window nobody is looking at gets no frame
+callbacks, so the nested compositor paints nothing, hoja never renders past
+its first frame, and every assertion times out against a listing that stays
+empty.
+
 `scripts/x11-harness.sh` is kept but does not currently run: `Xvfb` offers no
 DRI3, gpui never gets a GPU context, and the window never opens. Testing the
 X11 backend needs a real X server.
@@ -331,6 +370,15 @@ X11 backend needs a real X server.
 The `hoja-transfer` crate contains the transfer engine. It is a standard
 Rust library with no UI dependencies. One worker thread does each job. The UI
 reads progress from atomic counters.
+
+Each job also records what it changed, in the form that reverses it, and hands
+that back when it finishes. The record stays small because a directory stands
+for its contents: copying into a name that held nothing records the directory
+and nothing beneath it, and a move within one filesystem is a single rename
+however large the tree. Per-file records appear only where a copy merged into
+a directory that already existed. Undoing a transfer is itself a job, so it
+gets the same progress bar, cancel button and error report as the transfer it
+is taking back.
 
 To run the engine tests:
 
@@ -349,8 +397,6 @@ HOJA_TEST_BTRFS=/tmp/hoja-btrfs/mnt cargo test -p hoja-transfer -- --ignored
 
 Planned and not complete:
 
-- **A job journal.** Pause, resume and undo a transfer, and survive a crash
-  partway through one.
 - **Searching inside an archive**, which the recursive search does not do yet.
   The whole member list is already in memory, so filtering it is cheaper than
   searching a directory.

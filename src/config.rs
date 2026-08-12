@@ -7,7 +7,11 @@
 //!   or lose an edit made while it was running.
 //! - `~/.local/state/hoja/`: **hoja** writes this. Column widths, window size,
 //!   and the view settings you last toggled. Things nobody would author by
-//!   hand, which is exactly what XDG_STATE_HOME is for.
+//!   hand, which is exactly what XDG_STATE_HOME is for. Also `jobs/`, one
+//!   small file per transfer while it runs, which is how an interrupted one
+//!   is found and offered back at the next start: see `crate::journal`. Its
+//!   own directory rather than a key here, because a record has exactly one
+//!   writer and wants none of the read-modify-write below.
 //! - `~/.local/share/hoja/`, the command palette's recency counts.
 //!
 //! Settings seed, state remembers. A new install takes its defaults from
