@@ -8,7 +8,7 @@ use gpui::{
 };
 use hoja_transfer::{
     ConflictDecision, Event as JobEvent, JobHandle, JobId, JobPolicy, JobSpec, JobSummary,
-    Operation, Outcome, Phase, TrashedItem,
+    Operation, Outcome, Phase, TrashedItem, Undone,
 };
 use theme::ActiveTheme;
 
@@ -162,6 +162,20 @@ fn superseded(external: &Option<ClipboardSet>, baseline: &Option<ClipboardSet>) 
     }
 }
 
+/// One thing ctrl-z would take back.
+///
+/// Deletes and transfers in one stack, so ctrl-z means "undo the last thing I
+/// did" rather than "undo the last delete, ignoring the paste in between".
+enum UndoEntry {
+    /// One `Delete` press. Restored in place, since a batch is a handful of
+    /// renames out of the trash.
+    Deleted(Vec<TrashedItem>),
+    /// One transfer, by what it recorded. Given to `spawn_undo`, which gets a
+    /// row of its own: taking back a copy of two hundred thousand files needs
+    /// a progress bar as much as making it did.
+    Transfer { label: String, records: Vec<Undone> },
+}
+
 /// A running or finished transfer job as the UI tracks it.
 struct JobView {
     handle: JobHandle,
@@ -186,6 +200,11 @@ struct JobView {
     /// them. There are only ever a handful of distinct reasons, one per stage
     /// per errno, so nothing here needs a cap of its own.
     reasons: HashMap<String, usize>,
+    /// Set when this row is undoing a transfer rather than making one, and
+    /// holding the label of the one it is taking back. What it could not
+    /// reverse goes back on the stack under that name, so a second ctrl-z
+    /// retries it.
+    undo_of: Option<String>,
     /// Whether the user has asked this job to stop, which is not whether it
     /// has: the worker parks between files, and `progress().paused` is what
     /// says it got there. Holding the request separately is what lets the gap
@@ -495,9 +514,12 @@ pub struct Workspace {
     /// interoperate with other applications.
     clipboard: Option<Stash>,
     jobs: Vec<JobView>,
-    /// Deletions, newest last. Each entry is one `Delete` press, so undo
-    /// restores a multi-selection in one go.
-    undo_stack: Vec<Vec<TrashedItem>>,
+    /// What ctrl-z would take back, newest last.
+    ///
+    /// One entry per gesture rather than per file: one `Delete` press restores
+    /// a whole multi-selection, and one paste is taken back in one go however
+    /// many files it moved.
+    undo_stack: Vec<UndoEntry>,
     notice: Option<Notice>,
     /// One slot, so opening either closes the other. Two fields let ctrl-p on
     /// top of the palette leave both open and both rendered.
@@ -1145,6 +1167,7 @@ impl Workspace {
                     errors: 0,
                     failures: Vec::new(),
                     reasons: HashMap::new(),
+                    undo_of: None,
                     pause_requested: false,
                     started: std::time::Instant::now(),
                     rate: None,
@@ -1194,6 +1217,9 @@ impl Workspace {
         let mut finished_dirs: Vec<PathBuf> = Vec::new();
         let mut finished_jobs: Vec<JobId> = Vec::new();
         let mut announce: Vec<(String, PathBuf, std::time::Duration, JobSummary)> = Vec::new();
+        // Collected rather than pushed in place: the loop below holds a
+        // mutable borrow of `self.jobs`, and the stack lives beside it.
+        let mut remember: Vec<UndoEntry> = Vec::new();
 
         let now = std::time::Instant::now();
         for job in &mut self.jobs {
@@ -1262,6 +1288,24 @@ impl Workspace {
                             .collect();
                         finished_dirs.push(job.dest_dir.clone());
                         finished_dirs.extend(job.src_parents.iter().cloned());
+
+                        // What ctrl-z would take back next. An undo hands back
+                        // what it could *not* reverse, under the name of the
+                        // transfer it was undoing, so a second press retries
+                        // exactly those; a transfer hands back what it did.
+                        if !summary.undone.is_empty() {
+                            remember.push(match &job.undo_of {
+                                Some(label) => UndoEntry::Transfer {
+                                    label: label.clone(),
+                                    records: summary.undone.clone(),
+                                },
+                                None => UndoEntry::Transfer {
+                                    label: job.handle.label().to_string(),
+                                    records: summary.undone.clone(),
+                                },
+                            });
+                        }
+
                         announce.push((
                             job.handle.label().to_string(),
                             job.dest_dir.clone(),
@@ -1271,6 +1315,10 @@ impl Workspace {
                     }
                 }
             }
+        }
+
+        for entry in remember {
+            self.remember_undo(entry);
         }
 
         // Clean finished jobs disappear on their own; failed ones persist until
@@ -1424,10 +1472,7 @@ impl Workspace {
                     let names: Vec<PathBuf> =
                         trashed.iter().map(|item| item.original.clone()).collect();
                     pane.update(cx, |pane, cx| pane.select_after_removal(&names, cx));
-                    this.undo_stack.push(trashed);
-                    if this.undo_stack.len() > UNDO_DEPTH {
-                        this.undo_stack.remove(0);
-                    }
+                    this.remember_undo(UndoEntry::Deleted(trashed));
                 }
                 this.set_notice(delete_failure_notice(&failures), cx);
                 this.refresh_dirs(&parents, cx);
@@ -1436,12 +1481,91 @@ impl Workspace {
         .detach();
     }
 
-    /// Put the most recent deletion back.
-    fn undo(&mut self, _: &Undo, cx: &mut Context<Self>) {
-        let Some(batch) = self.undo_stack.pop() else {
+    /// Push something onto the undo stack, oldest off the end.
+    fn remember_undo(&mut self, entry: UndoEntry) {
+        self.undo_stack.push(entry);
+        if self.undo_stack.len() > UNDO_DEPTH {
+            self.undo_stack.remove(0);
+        }
+    }
+
+    /// Take back the last thing that was done.
+    fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
+        // Popped before the work starts, not after it finishes, so a second
+        // press walks a second entry back rather than racing the first.
+        let Some(entry) = self.undo_stack.pop() else {
             self.set_notice(Some(Notice::Info("Nothing to undo".to_string())), cx);
             return;
         };
+        match entry {
+            UndoEntry::Deleted(batch) => self.undo_delete(batch, cx),
+            UndoEntry::Transfer { label, records } => {
+                self.undo_transfer(label, records, window, cx)
+            }
+        }
+    }
+
+    /// Take a transfer back, as a job of its own.
+    fn undo_transfer(
+        &mut self,
+        label: String,
+        records: Vec<Undone>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Every directory the records touch, so the panes showing them refresh
+        // when it finishes. Both ends: a move put things somewhere and took
+        // them from somewhere else.
+        let mut touched: Vec<PathBuf> = Vec::new();
+        for record in &records {
+            match record {
+                Undone::Renamed { from, to, .. } => {
+                    touched.push(from.clone());
+                    touched.push(to.clone());
+                }
+                Undone::Created { path, from, .. } => {
+                    touched.push(path.clone());
+                    touched.extend(from.clone());
+                }
+                Undone::CreatedDir(path) | Undone::Lost(path) => touched.push(path.clone()),
+                Undone::Displaced(item) => touched.push(item.original.clone()),
+            }
+        }
+        let parents = parent_dirs(&touched);
+
+        match hoja_transfer::spawn_undo(label.clone(), records) {
+            Ok(handle) => {
+                self.jobs.push(JobView {
+                    handle,
+                    dest_dir: parents.first().cloned().unwrap_or_default(),
+                    src_parents: parents,
+                    staging: None,
+                    done: None,
+                    errors: 0,
+                    failures: Vec::new(),
+                    reasons: HashMap::new(),
+                    undo_of: Some(label),
+                    pause_requested: false,
+                    started: std::time::Instant::now(),
+                    rate: None,
+                    last_sample: (std::time::Instant::now(), 0),
+                });
+                self.ensure_polling(window, cx);
+                cx.notify();
+            }
+            Err(err) => {
+                // The records go back: nothing was taken back, so the entry is
+                // still owed.
+                self.set_notice(
+                    Some(Notice::Problem(format!("Could not undo {label}: {err}"))),
+                    cx,
+                );
+            }
+        }
+    }
+
+    /// Put the most recent deletion back.
+    fn undo_delete(&mut self, batch: Vec<TrashedItem>, cx: &mut Context<Self>) {
         let parents = parent_dirs(&batch.iter().map(|i| i.original.clone()).collect::<Vec<_>>());
 
         cx.spawn(async move |this, cx| {
@@ -1467,8 +1591,9 @@ impl Workspace {
                         .first()
                         .map(|(item, err)| (item.original.clone(), err.to_string()))
                         .unwrap();
-                    this.undo_stack
-                        .push(failures.into_iter().map(|(item, _)| item).collect());
+                    this.remember_undo(UndoEntry::Deleted(
+                        failures.into_iter().map(|(item, _)| item).collect(),
+                    ));
                     this.set_notice(
                         Some(Notice::Problem(format!(
                             "Could not restore {}: {first_err}",
@@ -2490,7 +2615,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::pause_jobs))
             .on_action(cx.listener(Self::new_folder))
             .on_action(cx.listener(|this, action, _, cx| this.delete(action, cx)))
-            .on_action(cx.listener(|this, action, _, cx| this.undo(action, cx)))
+            .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::toggle_palette))
             .on_action(cx.listener(Self::toggle_places))
             .child(self.center.render(&self.active_pane, window, cx))

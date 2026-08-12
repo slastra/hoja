@@ -60,3 +60,26 @@ expect 'p[0]["rows"] == ["src"]' "the copy finished into the folder that was alr
 # Partials are hidden while they exist and gone afterwards either way, so a
 # row starting with the prefix means one was orphaned.
 expect 'not any(r.startswith(".hoja-") for r in p[0]["rows"])' "and nothing is left partial"
+
+# --- undo ----------------------------------------------------------------
+# The copy is on the undo stack, and ctrl-z takes it back. It runs as a job of
+# its own, so a clean one leaving the strip is what finishing looks like.
+#
+# The `src` row stays: this paste *merged* into a folder that was already
+# there, so the job never created it and undo has no business removing it.
+# What undo owes is everything the job added, and the one file it replaced.
+expect 'd["undo_depth"] == 1' "the transfer is on the undo stack"
+key -M ctrl -P z -m ctrl
+wait_for 'len(d["jobs"]) == 1' 20
+wait_for 'len(d["jobs"]) == 0' 120
+expect 'd["undo_depth"] == 0' "and taking it back empties the stack"
+
+left=$(find "$START_DIR/dst" -type f | wc -l)
+was=$(cat "$START_DIR/dst/src/d00/f0000.bin" 2>/dev/null)
+if [ "$left" = "1" ] && [ "$was" = "older" ]; then
+    echo "  ok   the destination is exactly as it was before the paste"
+else
+    echo "  FAIL the destination is exactly as it was before the paste" >&2
+    echo "       $left file(s) left, the one that was replaced reads '$was'" >&2
+    FAILED=$((FAILED + 1))
+fi

@@ -24,6 +24,6 @@ pub use events::{
     ConflictChoice, ConflictDecision, Event, JobSummary, Operation, Outcome, Stage, TierStats,
     TransferError, Undone,
 };
-pub use job::{JobHandle, JobId, JobPolicy, JobSpec, Phase, Progress, spawn_job};
+pub use job::{JobHandle, JobId, JobPolicy, JobSpec, Phase, Progress, spawn_job, spawn_undo};
 pub use sys::{is_partial_name, partial_path, rename_no_replace, same_filesystem, stem_end};
 pub use trash::{TrashDir, TrashedItem, restore, trash};

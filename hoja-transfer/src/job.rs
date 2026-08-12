@@ -268,6 +268,62 @@ pub fn spawn_job(spec: JobSpec) -> std::io::Result<JobHandle> {
     })
 }
 
+/// Put a transfer back, and report progress the same way it did.
+///
+/// A `JobHandle` like any other, deliberately: the strip, the failure report,
+/// the desktop notification and the polling loop all work on one already, and
+/// undoing two hundred thousand files is exactly the kind of thing that needs
+/// a progress bar and a cancel button. `label` is the transfer's, so the row
+/// says which one is being taken back.
+///
+/// The summary's `undone` carries what it could *not* reverse rather than what
+/// it did — a file changed since, or one whose previous contents were never
+/// kept — so the caller can put those back on its undo stack and let a second
+/// press try again, which is what the delete undo already does.
+pub fn spawn_undo(label: String, records: Vec<Undone>) -> std::io::Result<JobHandle> {
+    let id = JobId(NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed));
+    let progress = Arc::new(Progress::default());
+    let cancel = Arc::new(AtomicBool::new(false));
+    let pause = Arc::new(AtomicBool::new(false));
+    let (events_tx, events_rx) = mpsc::channel();
+
+    // A spec only so `Worker` can be built: nothing here walks a source or
+    // resolves a destination. The conflict policy matters, though — the
+    // copy-back of a cross-filesystem move goes through the same ladder as a
+    // forward one, and there is nobody to ask.
+    let spec = JobSpec {
+        op: Operation::Move,
+        sources: Vec::new(),
+        dest_dir: PathBuf::new(),
+        policy: JobPolicy {
+            conflict: Some(ConflictChoice::Skip),
+            abort_on_first_error: false,
+        },
+    };
+
+    let thread = std::thread::Builder::new()
+        .name(format!("hoja-undo-{}", id.0))
+        .spawn({
+            let progress = progress.clone();
+            let cancel = cancel.clone();
+            let pause = pause.clone();
+            move || {
+                let mut worker = Worker::new(spec, progress, events_tx, cancel, pause);
+                worker.run_undo(records);
+            }
+        })?;
+
+    Ok(JobHandle {
+        id,
+        label: format!("Undoing {label}"),
+        progress,
+        events: events_rx,
+        cancel,
+        pause,
+        thread: Some(thread),
+    })
+}
+
 // ---------------------------------------------------------------------------
 
 /// Per-file unwinding: an error queues and the walk continues; Cancelled and
@@ -532,6 +588,242 @@ impl Worker {
             undoable: self.undoable,
         };
         let _ = self.events.send(Event::Done(summary));
+    }
+
+    /// Walk the log backwards, reversing what it can.
+    ///
+    /// Backwards because the records of one overwrite are the old file
+    /// displaced and then the new one created, and putting the old one back
+    /// has to happen after the new one is out of the way — `restore` refuses
+    /// to clobber, so the other order would simply fail.
+    fn run_undo(&mut self, records: Vec<Undone>) {
+        self.progress
+            .files_total
+            .store(records.len() as u64, Ordering::Relaxed);
+        // Nothing to walk: the denominator is known before the first step, so
+        // the bar is real from the start.
+        self.progress.walk_complete.store(true, Ordering::Relaxed);
+        self.progress.set_phase(Phase::Transferring);
+
+        let mut cancelled = false;
+        let mut outstanding = Vec::new();
+        for record in records.into_iter().rev() {
+            if self.check_pause_cancel() {
+                cancelled = true;
+                outstanding.push(record);
+                break;
+            }
+            if !self.undo_one(&record) {
+                outstanding.push(record);
+            }
+            self.progress.files_done.fetch_add(1, Ordering::Relaxed);
+        }
+
+        self.progress.set_phase(Phase::Finished);
+        // Back into the order they were recorded in, so what goes onto the
+        // stack can be replayed by a second press exactly as this one was.
+        outstanding.reverse();
+        let summary = JobSummary {
+            outcome: if cancelled {
+                Outcome::Cancelled
+            } else if self.errors.is_empty() {
+                Outcome::Completed
+            } else {
+                Outcome::CompletedWithErrors
+            },
+            errors: std::mem::take(&mut self.errors),
+            files_copied: self.files_copied,
+            files_skipped: self.files_skipped,
+            bytes_copied: self.progress.bytes_done.load(Ordering::Relaxed),
+            stats: self.stats,
+            undone: outstanding,
+            undoable: false,
+        };
+        let _ = self.events.send(Event::Done(summary));
+    }
+
+    /// Reverse one record. `false` means it is still outstanding.
+    fn undo_one(&mut self, record: &Undone) -> bool {
+        match record {
+            Undone::Displaced(item) => match crate::trash::restore(item) {
+                Ok(()) => {
+                    self.files_copied += 1;
+                    true
+                }
+                Err(err) => {
+                    self.queue_error(&item.original, Stage::Rename, err);
+                    false
+                }
+            },
+            Undone::Lost(path) => {
+                self.queue_error(
+                    path,
+                    Stage::Write,
+                    std::io::Error::other(
+                        "this was replaced on a filesystem with no trash, so what was here was not kept",
+                    ),
+                );
+                false
+            }
+            Undone::Renamed { from, to, dev, ino } => {
+                if !self.still_the_same(to, *dev, *ino) {
+                    return false;
+                }
+                match sys::rename_no_replace(to, from) {
+                    Ok(()) => {
+                        self.stats.renames += 1;
+                        self.files_copied += 1;
+                        true
+                    }
+                    Err(err) => {
+                        self.queue_error(to, Stage::Rename, err);
+                        false
+                    }
+                }
+            }
+            Undone::CreatedDir(path) => self.take_back(path, None),
+            Undone::Created {
+                path,
+                from,
+                dev,
+                ino,
+                len,
+                mtime,
+            } => {
+                let Ok(meta) = std::fs::symlink_metadata(path) else {
+                    // Already gone. Nothing to take back, and nothing wrong.
+                    return true;
+                };
+                if meta.dev() != *dev || meta.ino() != *ino {
+                    self.queue_error(
+                        path,
+                        Stage::Write,
+                        std::io::Error::other("something else is here now"),
+                    );
+                    return false;
+                }
+                if meta.len() != *len || meta.modified().ok() != *mtime {
+                    self.queue_error(
+                        path,
+                        Stage::Write,
+                        std::io::Error::other("this has been edited since the transfer"),
+                    );
+                    return false;
+                }
+                self.take_back(path, from.as_deref())
+            }
+        }
+    }
+
+    /// Whether `path` is still the thing the record was written about.
+    fn still_the_same(&mut self, path: &Path, dev: u64, ino: u64) -> bool {
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.dev() == dev && meta.ino() == ino => true,
+            Ok(_) => {
+                self.queue_error(
+                    path,
+                    Stage::Write,
+                    std::io::Error::other("something else is here now"),
+                );
+                false
+            }
+            Err(err) => {
+                self.queue_error(path, Stage::Walk, err);
+                false
+            }
+        }
+    }
+
+    /// Remove something this job's transfer put here, or move it back where it
+    /// came from.
+    ///
+    /// `home` is set for a file whose source was deleted after it landed — a
+    /// move across filesystems — and then this is that move in reverse, at the
+    /// price it was bought for. Otherwise the source is still where it was and
+    /// taking the copy away is the whole of it.
+    ///
+    /// Taking it away means the trash, not `unlink`. Undo is a guess about
+    /// what someone wanted, and a guess that destroys files is one they cannot
+    /// take back.
+    fn take_back(&mut self, path: &Path, home: Option<&Path>) -> bool {
+        if let Some(home) = home {
+            match sys::rename_no_replace(path, home) {
+                Ok(()) => {
+                    self.stats.renames += 1;
+                    self.files_copied += 1;
+                    return true;
+                }
+                Err(err) if err.raw_os_error() == Some(rustix::io::Errno::XDEV.raw_os_error()) => {
+                    // What it was: a copy across a boundary and then a delete.
+                    // Reversing it is the same again the other way, through
+                    // the same ladder, which is why this is a Worker at all.
+                    let Ok(meta) = std::fs::symlink_metadata(path) else {
+                        return true;
+                    };
+                    return matches!(
+                        self.copy_file_inner(path, home, &meta, true, false),
+                        Step::Ok
+                    );
+                }
+                Err(err) => {
+                    self.queue_error(path, Stage::Rename, err);
+                    return false;
+                }
+            }
+        }
+
+        if self.trash_dir.is_none() {
+            self.trash_dir = Some(TrashDir::for_path(path).ok());
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let start = self.trash_names.get(&name).copied().unwrap_or(1);
+        let put = self
+            .trash_dir
+            .as_ref()
+            .and_then(Option::as_ref)
+            .map(|bin| bin.put(path, start));
+        match put {
+            Some(Ok((_, attempt))) => {
+                self.trash_names.insert(name, attempt);
+                self.files_copied += 1;
+                true
+            }
+            Some(Err(err)) => {
+                self.queue_error(path, Stage::Rename, err);
+                false
+            }
+            None => {
+                // Same escape hatch as the overwrite it is undoing: nowhere
+                // here can hold a trash, and refusing would leave the copy in
+                // place and call the undo done.
+                if !self.warned_no_trash {
+                    self.warned_no_trash = true;
+                    self.warn(
+                        path,
+                        "nothing here can hold a trash, so this was removed rather than binned"
+                            .to_string(),
+                    );
+                }
+                let removed = if path.is_dir() {
+                    std::fs::remove_dir_all(path)
+                } else {
+                    std::fs::remove_file(path)
+                };
+                match removed {
+                    Ok(()) => {
+                        self.files_copied += 1;
+                        true
+                    }
+                    Err(err) => {
+                        self.queue_error(path, Stage::DeleteSource, err);
+                        false
+                    }
+                }
+            }
+        }
     }
 
     fn check_pause_cancel(&self) -> bool {
