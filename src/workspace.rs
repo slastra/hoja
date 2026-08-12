@@ -45,6 +45,7 @@ actions!(
         Cut,
         Paste,
         DismissJobs,
+        PauseJobs,
         NewFolder,
         Delete,
         Undo,
@@ -185,6 +186,11 @@ struct JobView {
     /// them. There are only ever a handful of distinct reasons, one per stage
     /// per errno, so nothing here needs a cap of its own.
     reasons: HashMap<String, usize>,
+    /// Whether the user has asked this job to stop, which is not whether it
+    /// has: the worker parks between files, and `progress().paused` is what
+    /// says it got there. Holding the request separately is what lets the gap
+    /// between the two read as "pausing…" rather than as nothing happening.
+    pause_requested: bool,
     /// When the transfer started, so a job short enough to have been watched
     /// does not raise a notification about it: see `notifications::NOTIFY_AFTER`.
     started: std::time::Instant,
@@ -294,6 +300,12 @@ const TOTAL_W: f32 = 68.;
 const CHAR_W: f32 = 7.3;
 /// The size phrase: transferred, the slash, and the total.
 const SIZE_W: f32 = VALUE_W + SIZE_UNIT_W + SEP_W + TOTAL_W + TIGHT_GAP * 3.;
+/// The pause toggle's cell: a 16px icon and the padding either side of it.
+///
+/// Reserved whether or not there is a control in it. A finished job has
+/// nothing to pause, and letting the button vanish would slide the ✕ leftwards
+/// at the moment someone is reaching for it.
+const PAUSE_W: f32 = 24.;
 /// Reserved for the failure badge, which is wider the more files failed.
 /// Holds the icon, a gap, and "2,619 failed", a five-figure count would
 /// overflow it, and a job that fails ten thousand times has said enough.
@@ -344,7 +356,19 @@ fn transfer_metrics(done: u64, total: u64, walk_complete: bool, rate: Option<f64
 
 impl JobView {
     /// Fold the current byte count into the rate estimate.
-    fn sample(&mut self, now: std::time::Instant, bytes: u64) {
+    ///
+    /// A parked job carries the sample forward without folding it. The bytes
+    /// have not moved because the worker has stopped, and folding those
+    /// intervals decays the reading towards zero, which takes the time
+    /// remaining with it: `transfer_metrics` shows none below 1 B/s. Merely
+    /// *skipping* the fold would be worse than either, since the next interval
+    /// would then span the whole pause and land one enormous zero-rate sample
+    /// on resume.
+    fn sample(&mut self, now: std::time::Instant, bytes: u64, parked: bool) {
+        if parked {
+            self.last_sample = (now, bytes);
+            return;
+        }
         let (then, before) = self.last_sample;
         let secs = now.duration_since(then).as_secs_f64();
         let folded = fold_rate(self.rate, bytes.saturating_sub(before), secs);
@@ -352,6 +376,105 @@ impl JobView {
             self.last_sample = (now, bytes);
         }
         self.rate = folded;
+    }
+
+    /// How far along, from 0 to 1.
+    ///
+    /// Zero until the walk has settled a denominator, because a bar that ran
+    /// forward and then jumped back when the total grew would be worse than
+    /// one that waited.
+    fn fraction(&self) -> f32 {
+        use std::sync::atomic::Ordering::Relaxed;
+        let progress = self.handle.progress();
+        let total = progress.bytes_total.load(Relaxed);
+        if progress.walk_complete.load(Relaxed) && total > 0 {
+            let done = progress.bytes_done.load(Relaxed);
+            return (done as f32 / total as f32).clamp(0., 1.);
+        }
+        if self.done.is_some() { 1. } else { 0. }
+    }
+
+    /// The same, as a whole percent. See `probe::JobProbe::percent` for why
+    /// the probe rounds rather than carrying the bytes.
+    fn percent(&self) -> u8 {
+        (self.fraction() * 100.).round() as u8
+    }
+
+    /// Ask the worker to stop or carry on, and remember which was asked.
+    fn set_paused(&mut self, paused: bool) {
+        self.pause_requested = paused;
+        self.handle.set_paused(paused);
+    }
+
+    /// What this job is doing.
+    fn state(&self) -> JobState {
+        match self.done {
+            Some(Outcome::Cancelled) => return JobState::Cancelled,
+            Some(_) => return JobState::Done,
+            None => {}
+        }
+        let progress = self.handle.progress();
+        // Parked beats requested, and both beat the phase: a job can be
+        // stopped while scanning as easily as while transferring, and it
+        // resumes into whichever it left.
+        if progress.paused.load(std::sync::atomic::Ordering::Relaxed) {
+            return JobState::Paused;
+        }
+        if self.pause_requested {
+            return JobState::Pausing;
+        }
+        match Phase::from_u8(progress.phase.load(std::sync::atomic::Ordering::Relaxed)) {
+            Phase::Scanning => JobState::Scanning,
+            Phase::AwaitingConflict => JobState::Conflict,
+            Phase::Flushing => JobState::Flushing,
+            _ => JobState::Running,
+        }
+    }
+}
+
+/// What a job row is saying.
+///
+/// One value drives both the strip and the probe, so a test cannot pass
+/// against a probe that reports something the row does not show.
+///
+/// `Pausing` and `Paused` are two states rather than one because pause is
+/// honoured between files: a 4 GB file already in flight keeps copying after
+/// the button is pressed, and a row reading "paused" over a bar that is
+/// visibly still moving would be lying about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JobState {
+    Scanning,
+    Running,
+    Pausing,
+    Paused,
+    Conflict,
+    Flushing,
+    Done,
+    Cancelled,
+}
+
+impl JobState {
+    /// The word the probe carries, and so the word a test asserts on.
+    fn name(self) -> &'static str {
+        match self {
+            JobState::Scanning => "scanning",
+            JobState::Running => "running",
+            JobState::Pausing => "pausing",
+            JobState::Paused => "paused",
+            JobState::Conflict => "conflict",
+            JobState::Flushing => "flushing",
+            JobState::Done => "done",
+            JobState::Cancelled => "cancelled",
+        }
+    }
+
+    /// Whether there is still a worker behind this row to pause or cancel.
+    fn live(self) -> bool {
+        !matches!(self, JobState::Done | JobState::Cancelled)
+    }
+
+    fn parked_or_parking(self) -> bool {
+        matches!(self, JobState::Paused | JobState::Pausing)
     }
 }
 
@@ -1022,6 +1145,7 @@ impl Workspace {
                     errors: 0,
                     failures: Vec::new(),
                     reasons: HashMap::new(),
+                    pause_requested: false,
                     started: std::time::Instant::now(),
                     rate: None,
                     last_sample: (std::time::Instant::now(), 0),
@@ -1075,12 +1199,16 @@ impl Workspace {
         for job in &mut self.jobs {
             let job_id = job.handle.id();
             if job.done.is_none() {
-                let bytes = job
-                    .handle
-                    .progress()
-                    .bytes_done
-                    .load(std::sync::atomic::Ordering::Relaxed);
-                job.sample(now, bytes);
+                let (bytes, parked) = {
+                    let progress = job.handle.progress();
+                    (
+                        progress
+                            .bytes_done
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                        progress.paused.load(std::sync::atomic::Ordering::Relaxed),
+                    )
+                };
+                job.sample(now, bytes, parked);
             }
             while let Some(event) = job.handle.try_recv_event() {
                 match event {
@@ -1782,8 +1910,11 @@ impl Workspace {
                 label: job.handle.label().to_string(),
                 done: job.done.is_some(),
                 errors: job.errors,
+                state: job.state().name(),
+                percent: job.percent(),
             })
             .collect();
+        let undo_depth = self.undo_stack.len();
         // `conflict_dialog` and `open_prompt` sit outside `Modal` (see its own
         // doc comment), so a test that needs to know one is up reads it from
         // here rather than from a field that only ever answers for the three
@@ -1808,6 +1939,7 @@ impl Workspace {
                 jobs,
                 modal,
                 notice,
+                undo_depth,
                 revision: 0, // `write` owns this
             });
         });
@@ -1845,6 +1977,28 @@ impl Workspace {
         self.jobs.retain(|job| job.done.is_none());
         self.pending_conflicts
             .retain(|pending| !dropped.contains(&pending.job));
+        cx.notify();
+    }
+
+    /// Stop every running transfer, or start them all again.
+    ///
+    /// One key for the lot rather than one per row, because the row a key would
+    /// have to mean is whichever you were looking at, and the strip has no
+    /// selection to say which that is. The toggle on each row is how a single
+    /// job is answered.
+    ///
+    /// The sense is taken from whether anything is still running: with one job
+    /// paused and one not, this pauses the second rather than swapping them.
+    fn pause_jobs(&mut self, _: &PauseJobs, _window: &mut Window, cx: &mut Context<Self>) {
+        let running = self
+            .jobs
+            .iter()
+            .any(|job| job.done.is_none() && !job.pause_requested);
+        for job in &mut self.jobs {
+            if job.done.is_none() {
+                job.set_paused(running);
+            }
+        }
         cx.notify();
     }
 
@@ -1891,18 +2045,23 @@ impl Workspace {
                 let walk_complete = progress
                     .walk_complete
                     .load(std::sync::atomic::Ordering::Relaxed);
-                let phase =
-                    Phase::from_u8(progress.phase.load(std::sync::atomic::Ordering::Relaxed));
+                let state = job.state();
 
-                let status = match (job.done, phase) {
-                    (Some(Outcome::Cancelled), _) => Err("cancelled".to_string()),
-                    (Some(_), _) => Err("done".to_string()),
+                let status = match state {
+                    JobState::Cancelled => Err("cancelled".to_string()),
+                    JobState::Done => Err("done".to_string()),
+                    // The bar keeps moving through this one, which is the
+                    // point of saying it: the file in flight has to finish
+                    // before the worker can stop, and without a word here that
+                    // reads as the button having done nothing.
+                    JobState::Pausing => Err("pausing…".to_string()),
+                    JobState::Paused => Err("paused".to_string()),
                     // The count climbs while it runs, which is the useful part:
                     // it says up front that this is 86,000 files, not 20.
-                    (None, Phase::Scanning) => Err(format!("scanning… {files_total} files")),
-                    (None, Phase::Flushing) => Err("flushing to device…".to_string()),
-                    (None, Phase::AwaitingConflict) => Err("waiting for answer…".to_string()),
-                    _ => Ok(transfer_metrics(
+                    JobState::Scanning => Err(format!("scanning… {files_total} files")),
+                    JobState::Flushing => Err("flushing to device…".to_string()),
+                    JobState::Conflict => Err("waiting for answer…".to_string()),
+                    JobState::Running => Ok(transfer_metrics(
                         bytes_done,
                         bytes_total,
                         walk_complete,
@@ -1910,14 +2069,9 @@ impl Workspace {
                     )),
                 };
 
-                let is_done = job.done.is_some();
-                let fraction = if walk_complete && bytes_total > 0 {
-                    (bytes_done as f32 / bytes_total as f32).clamp(0., 1.)
-                } else if is_done {
-                    1.
-                } else {
-                    0. // indeterminate until the walk finishes; no backwards bars
-                };
+                // Shared with the probe, so a test cannot watch a percentage
+                // the bar does not draw.
+                let fraction = job.fraction();
 
                 div()
                     .flex()
@@ -2082,6 +2236,52 @@ impl Workspace {
                                 ),
                         )
                     })
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(PAUSE_W))
+                            .flex()
+                            .flex_row()
+                            .justify_center()
+                            .when(state.live(), |el| {
+                                // The icon says what pressing it will do, not
+                                // what the job is doing: a running job offers
+                                // "pause", a stopped one offers "play". The
+                                // word beside it in the status block is what
+                                // reports the state.
+                                let resume = state.parked_or_parking();
+                                el.child(
+                                    div()
+                                        .id(("job-pause", ix))
+                                        .px_1()
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(colors.element_hover))
+                                        .child(Icon::from_path(
+                                            if resume {
+                                                "icons/file_icons/play.svg"
+                                            } else {
+                                                "icons/file_icons/pause.svg"
+                                            },
+                                            muted,
+                                        ))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            let Some(at) = this
+                                                .jobs
+                                                .iter()
+                                                .position(|j| j.handle.id() == job_id)
+                                            else {
+                                                return;
+                                            };
+                                            if this.jobs[at].done.is_some() {
+                                                return;
+                                            }
+                                            let asked = this.jobs[at].pause_requested;
+                                            this.jobs[at].set_paused(!asked);
+                                            cx.notify();
+                                        })),
+                                )
+                            }),
+                    )
                     .child(
                         div()
                             .id(("job-x", ix))
@@ -2287,6 +2487,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::dismiss_jobs))
+            .on_action(cx.listener(Self::pause_jobs))
             .on_action(cx.listener(Self::new_folder))
             .on_action(cx.listener(|this, action, _, cx| this.delete(action, cx)))
             .on_action(cx.listener(|this, action, _, cx| this.undo(action, cx)))
@@ -2497,6 +2698,15 @@ mod tests {
             SIZE_W,
             VALUE_W + TIGHT_GAP + SIZE_UNIT_W + TIGHT_GAP + SEP_W + TIGHT_GAP + TOTAL_W,
             "the four cells of the size phrase and the three gaps between them"
+        );
+        // The pause toggle's cell is reserved on a finished row too, so that
+        // the ✕ does not slide leftwards at the moment someone is reaching for
+        // it. That only holds while the reservation is the size of what it
+        // reserves for: a 16px icon inside px_1, which is 4px a side.
+        assert_eq!(
+            PAUSE_W,
+            16. + 4. * 2.,
+            "the pause cell no longer matches the control it holds"
         );
         // The total is one cell now, so it has to hold the number and the unit
         // together. `format_size` always prints one decimal and promotes past

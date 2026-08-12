@@ -47,7 +47,8 @@ use file_menu::{Cancel as MenuCancel, Confirm as MenuConfirm, SelectNext, Select
 use path_editor as ab;
 use place_finder as places_finder;
 use workspace::{
-    ClosePane, Copy, Cut, DismissJobs, FocusNext, FocusPrevious, Paste, SplitRight, Undo, Workspace,
+    ClosePane, Copy, Cut, DismissJobs, FocusNext, FocusPrevious, Paste, PauseJobs, SplitRight,
+    Undo, Workspace,
 };
 
 struct Args {
@@ -188,6 +189,15 @@ fn main() {
             // The palette toggles from anywhere, including from inside itself,
             // so it is not scoped to the pane.
             KeyBinding::new("ctrl-shift-p", palette::Toggle, None),
+            // Unscoped for the same reason, and one of its own. Pausing acts on
+            // every transfer rather than on the active pane's, so tying it to
+            // which pane has focus would be arbitrary; and a job blocked on a
+            // conflict has given the keyboard to that dialog, which is exactly
+            // the moment someone is most likely to want everything to stop.
+            //
+            // Space is the play/pause key everywhere else. ctrl-space is
+            // already the selection toggle, hence the shift.
+            KeyBinding::new("ctrl-shift-space", PauseJobs, None),
             KeyBinding::new("ctrl-p", places_finder::Toggle, None),
             // Only the arrows: the query field carries the AddressBar context
             // inside the palette's, and the deeper context wins, so enter and

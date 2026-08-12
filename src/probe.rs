@@ -73,6 +73,20 @@ pub struct JobProbe {
     pub label: String,
     pub done: bool,
     pub errors: usize,
+    /// What the row is saying: `"scanning"`, `"running"`, `"pausing"`,
+    /// `"paused"`, `"conflict"`, `"flushing"`, `"done"`, `"cancelled"`.
+    ///
+    /// `done` above answers only whether the job has stopped, which cannot
+    /// tell a parked transfer from a slow one.
+    pub state: &'static str,
+    /// How far along, as a whole percent.
+    ///
+    /// Whole percent and not the byte count, because `write` below rewrites
+    /// this file whenever the document differs: a byte counter would rewrite
+    /// it on every frame of exactly the transfer a test is watching, where
+    /// this changes at most a hundred times a job. Enough to assert that a
+    /// paused job has stopped moving, which is what it is for.
+    pub percent: u8,
 }
 
 #[derive(Serialize, PartialEq, Eq)]
@@ -82,6 +96,9 @@ pub struct Probe {
     /// `"palette"`, `"places"`, `"failures"`, or absent.
     pub modal: Option<&'static str>,
     pub notice: Option<String>,
+    /// How many things ctrl-z would undo, so a test can tell that a transfer
+    /// reached the stack and that undoing it took it off again.
+    pub undo_depth: usize,
     /// Bumped on every write, so a reader can tell a fresh answer from the same
     /// one twice without comparing the whole object. Set by `write`, which is
     /// the only thing that knows whether a write happened; a caller filling it
