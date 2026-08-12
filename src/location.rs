@@ -78,17 +78,6 @@ impl Location {
         }
     }
 
-    /// A child directory of this one, by name.
-    pub fn join(&self, name: impl AsRef<Path>) -> Location {
-        match self {
-            Location::Disk(dir) => Location::Disk(dir.join(name)),
-            Location::Archive { archive, inside } => Location::Archive {
-                archive: archive.clone(),
-                inside: inside.join(name),
-            },
-        }
-    }
-
     /// The identity of a row in this location, which for an archive is the
     /// archive's own path with the member's path on the end.
     ///
@@ -134,6 +123,14 @@ mod tests {
         PathBuf::from("/home/x/pack.zip")
     }
 
+    /// A place inside `zip()`, by its path from the archive's root.
+    fn at(inside: &str) -> Location {
+        Location::Archive {
+            archive: zip(),
+            inside: PathBuf::from(inside),
+        }
+    }
+
     #[test]
     fn only_a_real_directory_has_a_path() {
         assert_eq!(
@@ -146,15 +143,12 @@ mod tests {
     #[test]
     fn an_archive_is_anchored_on_its_file() {
         // What the watcher arms on, and what says which filesystem this is.
-        assert_eq!(
-            Location::in_archive(zip()).join("ttf").anchor(),
-            zip().as_path()
-        );
+        assert_eq!(at("ttf").anchor(), zip().as_path());
     }
 
     #[test]
     fn going_up_from_the_root_of_an_archive_leaves_it() {
-        let inside = Location::in_archive(zip()).join("ttf");
+        let inside = at("ttf");
         assert_eq!(inside.parent(), Some(Location::in_archive(zip())));
         // Out of the archive entirely, and onto the disk.
         assert_eq!(
@@ -170,7 +164,7 @@ mod tests {
 
     #[test]
     fn a_location_reads_as_a_path_straight_through_the_archive() {
-        let inside = Location::in_archive(zip()).join("ttf").join("Inter");
+        let inside = at("ttf/Inter");
         assert_eq!(inside.to_string(), "/home/x/pack.zip/ttf/Inter");
         // And the key matches, so a row's key is its location's key with the
         // row's own name on the end.

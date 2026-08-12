@@ -115,7 +115,10 @@ mod tests {
         let zip = std::path::PathBuf::from("/a/pack.zip");
         let mut h = History::new(p("/a"));
         h.push(Location::in_archive(zip.clone()));
-        h.push(Location::in_archive(zip.clone()).join("ttf"));
+        h.push(Location::Archive {
+            archive: zip.clone(),
+            inside: std::path::PathBuf::from("ttf"),
+        });
 
         assert_eq!(h.back(), Some(&Location::in_archive(zip)));
         assert_eq!(h.back(), Some(&p("/a")));

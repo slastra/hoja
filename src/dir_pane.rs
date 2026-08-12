@@ -2896,25 +2896,36 @@ impl DirPane {
         // extracting a temporary copy first, and that needs the user's say-so:
         // see `open_prompt`, and why it asks rather than just doing it.
         if entry.member().is_some() {
+            let Location::Archive { archive, .. } = &self.dir else {
+                return;
+            };
+            // Where this row sits in the archive, from the archive's own root.
+            // Not the pane's directory joined to the name: a row does not have
+            // to have come from the directory being shown, and once a search
+            // can return one from further down, `dir.join(name)` names a place
+            // that does not exist.
+            let Some(member) = entry.key().strip_prefix(archive).ok() else {
+                return;
+            };
+            let (archive, member) = (archive.clone(), member.to_path_buf());
             if entry.is_dir {
-                let name = entry.name.clone();
-                self.navigate_to(self.dir.join(name), cx);
+                self.navigate_to(
+                    Location::Archive {
+                        archive,
+                        inside: member,
+                    },
+                    cx,
+                );
             } else {
-                let Location::Archive { archive, inside } = &self.dir else {
-                    return;
-                };
-                let Some(member) = entry
-                    .key()
-                    .strip_prefix(archive)
-                    .ok()
-                    .map(|p| p.to_string_lossy().into_owned())
-                else {
-                    return;
-                };
+                // The member's *own* directory, not the pane's. `extract`
+                // strips this off what it writes, so the temp copy lands as a
+                // bare file and `extract_and_open` opens the file rather than
+                // the first directory on the way down to it.
+                let inside = member.parent().unwrap_or(Path::new("")).to_path_buf();
                 cx.emit(PaneEvent::ConfirmExtractAndOpen {
-                    archive: archive.clone(),
-                    inside: inside.clone(),
-                    member,
+                    archive,
+                    inside,
+                    member: member.to_string_lossy().into_owned(),
                     name: entry.name.clone(),
                 });
             }
