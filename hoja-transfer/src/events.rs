@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::time::SystemTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
@@ -100,6 +101,48 @@ pub struct TierStats {
     pub symlinks: u64,
 }
 
+/// One thing a job did, in the form that reverses it.
+///
+/// Written once the destination is settled and before the syscall that changes
+/// anything, which is the only moment at which the truth is both known and not
+/// yet lost: `resolve_dest` picks keep-both names lazily, so nothing earlier
+/// knows where a file is really going.
+///
+/// A whole subtree is usually one record. Copying into a name that held
+/// nothing creates the directory and everything under it, and removing that
+/// directory removes the lot; a same-mount move is one `rename` however big
+/// the tree. Records appear per file only where a copy *merged* into a
+/// directory that already existed, which is the case that genuinely needs
+/// them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Undone {
+    /// Moved there in one call, and one call moves it back.
+    Renamed {
+        from: PathBuf,
+        to: PathBuf,
+        /// What was moved, so undo can refuse if something else is there now.
+        dev: u64,
+        ino: u64,
+    },
+    /// Written where there was nothing.
+    Created {
+        path: PathBuf,
+        /// Where it came from, when the source was removed after the copy
+        /// landed — a move across filesystems. `None` for a copy, whose source
+        /// is still where it was, so undoing it only has to take the new one
+        /// away.
+        from: Option<PathBuf>,
+        /// As the job left it, so undo can refuse a file changed since.
+        dev: u64,
+        ino: u64,
+        len: u64,
+        mtime: Option<SystemTime>,
+    },
+    /// A directory the job made, which stands for everything it went on to put
+    /// inside. Undone by removing it whole.
+    CreatedDir(PathBuf),
+}
+
 #[derive(Debug)]
 pub struct JobSummary {
     pub outcome: Outcome,
@@ -108,4 +151,12 @@ pub struct JobSummary {
     pub files_skipped: u64,
     pub bytes_copied: u64,
     pub stats: TierStats,
+    /// What the job did, newest last, for undoing it.
+    ///
+    /// Empty when there were more changes than `MAX_UNDO_RECORDS`: a partial
+    /// record would undo part of a transfer and call it done, which is worse
+    /// than declining to undo it at all. `undoable` says which happened.
+    pub undone: Vec<Undone>,
+    /// Whether `undone` is the whole story.
+    pub undoable: bool,
 }

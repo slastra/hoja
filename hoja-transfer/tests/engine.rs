@@ -7,7 +7,8 @@ use std::path::Path;
 
 use common::*;
 use hoja_transfer::{
-    ConflictChoice, ConflictDecision, Event, JobPolicy, JobSpec, Operation, Outcome, spawn_job,
+    ConflictChoice, ConflictDecision, Event, JobPolicy, JobSpec, Operation, Outcome, Undone,
+    spawn_job,
 };
 
 unsafe extern "C" {
@@ -576,6 +577,111 @@ fn cancel_leaves_no_partials() {
     let (_, summary) = drain(&handle, never_conflict);
     assert_eq!(summary.outcome, Outcome::Cancelled);
     no_partials_under(dst_dir.path());
+}
+
+// ---- What a job did -------------------------------------------------------
+
+/// A small tree: `tree/a.bin` and `tree/nested/b.bin`.
+fn a_tree(dir: &Path) -> std::path::PathBuf {
+    let tree = dir.join("tree");
+    std::fs::create_dir_all(tree.join("nested")).unwrap();
+    write_file(&tree, "a.bin", b"aaa");
+    write_file(&tree.join("nested"), "b.bin", b"bbb");
+    tree
+}
+
+#[test]
+fn a_copy_into_a_fresh_name_is_one_record() {
+    // The whole reason the log is affordable. Removing the directory removes
+    // everything the job put in it, so a hundred thousand files would record
+    // exactly this much.
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let tree = a_tree(src_dir.path());
+
+    let handle = spawn_job(copy_spec(vec![tree], dst_dir.path())).unwrap();
+    let (_, summary) = drain(&handle, never_conflict);
+
+    assert_eq!(summary.outcome, Outcome::Completed);
+    assert!(summary.undoable);
+    assert_eq!(
+        summary.undone,
+        vec![Undone::CreatedDir(dst_dir.path().join("tree"))],
+        "one record for the directory, and none for anything under it"
+    );
+}
+
+#[test]
+fn a_same_mount_directory_move_is_one_record() {
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let tree = a_tree(src_dir.path());
+
+    let handle = spawn_job(move_spec(vec![tree.clone()], dst_dir.path())).unwrap();
+    let (_, summary) = drain(&handle, never_conflict);
+
+    assert_eq!(summary.stats.renames, 1, "the subtree moved in one call");
+    assert!(summary.undoable);
+    match summary.undone.as_slice() {
+        [Undone::Renamed { from, to, .. }] => {
+            assert_eq!(from, &tree);
+            assert_eq!(to, &dst_dir.path().join("tree"));
+        }
+        other => panic!("expected one rename, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_copy_that_merges_records_what_it_added() {
+    // The destination directory already exists, so nothing collapses at the
+    // top and the children have to speak for themselves. `nested` is absent
+    // though, so it collapses in turn: this is the recursion, not an
+    // exception to it.
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let tree = a_tree(src_dir.path());
+    std::fs::create_dir(dst_dir.path().join("tree")).unwrap();
+
+    let handle = spawn_job(copy_spec(vec![tree], dst_dir.path())).unwrap();
+    let (_, summary) = drain(&handle, never_conflict);
+
+    assert!(summary.undoable);
+    let into = dst_dir.path().join("tree");
+    match summary.undone.as_slice() {
+        [Undone::Created { path, from, .. }, Undone::CreatedDir(dir)] => {
+            assert_eq!(path, &into.join("a.bin"));
+            assert_eq!(*from, None, "a copy leaves its source where it was");
+            assert_eq!(dir, &into.join("nested"));
+        }
+        other => panic!("expected the file and the directory beside it, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_cancelled_job_still_says_what_it_did() {
+    // The case ctrl-z is most wanted for, and the log arrives by the same
+    // route either way: Done carries it, and Done fires for a cancellation.
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let tree = many_files(src_dir.path(), 1200);
+
+    let handle = spawn_job(copy_spec(vec![tree], dst_dir.path())).unwrap();
+    use std::sync::atomic::Ordering;
+    let progress = handle.progress().clone();
+    wait_until(
+        || progress.files_done.load(Ordering::Relaxed) > 0,
+        "the copy never started",
+    );
+    handle.cancel();
+
+    let (_, summary) = drain(&handle, never_conflict);
+    assert_eq!(summary.outcome, Outcome::Cancelled);
+    assert!(summary.undoable);
+    assert_eq!(
+        summary.undone,
+        vec![Undone::CreatedDir(dst_dir.path().join("many"))],
+        "what it had made is still there to be taken away"
+    );
 }
 
 /// A source of many small files, so there are plenty of gaps between files for

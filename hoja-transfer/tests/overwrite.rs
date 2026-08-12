@@ -49,6 +49,62 @@ fn overwrite_and_keep_both() {
 }
 
 #[test]
+fn an_overwrite_cannot_be_undone_yet() {
+    // The rename that replaces the old file unlinks it, and nothing here can
+    // put it back, so the job says so rather than offering an undo that would
+    // leave a hole where the original was. Moving it to the trash first is
+    // what makes this reversible, and that is the next slice.
+    let _trash = trash_env();
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let src = write_file(src_dir.path(), "z.txt", b"new");
+    write_file(dst_dir.path(), "z.txt", b"old");
+
+    let handle = spawn_job(copy_spec(vec![src], dst_dir.path())).unwrap();
+    let (_, summary) = drain(&handle, || ConflictDecision::Apply {
+        choice: ConflictChoice::Overwrite,
+        apply_to_all: false,
+    });
+
+    assert_eq!(summary.outcome, Outcome::Completed);
+    assert!(
+        !summary.undoable,
+        "it destroyed something it cannot restore"
+    );
+    assert!(
+        summary.undone.is_empty(),
+        "and it kept no half-log to undo from"
+    );
+}
+
+#[test]
+fn keeping_both_leaves_the_job_undoable() {
+    // The counterpart, and the reason the flag is set where the destination is
+    // resolved rather than wherever a conflict was raised: KeepBoth answers a
+    // conflict too, and destroys nothing.
+    let _trash = trash_env();
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let src = write_file(src_dir.path(), "k.txt", b"new");
+    write_file(dst_dir.path(), "k.txt", b"old");
+
+    let handle = spawn_job(copy_spec(vec![src], dst_dir.path())).unwrap();
+    let (_, summary) = drain(&handle, || ConflictDecision::Apply {
+        choice: ConflictChoice::KeepBoth,
+        apply_to_all: false,
+    });
+
+    assert!(summary.undoable);
+    match summary.undone.as_slice() {
+        [hoja_transfer::Undone::Created { path, .. }] => {
+            assert_eq!(path, &dst_dir.path().join("k (copy).txt"));
+        }
+        other => panic!("expected the copy it actually wrote, got {other:?}"),
+    }
+    assert_eq!(std::fs::read(dst_dir.path().join("k.txt")).unwrap(), b"old");
+}
+
+#[test]
 fn preset_policy_never_prompts() {
     let _trash = trash_env();
     let src_dir = ext4_dir();

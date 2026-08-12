@@ -14,10 +14,19 @@ use crate::conflict::{ConflictState, Resolution};
 use crate::copy::{self, CopyMechanism, CopyOutcome};
 use crate::dispatch::MountPairCache;
 use crate::events::{
-    ConflictChoice, Event, JobSummary, Operation, Outcome, Stage, TierStats, TransferError,
+    ConflictChoice, Event, JobSummary, Operation, Outcome, Stage, TierStats, TransferError, Undone,
 };
 use crate::meta;
 use crate::sys::{self, MountKey};
+
+/// How many changes a job may record before it stops offering to undo itself.
+///
+/// Reached only by a copy that merged into an existing tree, since anything
+/// landing on a fresh name collapses to one record. Sized like
+/// `MAX_RETAINED_FAILURES` in the UI: high enough that no ordinary transfer
+/// approaches it, low enough that the log cannot become the reason a machine
+/// runs out of memory.
+const MAX_UNDO_RECORDS: usize = 100_000;
 
 #[derive(Debug, Clone)]
 pub struct JobSpec {
@@ -295,6 +304,21 @@ struct Worker {
     /// `MNT_ID` exists to tell apart) share a superblock and so share both
     /// answers.
     mount_keys: HashMap<u64, MountKey>,
+    /// What this job did, for undoing it. See `Undone`.
+    undone: Vec<Undone>,
+    /// Whether the log is still the whole story. Cleared by the cap, and by
+    /// anything this job did that it cannot take back — today that is an
+    /// overwrite, which unlinks what was there.
+    undoable: bool,
+    /// Whether everything being written now sits under a directory this job
+    /// created, in which case that one record already accounts for it.
+    ///
+    /// This is what makes a fresh copy of a hundred thousand files one record
+    /// instead of a hundred thousand: `process_dir` sets it on the way into a
+    /// directory it had to make, and puts it back on the way out, so a merge
+    /// two levels down still records per file while the untouched branches
+    /// beside it collapse.
+    claimed: bool,
 }
 
 impl Worker {
@@ -323,7 +347,33 @@ impl Worker {
             scanned: false,
             copy_buf: Vec::new(),
             mount_keys: HashMap::new(),
+            undone: Vec::new(),
+            undoable: true,
+            claimed: false,
         }
+    }
+
+    /// Note something that will need reversing, unless a record already
+    /// covers it.
+    fn undone(&mut self, record: Undone) {
+        if self.claimed || !self.undoable {
+            return;
+        }
+        if self.undone.len() >= MAX_UNDO_RECORDS {
+            self.cannot_undo();
+            return;
+        }
+        self.undone.push(record);
+    }
+
+    /// Give up on undoing this job, and drop what was recorded so far.
+    ///
+    /// Dropped whole rather than kept: half a log undoes half a transfer and
+    /// reports success, which is the one outcome worse than saying plainly
+    /// that it cannot be undone.
+    fn cannot_undo(&mut self) {
+        self.undoable = false;
+        self.undone = Vec::new();
     }
 
     /// Whether to count the tree before transferring it.
@@ -466,6 +516,8 @@ impl Worker {
             files_skipped: self.files_skipped,
             bytes_copied: self.progress.bytes_done.load(Ordering::Relaxed),
             stats: self.stats,
+            undone: std::mem::take(&mut self.undone),
+            undoable: self.undoable,
         };
         let _ = self.events.send(Event::Done(summary));
     }
@@ -566,8 +618,8 @@ impl Worker {
         if !counted && !self.scanned {
             self.progress.files_total.fetch_add(1, Ordering::Relaxed);
         }
-        let dest = match self.resolve_dest(src, dest) {
-            DestPlan::Proceed { path, .. } => path,
+        let (dest, existed) = match self.resolve_dest(src, dest) {
+            DestPlan::Proceed { path, existed } => (path, existed),
             DestPlan::Skip => {
                 self.files_skipped += 1;
                 self.progress.files_done.fetch_add(1, Ordering::Relaxed);
@@ -576,11 +628,26 @@ impl Worker {
             DestPlan::Cancel => return Step::Cancelled,
         };
         // Overwrite of an existing entry, so remove it first: symlink() has no
-        // replace semantics.
-        let _ = std::fs::remove_file(&dest);
+        // replace semantics. Only when the plan actually says to overwrite —
+        // this used to unlink whatever was at `dest` unconditionally, which
+        // was invisible while nothing needed to put it back.
+        if existed {
+            let _ = std::fs::remove_file(&dest);
+            self.cannot_undo();
+        }
         match meta::copy_symlink(src, &dest) {
             Ok(()) => {
                 self.stats.symlinks += 1;
+                if let Ok(meta) = std::fs::symlink_metadata(&dest) {
+                    self.undone(Undone::Created {
+                        path: dest.clone(),
+                        from: (self.spec.op == Operation::Move).then(|| src.to_path_buf()),
+                        dev: meta.dev(),
+                        ino: meta.ino(),
+                        len: meta.len(),
+                        mtime: meta.modified().ok(),
+                    });
+                }
                 self.files_copied += 1;
                 self.progress.files_done.fetch_add(1, Ordering::Relaxed);
                 if self.spec.op == Operation::Move
@@ -609,6 +676,14 @@ impl Worker {
             match sys::rename_no_replace(src, dest) {
                 Ok(()) => {
                     self.stats.renames += 1;
+                    // One call moved the whole subtree, and one call moves it
+                    // back. Never walk this to record it per file.
+                    self.undone(Undone::Renamed {
+                        from: src.to_path_buf(),
+                        to: dest.to_path_buf(),
+                        dev: src_meta.dev(),
+                        ino: src_meta.ino(),
+                    });
                     if !self.scanned {
                         self.progress.files_total.fetch_add(1, Ordering::Relaxed);
                     }
@@ -629,13 +704,32 @@ impl Worker {
         }
 
         // Existing directory at dest = merge; only create when absent.
-        if !dest.is_dir()
-            && let Err(err) = std::fs::create_dir(dest)
-        {
+        let made_it = !dest.is_dir();
+        if made_it && let Err(err) = std::fs::create_dir(dest) {
             self.queue_error(dest, Stage::CreateDir, err);
             return self.continue_or_fatal();
         }
+        // Everything below a directory this job made is accounted for by the
+        // directory, so the children record nothing. Put back on the way out:
+        // a sibling that merges into an existing tree still needs its own.
+        let outer_claim = self.claimed;
+        if made_it {
+            self.undone(Undone::CreatedDir(dest.to_path_buf()));
+            self.claimed = true;
+        }
+        let step = self.process_dir_children(src, dest, src_meta);
+        self.claimed = outer_claim;
+        step
+    }
 
+    /// The body of `process_dir` once the destination directory exists, split
+    /// out so the claim above it is restored on every path out of it.
+    fn process_dir_children(
+        &mut self,
+        src: &Path,
+        dest: &Path,
+        src_meta: &std::fs::Metadata,
+    ) -> Step {
         // Enumerate children first so totals grow ahead of processing (this IS
         // the one walk: gate counters for M3 accumulate on these same adds).
         let entries = match std::fs::read_dir(src) {
@@ -719,6 +813,7 @@ impl Worker {
             // so unlink first; NOREPLACE would otherwise refuse it.
             if planned == *dest && std::fs::symlink_metadata(&planned).is_ok() {
                 let _ = std::fs::remove_file(&planned);
+                self.cannot_undo();
             }
             let mut renamed = sys::rename_no_replace(src, &planned);
             if matches!(&renamed, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
@@ -739,6 +834,12 @@ impl Worker {
             match renamed {
                 Ok(()) => {
                     self.stats.renames += 1;
+                    self.undone(Undone::Renamed {
+                        from: src.to_path_buf(),
+                        to: planned.clone(),
+                        dev: src_meta.dev(),
+                        ino: src_meta.ino(),
+                    });
                     self.files_copied += 1;
                     self.progress.files_done.fetch_add(1, Ordering::Relaxed);
                     self.progress
@@ -806,6 +907,19 @@ impl Worker {
                 .is_ok()
                 {
                     self.stats.hardlinks += 1;
+                    // A link to something this job already wrote. Undoing it
+                    // is removing the name, not the inode, so it needs no
+                    // identity of its own beyond where it points.
+                    if let Ok(meta) = std::fs::symlink_metadata(dest) {
+                        self.undone(Undone::Created {
+                            path: dest.to_path_buf(),
+                            from: delete_source.then(|| src.to_path_buf()),
+                            dev: meta.dev(),
+                            ino: meta.ino(),
+                            len: meta.len(),
+                            mtime: meta.modified().ok(),
+                        });
+                    }
                     self.files_copied += 1;
                     self.progress.files_done.fetch_add(1, Ordering::Relaxed);
                     // Bytes for this file were already counted in totals;
@@ -873,12 +987,33 @@ impl Worker {
                     self.queue_error(dest, Stage::Write, err.into());
                     return self.continue_or_fatal();
                 }
+                // While the descriptor is still open, so this is an fstat
+                // rather than a path lookup, and after `apply_file_meta`, so
+                // the mtime is the one the file will actually carry.
+                let landed = tmp.metadata().ok();
                 drop(tmp);
 
                 if let Err(err) = std::fs::rename(&tmp_path, dest) {
                     let _ = std::fs::remove_file(&tmp_path);
                     self.queue_error(dest, Stage::Rename, err);
                     return self.continue_or_fatal();
+                }
+
+                if dest_existed {
+                    // The rename above replaced something, and what it
+                    // replaced is gone. Nothing here can put it back, so the
+                    // job stops claiming it can. Trashing it first, which is
+                    // what makes this reversible, is the next slice.
+                    self.cannot_undo();
+                } else if let Some(meta) = landed {
+                    self.undone(Undone::Created {
+                        path: dest.to_path_buf(),
+                        from: delete_source.then(|| src.to_path_buf()),
+                        dev: meta.dev(),
+                        ino: meta.ino(),
+                        len: meta.len(),
+                        mtime: meta.modified().ok(),
+                    });
                 }
 
                 self.files_copied += 1;
