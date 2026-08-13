@@ -14,6 +14,15 @@ expect 'not any(r.startswith(".hoja-") for r in p[0]["rows"])' "and its partial 
 at $((WW - 40)) $((WH - 13))
 wait_for 'len(d["jobs"]) == 1' 20
 expect 'd["interrupted"] == 0' "accepting the offer takes it off the strip"
+
+# It asks, rather than deciding. The interrupted run was never told what to do
+# about the collision — it died waiting — so neither is this one. Answering
+# Skip on its behalf would have reported a clean finish while the file the user
+# was being asked about still held its old contents.
+wait_for 'd["modal"] == "conflict"' 30
+expect 'd["jobs"][0]["state"] == "conflict"' "and asks the question the dead run died on"
+key -k Return
+
 wait_for 'len(d["jobs"]) == 0' 90
 
 # Asserted against the filesystem rather than the listing: this pane is at the
