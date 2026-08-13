@@ -225,3 +225,28 @@ else
     FAILED=$((FAILED + 1))
 fi
 expect 'not any(r.startswith(".hoja-") for r in p[0]["rows"])' "with nothing left staged"
+
+# --- undoing a copy out of an archive -------------------------------------
+# Extraction stages into a scratch directory inside the destination and moves
+# from there, and that directory is removed the moment the job ends. Recording
+# the move as a move therefore left undo trying to rename the files back into
+# somewhere that no longer existed, and it failed on every one.
+#
+# There is nothing to put back: the archive still holds them. What undo owes is
+# to take the copies away.
+expect 'd["undo_depth"] >= 1' "the extraction is on the undo stack"
+before=$(probe 'p[0]["row_count"]')
+key -M ctrl -P z -m ctrl
+wait_for "p[0][\"row_count\"] == $before - 1" 60
+expect '"sub" not in p[0]["rows"]' "ctrl-z takes the extracted folder away"
+expect 'd["notice"] is None' "and says nothing alarming about it"
+
+# Taken to the trash rather than unlinked, so an undo that guessed wrong is
+# itself recoverable.
+if [ -n "$(find "$XDG_DATA_HOME/Trash/files" -maxdepth 1 -name 'sub*' 2>/dev/null)" ]; then
+    echo "  ok   and the copy it removed is in the trash"
+else
+    echo "  FAIL and the copy it removed is in the trash" >&2
+    echo "       $(ls "$XDG_DATA_HOME/Trash/files" 2>&1 | head -3)" >&2
+    FAILED=$((FAILED + 1))
+fi

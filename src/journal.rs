@@ -160,6 +160,11 @@ impl Record {
             op: self.op,
             sources,
             dest_dir: self.dest.clone(),
+            // A resumed job's sources are wherever they always were. An
+            // extraction's scratch directory does not survive a crash, and
+            // `remaining` drops sources that are gone, so nothing here can
+            // still be staged.
+            staging: None,
             policy: hoja_transfer::JobPolicy {
                 // The answer the user gave the first time, not Skip.
                 //
@@ -467,6 +472,7 @@ mod lock_tests {
             sources: vec![dest.join("a")],
             dest_dir: dest.to_path_buf(),
             policy: Default::default(),
+            staging: None,
         }
     }
 

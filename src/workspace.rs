@@ -1090,6 +1090,12 @@ impl Workspace {
                             sources,
                             dest_dir,
                             policy: JobPolicy::default(),
+                            // These came out of the archive into `temp`, which
+                            // is removed the moment the job ends. Undo cannot
+                            // put them back there and should not want to: the
+                            // archive still holds them, so taking the copies
+                            // away is the whole of the inverse.
+                            staging: Some(temp.clone()),
                         },
                         Some(temp),
                         window,
@@ -1226,6 +1232,7 @@ impl Workspace {
                 sources,
                 dest_dir,
                 policy: JobPolicy::default(),
+                staging: None,
             },
             None,
             window,
@@ -1400,7 +1407,12 @@ impl Workspace {
                         // "nothing to undo" and "too much to undo" look the
                         // same from an empty list and only one of them is
                         // worth telling somebody about.
-                        if !summary.undoable {
+                        //
+                        // Forward jobs only. An undo reports `undoable: false`
+                        // as a matter of course — it keeps no log of its own to
+                        // reverse — so asking this of one told the user their
+                        // undo had changed too much to undo, every time.
+                        if !summary.undoable && job.undo_of.is_none() {
                             notices
                                 .push(format!("{} changed too much to undo", job.handle.label()));
                         }

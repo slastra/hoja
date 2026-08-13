@@ -37,6 +37,17 @@ pub struct JobSpec {
     /// Must be an existing directory.
     pub dest_dir: PathBuf,
     pub policy: JobPolicy,
+    /// A directory the caller filled on this job's behalf, whose contents are
+    /// the sources and are nobody's once the job is done.
+    ///
+    /// Copying out of an archive works this way: the members are extracted
+    /// into a scratch directory and then moved into place, and the caller
+    /// removes the scratch directory afterwards. Undo therefore cannot put
+    /// them back where they came from — where they came from was deleted, and
+    /// before that it was a temporary directory nobody wants restored. What it
+    /// records instead is that the files are new, so taking them away is the
+    /// whole of the inverse. The archive still has them.
+    pub staging: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -299,6 +310,7 @@ pub fn spawn_undo(label: String, records: Vec<Undone>) -> std::io::Result<JobHan
             conflict: Some(ConflictChoice::Skip),
             abort_on_first_error: false,
         },
+        staging: None,
     };
 
     let thread = std::thread::Builder::new()
@@ -801,6 +813,15 @@ impl Worker {
         }
     }
 
+    /// Whether this source was put there by the caller for this job alone, in
+    /// which case there is nowhere to move it back to.
+    fn was_staged(&self, src: &Path) -> bool {
+        self.spec
+            .staging
+            .as_ref()
+            .is_some_and(|staging| src.starts_with(staging))
+    }
+
     /// Whether `path` is still the thing the record was written about.
     fn still_the_same(&mut self, path: &Path, dev: u64, ino: u64) -> bool {
         match std::fs::symlink_metadata(path) {
@@ -1077,12 +1098,24 @@ impl Worker {
                     self.stats.renames += 1;
                     // One call moved the whole subtree, and one call moves it
                     // back. Never walk this to record it per file.
-                    self.undone(Undone::Renamed {
-                        from: src.to_path_buf(),
-                        to: dest.to_path_buf(),
-                        dev: src_meta.dev(),
-                        ino: src_meta.ino(),
-                    });
+                    if self.was_staged(src) {
+                        // Nowhere to put it back: this came out of a scratch
+                        // directory the caller is about to remove. Undoing it
+                        // means taking it away, which is what a directory this
+                        // job made records.
+                        self.undone(Undone::CreatedDir {
+                            path: dest.to_path_buf(),
+                            whole: true,
+                            mtime: None,
+                        });
+                    } else {
+                        self.undone(Undone::Renamed {
+                            from: src.to_path_buf(),
+                            to: dest.to_path_buf(),
+                            dev: src_meta.dev(),
+                            ino: src_meta.ino(),
+                        });
+                    }
                     if !self.scanned {
                         self.progress.files_total.fetch_add(1, Ordering::Relaxed);
                     }
@@ -1264,12 +1297,27 @@ impl Worker {
             match renamed {
                 Ok(()) => {
                     self.stats.renames += 1;
-                    self.undone(Undone::Renamed {
-                        from: src.to_path_buf(),
-                        to: planned.clone(),
-                        dev: src_meta.dev(),
-                        ino: src_meta.ino(),
-                    });
+                    if self.was_staged(src) {
+                        // See `JobSpec::staging`: nowhere to put it back, so
+                        // what undo owes is to take it away.
+                        if let Ok(meta) = std::fs::symlink_metadata(&planned) {
+                            self.undone(Undone::Created {
+                                path: planned.clone(),
+                                from: None,
+                                dev: meta.dev(),
+                                ino: meta.ino(),
+                                len: meta.len(),
+                                mtime: meta.modified().ok(),
+                            });
+                        }
+                    } else {
+                        self.undone(Undone::Renamed {
+                            from: src.to_path_buf(),
+                            to: planned.clone(),
+                            dev: src_meta.dev(),
+                            ino: src_meta.ino(),
+                        });
+                    }
                     self.files_copied += 1;
                     self.progress.files_done.fetch_add(1, Ordering::Relaxed);
                     self.progress
@@ -1346,7 +1394,8 @@ impl Worker {
                     if let Ok(meta) = std::fs::symlink_metadata(dest) {
                         self.undone(Undone::Created {
                             path: dest.to_path_buf(),
-                            from: delete_source.then(|| src.to_path_buf()),
+                            from: (delete_source && !self.was_staged(src))
+                                .then(|| src.to_path_buf()),
                             dev: meta.dev(),
                             ino: meta.ino(),
                             len: meta.len(),

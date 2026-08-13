@@ -85,6 +85,7 @@ pub fn copy_spec(sources: Vec<PathBuf>, dest: &Path) -> JobSpec {
         sources,
         dest_dir: dest.to_path_buf(),
         policy: JobPolicy::default(),
+        staging: None,
     }
 }
 

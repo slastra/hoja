@@ -944,6 +944,7 @@ fn keep_both_on_a_name_that_only_just_fits_still_copies() {
             conflict: Some(ConflictChoice::KeepBoth),
             ..JobPolicy::default()
         },
+        staging: None,
     })
     .unwrap();
     let (_, summary) = drain(&handle, never_conflict);
