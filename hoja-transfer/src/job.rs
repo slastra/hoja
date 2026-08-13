@@ -719,8 +719,17 @@ impl Worker {
                     }
                 }
             }
-            Undone::RemovedDir(path) => match std::fs::create_dir_all(path) {
-                Ok(()) => true,
+            Undone::RemovedDir { path, mode, mtime } => match std::fs::create_dir_all(path) {
+                Ok(()) => {
+                    // A directory made afresh is 0777 & ~umask, so putting a
+                    // 0700 one back without this widened it — a keystroke
+                    // meant to be conservative quietly opening private files.
+                    let outcome = meta::restore_dir_meta(path, *mode, *mtime);
+                    for w in outcome.warnings {
+                        self.warn(path, w);
+                    }
+                    true
+                }
                 Err(err) => {
                     self.queue_error(path, Stage::CreateDir, err);
                     false
@@ -851,6 +860,24 @@ impl Worker {
                     let Ok(meta) = std::fs::symlink_metadata(path) else {
                         return true;
                     };
+                    // A symlink is not its target. `copy_file_inner` opens the
+                    // source, which follows the link, so this used to write the
+                    // target's bytes back as a plain file — losing the link, and
+                    // copying however many gigabytes it pointed at to do it.
+                    if meta.file_type().is_symlink() {
+                        return match meta::copy_symlink(path, home) {
+                            Ok(()) => {
+                                let _ = std::fs::remove_file(path);
+                                self.stats.symlinks += 1;
+                                self.files_copied += 1;
+                                true
+                            }
+                            Err(err) => {
+                                self.queue_error(path, Stage::Symlink, err);
+                                false
+                            }
+                        };
+                    }
                     return matches!(
                         self.copy_file_inner(path, home, &meta, true, false),
                         Step::Ok
@@ -1188,7 +1215,11 @@ impl Worker {
                 // Without this every child's `Renamed` failed ENOENT on a
                 // parent that no longer existed, and a merged move could not
                 // be undone at all.
-                Ok(()) => self.undone(Undone::RemovedDir(src.to_path_buf())),
+                Ok(()) => self.undone(Undone::RemovedDir {
+                    path: src.to_path_buf(),
+                    mode: Some(src_meta.mode()),
+                    mtime: Some((src_meta.mtime(), src_meta.mtime_nsec())),
+                }),
                 Err(err) => self.queue_error(src, Stage::DeleteSource, err),
             }
         }

@@ -166,3 +166,39 @@ pub fn apply_dir_meta(src_meta: &std::fs::Metadata, dest: &Path) -> MetaOutcome 
 
     MetaOutcome { warnings }
 }
+
+/// Put a directory back the way it was, from what a record kept about it.
+///
+/// The counterpart of `apply_dir_meta` for undo, which has no source metadata
+/// to copy from — only the mode and mtime noted when the directory was
+/// removed. Without this, `create_dir_all` gives it 0777 & ~umask and the
+/// current time, so undoing a move of a private directory silently widened it.
+pub fn restore_dir_meta(dest: &Path, mode: Option<u32>, mtime: Option<(i64, i64)>) -> MetaOutcome {
+    let mut warnings = Vec::new();
+
+    if let Some(mode) = mode
+        && let Err(err) = rustix::fs::chmod(dest, Mode::from_bits_truncate(mode & 0o7777))
+    {
+        warnings.push(format!("dir mode not restored: {err}"));
+    }
+
+    if let Some((secs, nanos)) = mtime {
+        let times = Timestamps {
+            last_access: Timespec {
+                tv_sec: 0,
+                tv_nsec: UTIME_OMIT,
+            },
+            last_modification: Timespec {
+                tv_sec: secs,
+                tv_nsec: nanos,
+            },
+        };
+        if let Err(err) =
+            rustix::fs::utimensat(rustix::fs::CWD, dest, &times, rustix::fs::AtFlags::empty())
+        {
+            warnings.push(format!("dir mtime not restored: {err}"));
+        }
+    }
+
+    MetaOutcome { warnings }
+}

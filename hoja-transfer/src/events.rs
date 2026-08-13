@@ -169,7 +169,17 @@ pub enum Undone {
     },
     /// A directory a move emptied and then removed. Undone by making it again,
     /// which has to happen before the files that lived in it can go back.
-    RemovedDir(PathBuf),
+    ///
+    /// The mode and mtime come with it because `create_dir_all` does not: a
+    /// directory made afresh takes 0777 & ~umask and the current time, so
+    /// putting back a private one without these silently widened it.
+    RemovedDir {
+        path: PathBuf,
+        mode: Option<u32>,
+        /// Seconds and nanoseconds, which is what `utimensat` wants and what
+        /// `SystemTime` would have to be taken apart into anyway.
+        mtime: Option<(i64, i64)>,
+    },
     /// Something was moved out of the way to make room, and is in the trash.
     /// Undone by putting it back, once whatever replaced it is gone.
     Displaced(crate::TrashedItem),

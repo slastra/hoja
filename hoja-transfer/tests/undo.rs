@@ -425,3 +425,69 @@ fn undoing_a_cross_filesystem_move_refuses_an_occupied_original() {
         "and the copy is left alone rather than half-moved"
     );
 }
+
+#[test]
+fn undoing_a_cross_filesystem_move_of_a_symlink_puts_a_symlink_back() {
+    // A symlink is not its target. The copy-back opens the source, which
+    // follows the link, so this used to write the target's bytes back as a
+    // plain file — losing the link, and copying however much it pointed at.
+    let _trash = trash_env();
+    let src_dir = tmpfs_dir();
+    let dst_dir = ext4_dir();
+    let target = write_file(src_dir.path(), "target.bin", &vec![9u8; 4096]);
+    let link = src_dir.path().join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let (_, reverse) = there_and_back(
+        move_spec(vec![link.clone()], dst_dir.path()),
+        never_conflict,
+    );
+
+    assert_eq!(
+        reverse.outcome,
+        Outcome::Completed,
+        "errors: {:?}",
+        reverse.errors
+    );
+    let back = std::fs::symlink_metadata(&link).expect("it is back");
+    assert!(back.is_symlink(), "and it is still a link, not a copy");
+    assert_eq!(std::fs::read_link(&link).unwrap(), target);
+    assert!(!dst_dir.path().join("link").exists());
+}
+
+#[test]
+fn undoing_a_move_puts_the_directory_back_as_it_was() {
+    // `create_dir_all` gives a directory 0777 & ~umask and the current time,
+    // so putting a private one back without its mode silently widened it.
+    use std::os::unix::fs::PermissionsExt;
+
+    let _trash = trash_env();
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let private = src_dir.path().join("private");
+    std::fs::create_dir(&private).unwrap();
+    write_file(&private, "secret.txt", b"mine");
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // An existing directory at the destination, so the move merges and the
+    // source directory is removed rather than renamed whole.
+    std::fs::create_dir(dst_dir.path().join("private")).unwrap();
+
+    let (_, reverse) = there_and_back(
+        move_spec(vec![private.clone()], dst_dir.path()),
+        never_conflict,
+    );
+
+    assert_eq!(
+        reverse.outcome,
+        Outcome::Completed,
+        "errors: {:?}",
+        reverse.errors
+    );
+    let mode = std::fs::symlink_metadata(&private)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o700, "the directory came back as private as it was");
+    assert_eq!(std::fs::read(private.join("secret.txt")).unwrap(), b"mine");
+}
