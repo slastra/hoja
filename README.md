@@ -311,7 +311,7 @@ the window is, and everything after it is keystrokes sent somewhere unverified.
 An earlier version carried on, walked a pane up to the root of the filesystem
 and pressed paste there; nothing was written only because root is not writable.
 
-There are nine suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
+There are ten suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
 `archive.sh` and `tar.sh` need fixtures, which `scripts/tests/setup-archives.sh`
 builds and prints the path of:
 
@@ -346,8 +346,9 @@ HOJA_TEST_KEEP_STATE=1 \
     scripts/sway-harness.sh "$XFER" scripts/tests/crash-phase2.sh "$OUT"
 ```
 
-`resort-while-reading.sh`, `interrupt-archive-read.sh` and
-`search-while-reading.sh` all act while an archive is still being read, so they
+`resort-while-reading.sh`, `interrupt-archive-read.sh`,
+`search-while-reading.sh` and `select-while-reading.sh` all act while an
+archive is still being read, so they
 need a fixture slow enough to act *in*. `setup-slow-archive.sh` builds it, and
 is kept separate so a ~15 MB member genuinely slow to read (bzip2, real
 pseudo-random content) does not change the row counts the other suites assert
@@ -358,6 +359,7 @@ SLOW=$(scripts/tests/setup-slow-archive.sh)
 scripts/sway-harness.sh "$SLOW" scripts/tests/resort-while-reading.sh
 scripts/sway-harness.sh "$SLOW" scripts/tests/interrupt-archive-read.sh
 scripts/sway-harness.sh "$SLOW" scripts/tests/search-while-reading.sh
+scripts/sway-harness.sh "$SLOW" scripts/tests/select-while-reading.sh
 ```
 
 Two things it cannot do. It cannot synthesise a drag: `wlrctl` only clicks, and

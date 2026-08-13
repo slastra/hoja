@@ -1848,6 +1848,36 @@ impl DirPane {
         }));
     }
 
+    /// What is selected and where the cursor is, by key rather than by index.
+    ///
+    /// Indices name rows; a rebuild that re-sorts names different files with
+    /// the same numbers. Anything that replaces `entries` wholesale while the
+    /// user is looking at them has to carry the selection across by identity.
+    fn held_selection(&self) -> (Vec<PathBuf>, Option<PathBuf>) {
+        (
+            self.selected_keys(),
+            self.cursor_ix
+                .and_then(|ix| self.entries.get(ix))
+                .map(|entry| entry.key().to_path_buf()),
+        )
+    }
+
+    /// Put a selection taken by `held_selection` back onto the current rows.
+    ///
+    /// Rows that are no longer there are dropped rather than approximated: a
+    /// selection that quietly moved to a neighbour is worse than one that
+    /// shrank, because the next copy or delete acts on it.
+    fn put_selection_back(&mut self, held: (Vec<PathBuf>, Option<PathBuf>)) {
+        let (keys, cursor) = held;
+        if keys.is_empty() && cursor.is_none() {
+            return;
+        }
+        let at = |wanted: &Path| self.entries.iter().position(|e| e.key() == wanted);
+        let rows: std::collections::BTreeSet<usize> = keys.iter().filter_map(|k| at(k)).collect();
+        self.selected.set(rows);
+        self.cursor_ix = cursor.as_deref().and_then(at);
+    }
+
     /// Re-select `pending_select` against the freshly built listing and scroll
     /// the first survivor into view. Entries that disappeared are dropped.
     /// Read an archive a piece at a time, showing rows as they arrive.
@@ -1969,6 +1999,14 @@ impl DirPane {
                             // stale copy here would silently overwrite that
                             // resort on the very next batch.
                             fs::sort_entries(&mut entries, this.view.sort, this.view.folders_first);
+                            // Rows are about to be replaced and re-sorted
+                            // under indices that name positions rather than
+                            // files. Held by key across it, because a row
+                            // picked while the archive was still being read
+                            // otherwise became a different member as later
+                            // ones sorted above it — and the copy that
+                            // followed took a file nobody had pointed at.
+                            let held = this.held_selection();
                             // A search is standing in for the listing, so what
                             // is on screen is results and must not be replaced
                             // by the directory. Re-running it against what has
@@ -1988,6 +2026,7 @@ impl DirPane {
                                 }
                                 None => this.entries = entries,
                             }
+                            this.put_selection_back(held);
                             this.error = None;
                             if finished && rows.skipped > 0 {
                                 cx.emit(PaneEvent::Notice {
@@ -2035,6 +2074,16 @@ impl DirPane {
                             this.renaming = None;
                         }
                         this.loaded_dir = Some(this.dir.clone());
+                        // `restore_selection` clears whatever is selected and
+                        // puts back only what it was asked to, so with nothing
+                        // pending it wipes the selection. That is right when
+                        // the listing is arriving for the first time and wrong
+                        // here: the rows have been on screen for the whole
+                        // read and somebody may have picked one, so what they
+                        // picked *is* what to restore.
+                        if this.pending_select.is_empty() {
+                            this.pending_select = this.selected_keys();
+                        }
                         this.restore_selection();
                     }
                     cx.notify();
