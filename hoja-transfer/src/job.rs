@@ -890,25 +890,8 @@ impl Worker {
             }
         }
 
-        let device = std::fs::symlink_metadata(path).map(|m| m.dev()).ok();
-        if let Some(device) = device
-            && !self.trash_dirs.contains_key(&device)
-        {
-            self.trash_dirs
-                .insert(device, TrashDir::for_path(path).ok());
-        }
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let start = self.trash_names.get(&name).copied().unwrap_or(1);
-        let put = device
-            .and_then(|device| self.trash_dirs.get(&device))
-            .and_then(Option::as_ref)
-            .map(|bin| bin.put(path, start));
-        match put {
-            Some(Ok((_, attempt))) => {
-                self.trash_names.insert(name, attempt);
+        match self.bin(path) {
+            Some(Ok(_)) => {
                 self.files_copied += 1;
                 true
             }
@@ -1566,6 +1549,38 @@ impl Worker {
         }
     }
 
+    /// Move `path` into the trash for whatever filesystem it is on.
+    ///
+    /// `None` when nothing on that filesystem can hold one. The device map and
+    /// the name-counter hint live here rather than at each call site: the
+    /// resolution is per filesystem because a job's destination tree can span
+    /// a mount point, and the counter is what keeps a thousand files called
+    /// `index.html` from rescanning the whole run of `.2`, `.3`, … each time.
+    ///
+    /// What to *record* about it is the caller's, and the two differ: a
+    /// transfer notes where the old file went, an undo only needs it gone.
+    fn bin(&mut self, path: &Path) -> Option<std::io::Result<TrashedItem>> {
+        let device = std::fs::symlink_metadata(path).ok()?.dev();
+        self.trash_dirs
+            .entry(device)
+            .or_insert_with(|| TrashDir::for_path(path).ok());
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        let start = self.trash_names.get(&name).copied().unwrap_or(1);
+        // Scoped so the loan on `self` ends before the caller's records.
+        let put = self
+            .trash_dirs
+            .get(&device)
+            .and_then(Option::as_ref)?
+            .put(path, start);
+        Some(match put {
+            Ok((item, attempt)) => {
+                self.trash_names.insert(name, attempt);
+                Ok(item)
+            }
+            Err(err) => Err(err),
+        })
+    }
+
     /// Move whatever is at `dest` into the trash, so replacing it is
     /// reversible.
     ///
@@ -1576,46 +1591,29 @@ impl Worker {
     /// FAT stick or a mount owned by root. Failing the paste instead would be
     /// a regression nobody asked for, so it warns once and carries on.
     fn displace(&mut self, dest: &Path) -> Option<TrashedItem> {
-        let device = match std::fs::symlink_metadata(dest) {
-            Ok(meta) => meta.dev(),
-            Err(_) => return None,
-        };
-        let resolved = self
-            .trash_dirs
-            .entry(device)
-            .or_insert_with(|| TrashDir::for_path(dest).ok())
-            .is_some();
-        if !resolved {
-            if !self.warned_no_trash {
-                self.warned_no_trash = true;
-                self.warn(
-                    dest,
-                    "nothing here can hold a trash, so replaced files cannot be restored"
-                        .to_string(),
-                );
-            }
-            self.undone(Undone::Lost(dest.to_path_buf()));
-            return None;
-        }
-        // Names repeat: a sync of one tree over another overwrites a thousand
-        // files called `index.html`, and each would otherwise rescan the whole
-        // run of `.2`, `.3`, … from the start. Remembering where the last one
-        // landed makes that linear overall instead of quadratic.
-        let name = dest.file_name()?.to_string_lossy().into_owned();
-        let start = self.trash_names.get(&name).copied().unwrap_or(1);
-        // Scoped so the loan on `self` ends before the records below.
-        let put = {
-            let bin = self.trash_dirs.get(&device).and_then(Option::as_ref)?;
-            bin.put(dest, start)
-        };
-        match put {
-            Ok((item, attempt)) => {
-                self.trash_names.insert(name, attempt);
+        match self.bin(dest) {
+            Some(Ok(item)) => {
                 self.undone(Undone::Displaced(item.clone()));
                 Some(item)
             }
-            Err(err) => {
+            Some(Err(err)) => {
                 self.warn(dest, format!("could not be moved to the trash: {err}"));
+                self.undone(Undone::Lost(dest.to_path_buf()));
+                None
+            }
+            // Nowhere on this filesystem can hold what is about to be
+            // replaced. One warning for the job rather than one per file, and
+            // a record saying which file so undo can name what it cannot put
+            // back rather than quietly restoring less than it claims.
+            None => {
+                if !self.warned_no_trash {
+                    self.warned_no_trash = true;
+                    self.warn(
+                        dest,
+                        "nothing here can hold a trash, so replaced files cannot be restored"
+                            .to_string(),
+                    );
+                }
                 self.undone(Undone::Lost(dest.to_path_buf()));
                 None
             }

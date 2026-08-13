@@ -187,18 +187,23 @@ struct ActiveSearch {
     work: SearchWork,
 }
 
+/// A selection named by what it points at rather than by where it sits.
+///
+/// Indices name rows; a rebuild that re-sorts names different files with the
+/// same numbers. All three have to travel together — the cursor says what
+/// enter opens, the keys say what a copy takes, and the anchor says where a
+/// shift-click measures from.
+struct HeldSelection {
+    keys: Vec<PathBuf>,
+    cursor: Option<PathBuf>,
+    anchor: Option<PathBuf>,
+}
+
 /// An archive a pane has read, and how much of it.
 struct HeldIndex {
     /// Which archive, so a pane that has moved on does not answer for it.
     archive: PathBuf,
-    // Both read by the search that comes next; holding the arrangement is
-    // what that slice needs and this one only has to get right.
-    #[allow(dead_code)]
     index: Arc<crate::archive::Index>,
-    /// False while the read behind it is still streaming members in, so a
-    /// caller can tell "that is all of it" from "that is all of it so far".
-    #[allow(dead_code)]
-    complete: bool,
 }
 
 /// Which of the two kinds of search this is.
@@ -1853,13 +1858,20 @@ impl DirPane {
     /// Indices name rows; a rebuild that re-sorts names different files with
     /// the same numbers. Anything that replaces `entries` wholesale while the
     /// user is looking at them has to carry the selection across by identity.
-    fn held_selection(&self) -> (Vec<PathBuf>, Option<PathBuf>) {
-        (
-            self.selected_keys(),
-            self.cursor_ix
-                .and_then(|ix| self.entries.get(ix))
-                .map(|entry| entry.key().to_path_buf()),
-        )
+    fn held_selection(&self) -> HeldSelection {
+        let key_at = |ix: Option<usize>| {
+            ix.and_then(|ix| self.entries.get(ix))
+                .map(|entry| entry.key().to_path_buf())
+        };
+        HeldSelection {
+            keys: self.selected_keys(),
+            cursor: key_at(self.cursor_ix),
+            // The anchor too. Carrying the cursor and the selection but not
+            // this left a shift-click extending from whatever file had moved
+            // into the old index, so the range covered a different span than
+            // the one anchored — and the next copy acted on it.
+            anchor: key_at(self.anchor_ix),
+        }
     }
 
     /// Put a selection taken by `held_selection` back onto the current rows.
@@ -1867,15 +1879,16 @@ impl DirPane {
     /// Rows that are no longer there are dropped rather than approximated: a
     /// selection that quietly moved to a neighbour is worse than one that
     /// shrank, because the next copy or delete acts on it.
-    fn put_selection_back(&mut self, held: (Vec<PathBuf>, Option<PathBuf>)) {
-        let (keys, cursor) = held;
-        if keys.is_empty() && cursor.is_none() {
+    fn put_selection_back(&mut self, held: HeldSelection) {
+        if held.keys.is_empty() && held.cursor.is_none() && held.anchor.is_none() {
             return;
         }
         let at = |wanted: &Path| self.entries.iter().position(|e| e.key() == wanted);
-        let rows: std::collections::BTreeSet<usize> = keys.iter().filter_map(|k| at(k)).collect();
+        let rows: std::collections::BTreeSet<usize> =
+            held.keys.iter().filter_map(|k| at(k)).collect();
         self.selected.set(rows);
-        self.cursor_ix = cursor.as_deref().and_then(at);
+        self.cursor_ix = held.cursor.as_deref().and_then(at);
+        self.anchor_ix = held.anchor.as_deref().and_then(at);
     }
 
     /// Re-select `pending_select` against the freshly built listing and scroll
@@ -1981,7 +1994,6 @@ impl DirPane {
                         } else {
                             index.clone()
                         },
-                        complete: finished,
                     });
 
                     // Read fresh on every tick, for the same reason the sort
@@ -1992,13 +2004,6 @@ impl DirPane {
                         crate::archive::rows_in(&index, &archive, &inside, this.view.show_hidden);
                     match rows {
                         Some(rows) => {
-                            let mut entries = rows.entries;
-                            // Read fresh on every tick, not captured once at
-                            // the top of this task: a header clicked mid-read
-                            // updates `self.view.sort` right away, and a
-                            // stale copy here would silently overwrite that
-                            // resort on the very next batch.
-                            fs::sort_entries(&mut entries, this.view.sort, this.view.folders_first);
                             // Rows are about to be replaced and re-sorted
                             // under indices that name positions rather than
                             // files. Held by key across it, because a row
@@ -2024,7 +2029,23 @@ impl DirPane {
                                         *at = capped;
                                     }
                                 }
-                                None => this.entries = entries,
+                                None => {
+                                    // Sorted here rather than above, so a
+                                    // search does not pay for a listing it is
+                                    // about to throw away on every tick of a
+                                    // slow read. Read fresh either way: a
+                                    // header clicked mid-read updates
+                                    // `view.sort` right now, and a copy taken
+                                    // at the top of this task would overwrite
+                                    // that on the next batch.
+                                    let mut entries = rows.entries;
+                                    fs::sort_entries(
+                                        &mut entries,
+                                        this.view.sort,
+                                        this.view.folders_first,
+                                    );
+                                    this.entries = entries;
+                                }
                             }
                             this.put_selection_back(held);
                             this.error = None;
@@ -2882,16 +2903,15 @@ impl DirPane {
     /// Replace the rows with everything under this directory matching
     /// `query`, and say whether the cap cut it short.
     ///
-    /// Falls back to the rows on screen when the pane holds no arrangement —
-    /// an archive that failed to read has none — so a search there filters
-    /// what is there rather than showing nothing.
+    /// With no arrangement there is nothing to search and the rows stay empty
+    /// until the next read tick fills them in. That is a fraction of a second
+    /// on entering an archive and forever on one that failed to read, which is
+    /// right in both cases: there is nothing in a broken archive to find.
     fn filter_archive(&mut self, query: &str) -> bool {
         let Location::Archive { archive, inside } = &self.dir else {
             return false;
         };
         let Some(held) = self.held.as_ref().filter(|h| h.archive == *archive) else {
-            self.entries
-                .retain(|entry| fs::matches_filter(&entry.name, query));
             return false;
         };
         let found =

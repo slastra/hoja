@@ -203,6 +203,15 @@ pub struct JobSummary {
     /// record would undo part of a transfer and call it done, which is worse
     /// than declining to undo it at all. `undoable` says which happened.
     pub undone: Vec<Undone>,
-    /// Whether `undone` is the whole story.
+    /// Whether the log above is the whole story.
+    ///
+    /// False only where there were more changes than `MAX_UNDO_RECORDS` and
+    /// the log was therefore dropped: it is the difference between "this job
+    /// changed nothing worth recording" and "this job changed more than can be
+    /// held", which an empty `undone` cannot tell apart on its own.
+    ///
+    /// A job that could not bin something it replaced stays `true`, because
+    /// the `Lost` record in the log says which file that was, and undoing the
+    /// rest is still worth doing.
     pub undoable: bool,
 }

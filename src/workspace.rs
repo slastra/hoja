@@ -470,10 +470,22 @@ impl JobView {
     fn fraction(&self) -> f32 {
         use std::sync::atomic::Ordering::Relaxed;
         let progress = self.handle.progress();
-        let total = progress.bytes_total.load(Relaxed);
-        if progress.walk_complete.load(Relaxed) && total > 0 {
-            let done = progress.bytes_done.load(Relaxed);
-            return (done as f32 / total as f32).clamp(0., 1.);
+        if progress.walk_complete.load(Relaxed) {
+            let bytes = progress.bytes_total.load(Relaxed);
+            if bytes > 0 {
+                let done = progress.bytes_done.load(Relaxed);
+                return (done as f32 / bytes as f32).clamp(0., 1.);
+            }
+            // Nothing has a size, so count the things instead. An undo moves
+            // files to the trash and renames them back, which is all metadata:
+            // its byte total is zero however many files it is working through,
+            // and a bar stuck at nothing for the whole of it defeats the
+            // reason it gets a row at all.
+            let files = progress.files_total.load(Relaxed);
+            if files > 0 {
+                let done = progress.files_done.load(Relaxed);
+                return (done as f32 / files as f32).clamp(0., 1.);
+            }
         }
         if self.done.is_some() { 1. } else { 0. }
     }
@@ -1308,6 +1320,7 @@ impl Workspace {
         // Collected rather than pushed in place: the loop below holds a
         // mutable borrow of `self.jobs`, and the stack lives beside it.
         let mut remember: Vec<UndoEntry> = Vec::new();
+        let mut notices: Vec<String> = Vec::new();
 
         let now = std::time::Instant::now();
         for job in &mut self.jobs {
@@ -1344,7 +1357,7 @@ impl Workspace {
                         }
                     }
                     JobEvent::Warning { .. } => {}
-                    JobEvent::Done(summary) => {
+                    JobEvent::Done(mut summary) => {
                         job.done = Some(summary.outcome);
                         // Nothing left to pick up, so nothing left to say so.
                         job.record = None;
@@ -1383,16 +1396,26 @@ impl Workspace {
                         // what it could *not* reverse, under the name of the
                         // transfer it was undoing, so a second press retries
                         // exactly those; a transfer hands back what it did.
+                        // A job whose log outgrew the cap says so, because
+                        // "nothing to undo" and "too much to undo" look the
+                        // same from an empty list and only one of them is
+                        // worth telling somebody about.
+                        if !summary.undoable {
+                            notices
+                                .push(format!("{} changed too much to undo", job.handle.label()));
+                        }
                         if !summary.undone.is_empty() {
-                            remember.push(match &job.undo_of {
-                                Some(label) => UndoEntry::Transfer {
-                                    label: label.clone(),
-                                    records: summary.undone.clone(),
-                                },
-                                None => UndoEntry::Transfer {
-                                    label: job.handle.label().to_string(),
-                                    records: summary.undone.clone(),
-                                },
+                            // Taken rather than cloned: a copy that merged into
+                            // a tree of a hundred thousand files records one
+                            // line each, and duplicating that vector on the UI
+                            // thread only to drop it a moment later is hundreds
+                            // of megabytes of paths for nothing.
+                            remember.push(UndoEntry::Transfer {
+                                label: job
+                                    .undo_of
+                                    .clone()
+                                    .unwrap_or_else(|| job.handle.label().to_string()),
+                                records: std::mem::take(&mut summary.undone),
                             });
                         }
 
@@ -1409,6 +1432,9 @@ impl Workspace {
 
         for entry in remember {
             self.remember_undo(entry);
+        }
+        if let Some(message) = notices.pop() {
+            self.set_notice(Some(Notice::Info(message)), cx);
         }
 
         // Clean finished jobs disappear on their own; failed ones persist until
@@ -2260,8 +2286,10 @@ impl Workspace {
     /// state was a call stack, and its half-written file was reaped at
     /// startup. So the row says "finish", never "resume".
     ///
-    /// Skip rather than a prompt for every collision, because everything
-    /// already at the destination is what the interrupted run put there.
+    /// It answers collisions the way the interrupted run was told to, which
+    /// for a job whose user was never asked means asking now. Deciding on
+    /// their behalf would report a clean finish over files they had asked to
+    /// replace and which still held their old contents.
     fn finish_interrupted(&mut self, at: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(entry) = self.interrupted.get(at) else {
             return;

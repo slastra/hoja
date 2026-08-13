@@ -810,16 +810,7 @@ pub fn search_in(
             // Built against the row's *own* directory, so `key` strips back to
             // the member's real path and copy-out, drag-out and open all
             // resolve it without knowing a search happened.
-            let mut entry = crate::fs::DirEntry::in_archive(
-                &shared,
-                Path::new(dir),
-                &row.name,
-                row.is_dir,
-                row.member,
-            );
-            entry.size = Some(row.size);
-            entry.modified = row.modified;
-            entry.mode = row.mode;
+            let mut entry = entry_for(&shared, Path::new(dir), row);
             // Where it sits relative to the directory being searched, which is
             // the label. `name` stays the row's own, because rename, git
             // colouring, type-ahead and the sort all key on it.
@@ -835,6 +826,27 @@ pub fn search_in(
     Found { entries, capped }
 }
 
+/// One row of an archive as a listing entry.
+///
+/// Shared by `rows_in` and `search_in` because the two have to agree and
+/// nothing else would make them: a field added here that only one of them
+/// filled would show up as a row that renders differently once it has come
+/// back from a search.
+///
+/// `at` is the directory the row lives in, which is what `key` is built from.
+/// For a listing that is always the directory being shown; for a search it is
+/// the row's own, which is what lets copy-out resolve a result from any depth.
+fn entry_for(shared: &Arc<Path>, at: &Path, row: &Row) -> crate::fs::DirEntry {
+    let mut entry = crate::fs::DirEntry::in_archive(shared, at, &row.name, row.is_dir, row.member);
+    // A folder's size is exact and already known, which is why no walk is
+    // started for one and why its Size column is filled the moment the listing
+    // lands rather than a second later.
+    entry.size = Some(row.size);
+    entry.modified = row.modified;
+    entry.mode = row.mode;
+    entry
+}
+
 pub fn rows_in(index: &Index, archive: &Path, inside: &Path, show_hidden: bool) -> Option<Rows> {
     let rows = index.rows(inside)?;
     let shared: Arc<Path> = Arc::from(archive);
@@ -846,17 +858,7 @@ pub fn rows_in(index: &Index, archive: &Path, inside: &Path, show_hidden: bool) 
         // function also does, because nothing writes into an archive, so that
         // name can never arise.
         .filter(|row| show_hidden || !row.name.starts_with('.'))
-        .map(|row| {
-            let mut entry =
-                crate::fs::DirEntry::in_archive(&shared, inside, &row.name, row.is_dir, row.member);
-            // A folder's size is exact and already known, which is why no walk
-            // is started for one and why its Size column is filled the moment
-            // the listing lands rather than a second later.
-            entry.size = Some(row.size);
-            entry.modified = row.modified;
-            entry.mode = row.mode;
-            entry
-        })
+        .map(|row| entry_for(&shared, inside, row))
         .collect();
 
     Some(Rows {
