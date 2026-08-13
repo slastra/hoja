@@ -285,7 +285,7 @@ dependencies = [
 [[package]]
 name = "askpass"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "futures",
@@ -1012,7 +1012,7 @@ dependencies = [
 [[package]]
 name = "clock"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "serde",
  "smallvec",
@@ -1021,7 +1021,7 @@ dependencies = [
 [[package]]
 name = "cloud_llm_client"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "serde",
@@ -1113,7 +1113,7 @@ dependencies = [
 [[package]]
 name = "collections"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "gpui_util",
  "indexmap",
@@ -1705,7 +1705,7 @@ dependencies = [
 [[package]]
 name = "derive_refineable"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2095,7 +2095,7 @@ dependencies = [
 [[package]]
 name = "file_icons"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "gpui",
  "serde",
@@ -2299,7 +2299,7 @@ dependencies = [
 [[package]]
 name = "fs"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -2489,7 +2489,7 @@ dependencies = [
 [[package]]
 name = "fuzzy"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "gpui",
  "gpui_util",
@@ -2500,7 +2500,7 @@ dependencies = [
 [[package]]
 name = "fuzzy_nucleo"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "fuzzy",
  "gpui",
@@ -2591,7 +2591,7 @@ dependencies = [
 [[package]]
 name = "git"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "askpass",
@@ -2722,7 +2722,7 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.2.2"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -2804,7 +2804,7 @@ dependencies = [
 [[package]]
 name = "gpui_linux"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -2856,7 +2856,7 @@ dependencies = [
 [[package]]
 name = "gpui_macos"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -2904,7 +2904,7 @@ dependencies = [
 [[package]]
 name = "gpui_macros"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -2915,7 +2915,7 @@ dependencies = [
 [[package]]
 name = "gpui_platform"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "console_error_panic_hook",
  "gpui",
@@ -2928,7 +2928,7 @@ dependencies = [
 [[package]]
 name = "gpui_shared_string"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "schemars",
  "serde",
@@ -2938,7 +2938,7 @@ dependencies = [
 [[package]]
 name = "gpui_util"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "log",
@@ -2948,7 +2948,7 @@ dependencies = [
 [[package]]
 name = "gpui_web"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -2971,7 +2971,7 @@ dependencies = [
 [[package]]
 name = "gpui_wgpu"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3001,7 +3001,7 @@ dependencies = [
 [[package]]
 name = "gpui_windows"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -3239,7 +3239,7 @@ dependencies = [
 [[package]]
 name = "http_client"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -3722,7 +3722,7 @@ dependencies = [
 [[package]]
 name = "language_model_core"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "async-lock",
@@ -4021,7 +4021,7 @@ dependencies = [
 [[package]]
 name = "media"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "bindgen",
@@ -4084,7 +4084,7 @@ dependencies = [
 [[package]]
 name = "migrator"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "collections",
@@ -4197,7 +4197,7 @@ dependencies = [
 [[package]]
 name = "net"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "async-io",
@@ -4907,7 +4907,7 @@ checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
 [[package]]
 name = "path"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "dunce",
@@ -4936,7 +4936,7 @@ dependencies = [
 [[package]]
 name = "paths"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "const_format",
  "dirs",
@@ -4963,7 +4963,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "perf"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "collections",
  "serde",
@@ -5338,7 +5338,7 @@ dependencies = [
 [[package]]
 name = "proto"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "prost",
@@ -5721,7 +5721,7 @@ dependencies = [
 [[package]]
 name = "refineable"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "derive_refineable",
 ]
@@ -5772,7 +5772,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "release_channel"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "gpui",
  "semver",
@@ -5813,7 +5813,7 @@ dependencies = [
 [[package]]
 name = "rope"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "heapless",
  "log",
@@ -5980,7 +5980,7 @@ dependencies = [
 [[package]]
 name = "scheduler"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "async-task",
  "backtrace",
@@ -6217,7 +6217,7 @@ dependencies = [
 [[package]]
 name = "settings"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "collections",
@@ -6246,7 +6246,7 @@ dependencies = [
 [[package]]
 name = "settings_content"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "collections",
@@ -6267,7 +6267,7 @@ dependencies = [
 [[package]]
 name = "settings_json"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "serde",
@@ -6282,7 +6282,7 @@ dependencies = [
 [[package]]
 name = "settings_macros"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "quote",
  "syn 2.0.119",
@@ -6566,7 +6566,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sum_tree"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "heapless",
  "log",
@@ -6728,7 +6728,7 @@ dependencies = [
 [[package]]
 name = "syntax_theme"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "gpui",
 ]
@@ -6817,7 +6817,7 @@ dependencies = [
 [[package]]
 name = "telemetry"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "futures",
  "serde",
@@ -6828,7 +6828,7 @@ dependencies = [
 [[package]]
 name = "telemetry_events"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "semver",
  "serde",
@@ -6871,7 +6871,7 @@ dependencies = [
 [[package]]
 name = "text"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "clock",
@@ -6889,7 +6889,7 @@ dependencies = [
 [[package]]
 name = "theme"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "collections",
@@ -6910,7 +6910,7 @@ dependencies = [
 [[package]]
 name = "theme_settings"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "collections",
@@ -7461,7 +7461,7 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 [[package]]
 name = "util"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "async-fs",
@@ -7502,7 +7502,7 @@ dependencies = [
 [[package]]
 name = "util_macros"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "perf",
  "quote",
@@ -9313,7 +9313,7 @@ dependencies = [
 [[package]]
 name = "zlog"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "anyhow",
  "chrono",
@@ -9330,7 +9330,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 [[package]]
 name = "ztracing"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 dependencies = [
  "tracing",
  "tracing-subscriber",
@@ -9341,7 +9341,7 @@ dependencies = [
 [[package]]
 name = "ztracing_macro"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=5e1fd392f67e27fa1da91bad43eef7db1a5dec23#5e1fd392f67e27fa1da91bad43eef7db1a5dec23"
+source = "git+https://github.com/slastra/zed?rev=b6bce6e19de15743a054cddf12b7976c8a86d36a#b6bce6e19de15743a054cddf12b7976c8a86d36a"
 
 [[package]]
 name = "zune-core"
