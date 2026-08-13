@@ -607,7 +607,8 @@ impl Worker {
 
         let mut cancelled = false;
         let mut outstanding = Vec::new();
-        for record in records.into_iter().rev() {
+        let mut left = records.into_iter().rev();
+        for record in left.by_ref() {
             if self.check_pause_cancel() {
                 cancelled = true;
                 outstanding.push(record);
@@ -618,6 +619,12 @@ impl Worker {
             }
             self.progress.files_done.fetch_add(1, Ordering::Relaxed);
         }
+        // Everything the loop never reached is still owed. Breaking out of a
+        // consuming iterator drops the rest of it, so cancelling halfway
+        // through undoing two hundred thousand files used to lose the record
+        // of the hundred thousand not yet reversed — leaving them at the
+        // destination with nothing anywhere that knew they were there.
+        outstanding.extend(left);
 
         self.progress.set_phase(Phase::Finished);
         // Back into the order they were recorded in, so what goes onto the
@@ -922,8 +929,8 @@ impl Worker {
         if !counted && !self.scanned {
             self.progress.files_total.fetch_add(1, Ordering::Relaxed);
         }
-        let (dest, displaced) = match self.resolve_dest(src, dest) {
-            DestPlan::Proceed { path, displaced } => (path, displaced),
+        let (dest, replacing) = match self.resolve_dest(src, dest) {
+            DestPlan::Proceed { path, replacing } => (path, replacing),
             DestPlan::Skip => {
                 self.files_skipped += 1;
                 self.progress.files_done.fetch_add(1, Ordering::Relaxed);
@@ -931,13 +938,14 @@ impl Worker {
             }
             DestPlan::Cancel => return Step::Cancelled,
         };
-        // Overwrite of an existing entry, so remove it first: symlink() has no
-        // replace semantics. Only when the plan actually says to overwrite —
-        // this used to unlink whatever was at `dest` unconditionally, which
-        // was invisible while nothing needed to put it back.
-        if displaced.is_some() {
-            // Whatever was here is in the trash now, so this only clears the
-            // name. symlink() has no replace semantics, hence doing it at all.
+        // Nothing is written before this point, so this is the last moment,
+        // and the name has to be clear either way: `symlink()` has no replace
+        // semantics. `displace` moves the old entry to the trash and the
+        // unlink then finds nothing; where it could not, the unlink is what
+        // actually clears the way, which is why it runs on `replacing` rather
+        // than on whether the trash accepted it.
+        if replacing {
+            self.displace(&dest);
             let _ = std::fs::remove_file(&dest);
         }
         match meta::copy_symlink(src, &dest) {
@@ -1105,8 +1113,8 @@ impl Worker {
             // rename() clobbers silently, so conflicts resolve BEFORE the
             // attempt, and the attempt itself refuses to replace, so a file
             // appearing in between is re-resolved rather than destroyed.
-            let mut planned = match self.resolve_dest(src, dest) {
-                DestPlan::Proceed { path, .. } => path,
+            let (mut planned, replacing) = match self.resolve_dest(src, dest) {
+                DestPlan::Proceed { path, replacing } => (path, replacing),
                 DestPlan::Skip => {
                     self.files_skipped += 1;
                     self.progress.files_done.fetch_add(1, Ordering::Relaxed);
@@ -1114,20 +1122,27 @@ impl Worker {
                 }
                 DestPlan::Cancel => return Step::Cancelled,
             };
-            // An Overwrite decision means the user asked for the replacement,
-            // so clear the name first; NOREPLACE would otherwise refuse it.
-            // What was there has already been moved to the trash by
-            // `resolve_dest`, so this usually finds nothing and is here for
-            // the case where it could not be.
-            if planned == *dest && std::fs::symlink_metadata(&planned).is_ok() {
+            // The rename below is the destructive act and there is nothing to
+            // undo before it, so the old file moves out of the way here.
+            // NOREPLACE would otherwise refuse the replacement the user asked
+            // for, hence clearing the name whether or not the trash took it.
+            if replacing && std::fs::symlink_metadata(&planned).is_ok() {
+                self.displace(&planned);
                 let _ = std::fs::remove_file(&planned);
             }
             let mut renamed = sys::rename_no_replace(src, &planned);
             if matches!(&renamed, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
                 // Raced: ask again against the destination that now exists.
                 match self.resolve_dest(src, &planned) {
-                    DestPlan::Proceed { path: d, .. } => {
+                    DestPlan::Proceed {
+                        path: d,
+                        replacing: again,
+                    } => {
                         planned = d;
+                        if again && std::fs::symlink_metadata(&planned).is_ok() {
+                            self.displace(&planned);
+                            let _ = std::fs::remove_file(&planned);
+                        }
                         renamed = sys::rename_no_replace(src, &planned);
                     }
                     DestPlan::Skip => {
@@ -1169,8 +1184,8 @@ impl Worker {
             }
         }
 
-        let (planned, displaced) = match self.resolve_dest(src, dest) {
-            DestPlan::Proceed { path, displaced } => (path, displaced),
+        let (planned, replacing) = match self.resolve_dest(src, dest) {
+            DestPlan::Proceed { path, replacing } => (path, replacing),
             DestPlan::Skip => {
                 self.files_skipped += 1;
                 self.progress.files_done.fetch_add(1, Ordering::Relaxed);
@@ -1183,7 +1198,7 @@ impl Worker {
             &planned,
             src_meta,
             self.spec.op == Operation::Move,
-            displaced.is_some(),
+            replacing,
         )
     }
 
@@ -1195,7 +1210,10 @@ impl Worker {
         dest: &Path,
         src_meta: &std::fs::Metadata,
         delete_source: bool,
-        dest_existed: bool,
+        // The destination is occupied and the user chose to replace it.
+        // Nothing has been done about that yet: the old file is moved out of
+        // the way below, once this copy has something to put in its place.
+        replacing: bool,
     ) -> Step {
         // Hardlink preservation: second and later links to an inode we already
         // copied become hardlinks to the first copy.
@@ -1288,7 +1306,11 @@ impl Worker {
 
                 // Atomic replace over an existing file needs the data durable
                 // before the rename; fresh destinations keep cp-parity speed.
-                if dest_existed && let Err(err) = rustix::fs::fsync(&tmp) {
+                // Keyed on what the user chose, not on whether the trash took
+                // the old file: a filesystem with no trash is exactly the
+                // removable kind most likely to be pulled mid-writeback, and
+                // skipping the fsync there was the opposite of the intent.
+                if replacing && let Err(err) = rustix::fs::fsync(&tmp) {
                     drop(tmp);
                     let _ = std::fs::remove_file(&tmp_path);
                     self.queue_error(dest, Stage::Write, err.into());
@@ -1299,6 +1321,18 @@ impl Worker {
                 // the mtime is the one the file will actually carry.
                 let landed = tmp.metadata().ok();
                 drop(tmp);
+
+                // The last moment before anything is destroyed, and the whole
+                // reason this is here rather than at resolve time: everything
+                // that could still fail — opening the source, reading it,
+                // running out of space, the metadata, the fsync — has already
+                // happened. Displacing at resolve time meant a copy that then
+                // failed to open its source had already emptied the
+                // destination, leaving the user's file only in the trash and
+                // the job reporting an error about something else entirely.
+                if replacing {
+                    self.displace(dest);
+                }
 
                 if let Err(err) = std::fs::rename(&tmp_path, dest) {
                     let _ = std::fs::remove_file(&tmp_path);
@@ -1378,7 +1412,7 @@ impl Worker {
         if std::fs::symlink_metadata(dest).is_err() {
             return DestPlan::Proceed {
                 path: dest.to_path_buf(),
-                displaced: None,
+                replacing: false,
             };
         }
         self.progress.set_phase(Phase::AwaitingConflict);
@@ -1388,8 +1422,8 @@ impl Worker {
             Resolution::CancelJob => DestPlan::Cancel,
             Resolution::Proceed(ConflictChoice::Skip) => DestPlan::Skip,
             Resolution::Proceed(ConflictChoice::Overwrite) => DestPlan::Proceed {
-                displaced: self.displace(dest),
                 path: dest.to_path_buf(),
+                replacing: true,
             },
             Resolution::Proceed(ConflictChoice::KeepBoth) => {
                 for attempt in 1..1000 {
@@ -1398,7 +1432,7 @@ impl Worker {
                         // Chosen because nothing is there.
                         return DestPlan::Proceed {
                             path: candidate,
-                            displaced: None,
+                            replacing: false,
                         };
                     }
                 }
@@ -1459,16 +1493,18 @@ impl Worker {
 }
 
 enum DestPlan {
-    /// `displaced` answers what a second `dest.exists()` used to ask: resolving
-    /// a destination already stats it, so asking again was a syscall per file
-    /// for something we had just learned. It is `Some` only where the plan was
-    /// to overwrite and the old file was moved to the trash, which is what
-    /// makes the overwrite reversible — and what makes the three sites that
-    /// overwrite get it right by construction rather than by each remembering
-    /// to.
+    /// `replacing` answers what a second `dest.exists()` used to ask:
+    /// resolving a destination already stats it, so asking again was a syscall
+    /// per file for something we had just learned.
+    ///
+    /// It says the destination is occupied and the user chose to replace it —
+    /// not that anything has been done about that yet. Moving the old file out
+    /// of the way is each site's own last act before its destructive one,
+    /// because doing it here, at resolve time, meant a copy that then failed
+    /// to even open its source had already emptied the destination.
     Proceed {
         path: PathBuf,
-        displaced: Option<TrashedItem>,
+        replacing: bool,
     },
     Skip,
     Cancel,

@@ -1615,6 +1615,11 @@ impl Workspace {
         }
         let parents = parent_dirs(&touched);
 
+        // Cloned before the move, so a refusal below can put the entry back.
+        // Without this the popped records went with the failed call and the
+        // next ctrl-z silently undid the *previous* entry instead — a
+        // different transfer nobody asked to reverse.
+        let owed = records.clone();
         match hoja_transfer::spawn_undo(label.clone(), records) {
             Ok(handle) => {
                 self.jobs.push(JobView {
@@ -1637,8 +1642,11 @@ impl Workspace {
                 cx.notify();
             }
             Err(err) => {
-                // The records go back: nothing was taken back, so the entry is
-                // still owed.
+                // Nothing was taken back, so the entry is still owed.
+                self.remember_undo(UndoEntry::Transfer {
+                    label: label.clone(),
+                    records: owed,
+                });
                 self.set_notice(
                     Some(Notice::Problem(format!("Could not undo {label}: {err}"))),
                     cx,

@@ -271,3 +271,80 @@ fn move_overwrite_replaces_and_keep_both_renames() {
         b"second"
     );
 }
+
+#[test]
+fn an_overwrite_that_fails_leaves_the_original_where_it_was() {
+    // The destination is only moved out of the way once the replacement is
+    // written and durable. Displacing when the conflict was *answered* meant a
+    // copy that then failed to open its source had already emptied the
+    // destination: the job reported an error about the source while the file
+    // the user actually had went quietly to the trash.
+    use std::os::unix::fs::PermissionsExt;
+
+    let _trash = trash_env();
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let src = write_file(src_dir.path(), "q.txt", b"new");
+    let dest = write_file(dst_dir.path(), "q.txt", b"old");
+    // Unreadable, so the copy fails after the conflict is answered.
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let handle = spawn_job(copy_spec(vec![src.clone()], dst_dir.path())).unwrap();
+    let (_, summary) = drain(&handle, || ConflictDecision::Apply {
+        choice: ConflictChoice::Overwrite,
+        apply_to_all: false,
+    });
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert_eq!(summary.outcome, Outcome::CompletedWithErrors);
+    assert!(
+        dest.exists(),
+        "the file that was there is still there, not only in the trash"
+    );
+    assert_eq!(std::fs::read(&dest).unwrap(), b"old", "and unchanged");
+    assert!(
+        !summary
+            .undone
+            .iter()
+            .any(|r| matches!(r, Undone::Displaced(_))),
+        "and nothing was displaced, because nothing replaced it"
+    );
+}
+
+#[test]
+fn replacing_a_symlink_where_no_trash_exists_still_replaces_it() {
+    // The unlink that clears the name runs on what the user chose, not on
+    // whether the trash accepted the old entry. Keying it on the displacement
+    // skipped it in exactly the case where the old entry was still there, and
+    // symlinkat then failed EEXIST on a replacement that had been authorised.
+    let _trash = trash_env();
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let target = write_file(src_dir.path(), "target.txt", b"t");
+    let link = src_dir.path().join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let dest = write_file(dst_dir.path(), "link", b"in the way");
+
+    let blocked = src_dir.path().join("not-a-dir");
+    std::fs::write(&blocked, b"").unwrap();
+    let previous = std::env::var_os("XDG_DATA_HOME");
+    // Safe under the guard every test in this file takes.
+    unsafe { std::env::set_var("XDG_DATA_HOME", &blocked) };
+
+    let handle = spawn_job(copy_spec(vec![link], dst_dir.path())).unwrap();
+    let (_, summary) = drain(&handle, || ConflictDecision::Apply {
+        choice: ConflictChoice::Overwrite,
+        apply_to_all: false,
+    });
+
+    match previous {
+        Some(value) => unsafe { std::env::set_var("XDG_DATA_HOME", value) },
+        None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
+    }
+
+    assert_eq!(summary.outcome, Outcome::Completed, "{:?}", summary.errors);
+    assert!(
+        std::fs::symlink_metadata(&dest).unwrap().is_symlink(),
+        "the replacement the user asked for actually happened"
+    );
+}
