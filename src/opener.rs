@@ -69,6 +69,15 @@ pub fn apps_for(path: &Path) -> Vec<AppLaunch> {
         if entry.no_display() || entry.hidden() || entry.terminal() {
             continue;
         }
+        // An application whose `TryExec` is gone was uninstalled and left its
+        // `.desktop` behind. The spec says such an entry may be ignored; not
+        // ignoring it means offering a row that can only fail at launch.
+        if entry
+            .try_exec()
+            .is_some_and(|program| !try_exec_present(program))
+        {
+            continue;
+        }
         let Ok(argv) = entry.parse_exec_with_uris(&[uri.as_str()], &locales) else {
             continue;
         };
@@ -85,6 +94,31 @@ pub fn apps_for(path: &Path) -> Vec<AppLaunch> {
         });
     }
     result
+}
+
+/// Whether a `TryExec` value names something actually installed.
+///
+/// Per the desktop entry spec: an absolute path is used as-is, anything else is
+/// looked up in `PATH`. Not merely "exists" — a path that is present but not
+/// executable is exactly the uninstalled-leftover case this exists to catch.
+fn try_exec_present(program: &str) -> bool {
+    if program.is_empty() {
+        return false;
+    }
+    let path = Path::new(program);
+    if path.is_absolute() {
+        return is_executable(path);
+    }
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| is_executable(&dir.join(program)))
+    })
+}
+
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 pub fn launch(app: &AppLaunch) -> std::io::Result<()> {
@@ -422,6 +456,28 @@ mod tests {
     #[test]
     fn an_unknown_type_is_its_own_only_ancestor() {
         assert_eq!(ancestors_from("x/y".into(), &HashMap::new()), ["x/y"]);
+    }
+
+    #[test]
+    fn try_exec_finds_an_installed_program() {
+        // Absolute and bare both resolve, which is the whole of the spec's rule.
+        assert!(try_exec_present("/bin/sh"));
+        assert!(try_exec_present("sh"));
+    }
+
+    #[test]
+    fn try_exec_rejects_what_is_not_there() {
+        assert!(!try_exec_present("/usr/bin/definitely-not-installed-xyzzy"));
+        assert!(!try_exec_present("definitely-not-installed-xyzzy"));
+        assert!(!try_exec_present(""));
+    }
+
+    #[test]
+    fn try_exec_rejects_a_file_that_is_not_executable() {
+        // The uninstalled-leftover case: the path exists, but nothing can run
+        // it. `exists()` alone would wrongly offer the application.
+        assert!(std::path::Path::new("/etc/hostname").exists());
+        assert!(!try_exec_present("/etc/hostname"));
     }
 
     #[test]
