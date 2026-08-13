@@ -65,6 +65,14 @@ pub struct PaneProbe {
     /// to tell "right-click did nothing" from "right-click did something",
     /// which a row count or a footer string can't distinguish.
     pub menu_open: bool,
+    /// The menu's row labels, top to bottom, separators omitted. Lets a test
+    /// assert what is on offer rather than only that something is.
+    pub menu_items: Vec<String>,
+    /// Whether a submenu is open, and what is in it. Two fields rather than an
+    /// `Option<Vec<_>>` so a test can distinguish "open but empty" from
+    /// "closed", which an empty list alone would not.
+    pub submenu_open: bool,
+    pub submenu_items: Vec<String>,
 }
 
 /// A transfer, as a test sees it.

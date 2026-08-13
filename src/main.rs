@@ -44,7 +44,10 @@ use dir_pane::{
     MoveToBottom, MoveToTop, MoveUp, NavBack, NavForward, OpenSelected, RenameSelected, SelectAll,
     StartSearch, ToggleHiddenFiles, ToggleSelection,
 };
-use file_menu::{Cancel as MenuCancel, Confirm as MenuConfirm, SelectNext, SelectPrevious};
+use file_menu::{
+    Cancel as MenuCancel, CloseSubmenu, Confirm as MenuConfirm, OpenSubmenu, SelectNext,
+    SelectPrevious,
+};
 use path_editor as ab;
 use place_finder as places_finder;
 use workspace::{
@@ -247,6 +250,10 @@ fn main() {
             KeyBinding::new("enter", MenuConfirm, Some("menu")),
             KeyBinding::new("down", SelectNext, Some("menu")),
             KeyBinding::new("up", SelectPrevious, Some("menu")),
+            // Right opens a submenu, left backs out of one. Escape is not the
+            // same thing: it closes the submenu *or* the whole menu.
+            KeyBinding::new("right", OpenSubmenu, Some("menu")),
+            KeyBinding::new("left", CloseSubmenu, Some("menu")),
         ]);
 
         // The XDG mime database and .desktop entries cost ~12ms to parse. Do it

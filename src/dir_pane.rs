@@ -884,7 +884,7 @@ impl DirPane {
     /// the bytes behind it. A probe built from the underlying data instead
     /// would pass while the screen showed something else, which is the one
     /// thing it must not do.
-    pub fn probe(&self, now: std::time::SystemTime) -> crate::probe::PaneProbe {
+    pub fn probe(&self, now: std::time::SystemTime, cx: &App) -> crate::probe::PaneProbe {
         let column = |which: Column| {
             self.entries
                 .iter()
@@ -893,6 +893,8 @@ impl DirPane {
                 .map(|(ix, entry)| which.value(entry, self.folder_bytes(ix), now))
                 .collect()
         };
+        let menu = self.context_menu.as_ref().map(|(_, menu)| menu.read(cx));
+        let submenu = menu.and_then(|menu| menu.open_submenu_labels());
         crate::probe::PaneProbe {
             dir: self.dir.clone(),
             active: self.active,
@@ -915,6 +917,9 @@ impl DirPane {
             reading: self.reading_bytes.is_some(),
             error: self.error.clone(),
             menu_open: self.context_menu.is_some(),
+            menu_items: menu.map(|menu| menu.item_labels()).unwrap_or_default(),
+            submenu_open: submenu.is_some(),
+            submenu_items: submenu.unwrap_or_default(),
         }
     }
 
@@ -1196,14 +1201,21 @@ impl DirPane {
                 let Some((_, menu)) = this.context_menu.as_ref() else {
                     return;
                 };
-                let mut items = vec![MenuItem::Separator];
-                items.extend(apps.into_iter().take(8).map(|app| {
-                    MenuItem::action(format!("Open with {}", app.name), move |_, _| {
-                        if let Err(err) = crate::opener::launch(&app) {
-                            eprintln!("[hoja] launch failed: {err}");
-                        }
+                // One row that opens a menu, not a flat run. Twelve applications
+                // register for a PNG on a well-stocked machine, which swamped the
+                // menu they were part of; the old `.take(8)` kept it survivable by
+                // dropping four of them with nothing on screen to say so.
+                let apps = apps
+                    .into_iter()
+                    .map(|app| {
+                        MenuItem::action(app.name.clone(), move |_, _| {
+                            if let Err(err) = crate::opener::launch(&app) {
+                                eprintln!("[hoja] launch failed: {err}");
+                            }
+                        })
                     })
-                }));
+                    .collect();
+                let items = vec![MenuItem::submenu("Open With", apps)];
                 menu.update(cx, |menu, cx| menu.insert_items(ix, items, cx));
             })
             .ok();

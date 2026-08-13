@@ -311,7 +311,7 @@ the window is, and everything after it is keystrokes sent somewhere unverified.
 An earlier version carried on, walked a pane up to the root of the filesystem
 and pressed paste there; nothing was written only because root is not writable.
 
-There are ten suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
+There are eleven suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
 `archive.sh` and `tar.sh` need fixtures, which `scripts/tests/setup-archives.sh`
 builds and prints the path of:
 
@@ -332,6 +332,15 @@ that raced one would lose.
 ```sh
 XFER=$(scripts/tests/setup-transfer.sh)
 scripts/sway-harness.sh "$XFER" scripts/tests/transfer.sh
+```
+
+`context-menu.sh` needs `setup-context-menu.sh`, whose fixture is a PNG rather
+than a text file on purpose: "Open With" is a submenu because the flat list was
+capped at eight applications, and proving the cap is gone needs a type that
+draws more than eight handlers. Images do; plain text does not.
+
+```sh
+scripts/sway-harness.sh "$(scripts/tests/setup-context-menu.sh)" scripts/tests/context-menu.sh
 ```
 
 `crash-phase1.sh` and `crash-phase2.sh` are one test in two runs against one

@@ -2199,7 +2199,10 @@ impl Workspace {
             // ago a file was written.
             let now = std::time::SystemTime::now();
             crate::probe::write(&mut crate::probe::Probe {
-                panes: panes.iter().map(|pane| pane.read(cx).probe(now)).collect(),
+                panes: panes
+                    .iter()
+                    .map(|pane| pane.read(cx).probe(now, cx))
+                    .collect(),
                 jobs,
                 modal,
                 notice,
