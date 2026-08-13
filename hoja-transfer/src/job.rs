@@ -367,9 +367,15 @@ struct Worker {
     /// anything this job did that it cannot take back — today that is an
     /// overwrite, which unlinks what was there.
     undoable: bool,
-    /// The trash for the destination filesystem. Outer `None` means not yet
-    /// looked for, inner `None` means looked for and not there.
-    trash_dir: Option<Option<TrashDir>>,
+    /// The trash for each filesystem this job has had to displace something
+    /// on, by device. `None` against a device means looked for and not found.
+    ///
+    /// Keyed rather than kept as one, because "a job writes to one
+    /// filesystem" is false the moment its destination tree contains a mount
+    /// point. One slot meant every later file was offered a trash on the wrong
+    /// volume, where the rename fails EXDEV — so the overwrite went ahead
+    /// having binned nothing, and the file it replaced was gone.
+    trash_dirs: HashMap<u64, Option<TrashDir>>,
     /// Basename → the counter that last claimed a trash name for it.
     trash_names: HashMap<String, u32>,
     /// One warning per job, not one per file: a sync over a filesystem with no
@@ -414,7 +420,7 @@ impl Worker {
             mount_keys: HashMap::new(),
             undone: Vec::new(),
             undoable: true,
-            trash_dir: None,
+            trash_dirs: HashMap::new(),
             trash_names: HashMap::new(),
             warned_no_trash: false,
             claimed: false,
@@ -857,17 +863,20 @@ impl Worker {
             }
         }
 
-        if self.trash_dir.is_none() {
-            self.trash_dir = Some(TrashDir::for_path(path).ok());
+        let device = std::fs::symlink_metadata(path).map(|m| m.dev()).ok();
+        if let Some(device) = device
+            && !self.trash_dirs.contains_key(&device)
+        {
+            self.trash_dirs
+                .insert(device, TrashDir::for_path(path).ok());
         }
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let start = self.trash_names.get(&name).copied().unwrap_or(1);
-        let put = self
-            .trash_dir
-            .as_ref()
+        let put = device
+            .and_then(|device| self.trash_dirs.get(&device))
             .and_then(Option::as_ref)
             .map(|bin| bin.put(path, start));
         match put {
@@ -1536,10 +1545,16 @@ impl Worker {
     /// FAT stick or a mount owned by root. Failing the paste instead would be
     /// a regression nobody asked for, so it warns once and carries on.
     fn displace(&mut self, dest: &Path) -> Option<TrashedItem> {
-        if self.trash_dir.is_none() {
-            self.trash_dir = Some(TrashDir::for_path(dest).ok());
-        }
-        if self.trash_dir.as_ref().is_some_and(Option::is_none) {
+        let device = match std::fs::symlink_metadata(dest) {
+            Ok(meta) => meta.dev(),
+            Err(_) => return None,
+        };
+        let resolved = self
+            .trash_dirs
+            .entry(device)
+            .or_insert_with(|| TrashDir::for_path(dest).ok())
+            .is_some();
+        if !resolved {
             if !self.warned_no_trash {
                 self.warned_no_trash = true;
                 self.warn(
@@ -1559,7 +1574,7 @@ impl Worker {
         let start = self.trash_names.get(&name).copied().unwrap_or(1);
         // Scoped so the loan on `self` ends before the records below.
         let put = {
-            let bin = self.trash_dir.as_ref().and_then(Option::as_ref)?;
+            let bin = self.trash_dirs.get(&device).and_then(Option::as_ref)?;
             bin.put(dest, start)
         };
         match put {

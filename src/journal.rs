@@ -46,6 +46,9 @@ const VERSION: &str = "hoja-job 1";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     pub pid: u32,
+    /// What the user answered about collisions, so finishing the job asks the
+    /// same question the same way rather than quietly deciding for them.
+    pub conflict: Option<hoja_transfer::ConflictChoice>,
     /// What this run stamps into the names of its half-written files. A pid
     /// can be recycled and a token cannot, so this is what the reaper matches.
     pub token: u64,
@@ -64,9 +67,15 @@ pub fn dir() -> Option<PathBuf> {
 impl Record {
     fn render(&self) -> String {
         let mut out = format!(
-            "{VERSION}\npid {}\ntoken {:x}\nop {}\ndest {}\n",
+            "{VERSION}\npid {}\ntoken {:x}\nconflict {}\nop {}\ndest {}\n",
             self.pid,
             self.token,
+            match self.conflict {
+                None => "ask",
+                Some(hoja_transfer::ConflictChoice::Overwrite) => "overwrite",
+                Some(hoja_transfer::ConflictChoice::Skip) => "skip",
+                Some(hoja_transfer::ConflictChoice::KeepBoth) => "both",
+            },
             match self.op {
                 Operation::Copy => "copy",
                 Operation::Move => "move",
@@ -86,6 +95,7 @@ impl Record {
         }
         let mut pid = None;
         let mut token = None;
+        let mut conflict = None;
         let mut op = None;
         let mut dest = None;
         let mut sources = Vec::new();
@@ -96,6 +106,14 @@ impl Record {
             match key {
                 "pid" => pid = value.parse().ok(),
                 "token" => token = u64::from_str_radix(value, 16).ok(),
+                "conflict" => {
+                    conflict = Some(match value {
+                        "overwrite" => Some(hoja_transfer::ConflictChoice::Overwrite),
+                        "skip" => Some(hoja_transfer::ConflictChoice::Skip),
+                        "both" => Some(hoja_transfer::ConflictChoice::KeepBoth),
+                        _ => None,
+                    })
+                }
                 "op" => {
                     op = match value {
                         "copy" => Some(Operation::Copy),
@@ -113,6 +131,9 @@ impl Record {
         Some(Record {
             pid: pid?,
             token: token?,
+            // An older record has no line for it, and "ask" is the answer that
+            // decides nothing on the user's behalf.
+            conflict: conflict.unwrap_or(None),
             op: op?,
             dest: dest?,
             sources,
@@ -140,9 +161,16 @@ impl Record {
             sources,
             dest_dir: self.dest.clone(),
             policy: hoja_transfer::JobPolicy {
-                // Everything already at the destination is what the interrupted
-                // run put there.
-                conflict: Some(hoja_transfer::ConflictChoice::Skip),
+                // The answer the user gave the first time, not Skip.
+                //
+                // Skip looks right — most of what is at the destination is
+                // what the dead run put there — and is wrong wherever the
+                // destination already held files of the same name. Someone who
+                // answered "replace all" and was interrupted halfway would
+                // have got a job that reported finishing while half the files
+                // they asked to replace still held their old contents. Where
+                // they were never asked, they are asked now.
+                conflict: self.conflict,
                 abort_on_first_error: false,
             },
         })
@@ -182,6 +210,7 @@ impl Entry {
         let record = Record {
             pid,
             token: hoja_transfer::run_token(),
+            conflict: spec.policy.conflict,
             op: spec.op,
             dest: spec.dest_dir.clone(),
             sources: spec.sources.clone(),
@@ -291,6 +320,7 @@ mod tests {
         Record {
             pid: 4242,
             token: 0xfeed_beef,
+            conflict: None,
             op: Operation::Copy,
             dest: dest.to_path_buf(),
             sources: vec![PathBuf::from("/a/one"), PathBuf::from("/a/two")],
@@ -341,6 +371,7 @@ mod tests {
         let record = Record {
             pid: 1,
             token: 0xfeed_beef,
+            conflict: None,
             op: Operation::Move,
             dest: dir.clone(),
             sources: vec![here.clone(), dir.join("already-moved")],
@@ -446,6 +477,7 @@ mod lock_tests {
         let record = Record {
             pid: 4242,
             token: 0xfeed_beef,
+            conflict: None,
             op: Operation::Move,
             dest: dest.clone(),
             sources: vec![dest.join("x")],
@@ -472,5 +504,60 @@ mod lock_tests {
              partial files belong to"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    #[test]
+    fn what_the_user_answered_survives_the_crash() {
+        // Skip looks right — most of what is at the destination is what the
+        // dead run put there — and is wrong wherever the destination already
+        // held files of the same name. Somebody who answered "replace all" and
+        // was interrupted halfway would otherwise get a job that reported
+        // finishing while half the files they asked to replace still held
+        // their old contents.
+        let dir = std::env::temp_dir().join(format!("hoja-policy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let one = dir.join("one");
+        std::fs::write(&one, b"x").unwrap();
+
+        for answer in [
+            None,
+            Some(hoja_transfer::ConflictChoice::Overwrite),
+            Some(hoja_transfer::ConflictChoice::KeepBoth),
+            Some(hoja_transfer::ConflictChoice::Skip),
+        ] {
+            let record = Record {
+                pid: 1,
+                token: 7,
+                conflict: answer,
+                op: Operation::Copy,
+                dest: dir.clone(),
+                sources: vec![one.clone()],
+            };
+            assert_eq!(
+                Record::parse(&record.render()).unwrap().conflict,
+                answer,
+                "the answer has to survive being written down"
+            );
+            assert_eq!(
+                record.remaining().unwrap().policy.conflict,
+                answer,
+                "and reach the job that finishes the work"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_record_written_before_the_answer_was_kept_asks() {
+        // No `conflict` line at all, as an older hoja would have left it.
+        // Asking is the only answer that decides nothing on the user's behalf.
+        let text = "hoja-job 1\npid 1\ntoken 7\nop copy\ndest /d\nsrc /s\n";
+        assert_eq!(Record::parse(text).unwrap().conflict, None);
     }
 }
