@@ -138,9 +138,38 @@ pub enum Undone {
         len: u64,
         mtime: Option<SystemTime>,
     },
-    /// A directory the job made, which stands for everything it went on to put
-    /// inside. Undone by removing it whole.
-    CreatedDir(PathBuf),
+    /// A directory the job made.
+    ///
+    /// For a *copy* into a name that held nothing, this stands for everything
+    /// the job went on to put inside it, which is what keeps the log small.
+    /// That shortcut is only available to a copy: a move deletes its sources
+    /// as it goes, and removing the destination would not put those back, so a
+    /// move records its children individually however deep it goes.
+    ///
+    /// `mtime` is the directory's when the job finished, filled in at the end
+    /// rather than at creation. A directory's mtime changes when an entry is
+    /// added, removed or renamed, so it is what tells undo that someone has
+    /// put something here since — in which case it declines rather than
+    /// taking their work with it.
+    CreatedDir {
+        path: PathBuf,
+        /// Whether this record stands for everything the job put inside.
+        ///
+        /// Only a copy into a fresh name may say yes, and then undo takes the
+        /// directory whole and `mtime` is what stops it taking somebody's
+        /// later work with it. A move says no: its children carry records of
+        /// their own, so by the time undo reaches the directory it has already
+        /// been emptied and all that is left is to remove it — which
+        /// `remove_dir` will refuse to do if anything is still in there, and
+        /// that refusal is the safety rather than a check.
+        whole: bool,
+        /// The directory's mtime when the job finished, which moves when an
+        /// entry is added, removed or renamed. Only meaningful with `whole`.
+        mtime: Option<SystemTime>,
+    },
+    /// A directory a move emptied and then removed. Undone by making it again,
+    /// which has to happen before the files that lived in it can go back.
+    RemovedDir(PathBuf),
     /// Something was moved out of the way to make room, and is in the trash.
     /// Undone by putting it back, once whatever replaced it is gone.
     Displaced(crate::TrashedItem),

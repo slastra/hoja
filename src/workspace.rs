@@ -1609,7 +1609,8 @@ impl Workspace {
                     touched.push(path.clone());
                     touched.extend(from.clone());
                 }
-                Undone::CreatedDir(path) | Undone::Lost(path) => touched.push(path.clone()),
+                Undone::CreatedDir { path, .. } => touched.push(path.clone()),
+                Undone::RemovedDir(path) | Undone::Lost(path) => touched.push(path.clone()),
                 Undone::Displaced(item) => touched.push(item.original.clone()),
             }
         }

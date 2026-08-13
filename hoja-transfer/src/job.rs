@@ -434,6 +434,28 @@ impl Worker {
         self.undone.push(record);
     }
 
+    /// Record what each directory this job made looked like when it stopped.
+    ///
+    /// At the end rather than at creation, because at creation it is empty and
+    /// the job is about to fill it. What this captures is the state undo is
+    /// entitled to remove; anything added afterwards moves the mtime and undo
+    /// declines. A handful of stats, since only directories the job actually
+    /// made are in here.
+    fn stamp_created_dirs(&mut self) {
+        for record in &mut self.undone {
+            if let Undone::CreatedDir {
+                path,
+                whole: true,
+                mtime,
+            } = record
+            {
+                *mtime = std::fs::symlink_metadata(&*path)
+                    .ok()
+                    .and_then(|m| m.modified().ok());
+            }
+        }
+    }
+
     /// Give up on undoing this job, and drop what was recorded so far.
     ///
     /// Dropped whole rather than kept: half a log undoes half a transfer and
@@ -570,6 +592,9 @@ impl Worker {
         }
 
         self.progress.set_phase(Phase::Finished);
+        // After the last write, so what each created directory holds now is
+        // what undo is entitled to take back.
+        self.stamp_created_dirs();
         let outcome = if cancelled {
             Outcome::Cancelled
         } else if self.errors.is_empty() {
@@ -688,7 +713,46 @@ impl Worker {
                     }
                 }
             }
-            Undone::CreatedDir(path) => self.take_back(path, None),
+            Undone::RemovedDir(path) => match std::fs::create_dir_all(path) {
+                Ok(()) => true,
+                Err(err) => {
+                    self.queue_error(path, Stage::CreateDir, err);
+                    false
+                }
+            },
+            Undone::CreatedDir { path, whole, mtime } => {
+                let Ok(meta) = std::fs::symlink_metadata(path) else {
+                    // Already gone. Nothing to take back, and nothing wrong.
+                    return true;
+                };
+                if !*whole {
+                    // Its children had records of their own and have already
+                    // gone back, so this should be empty. `remove_dir` refuses
+                    // if it is not, which is exactly the check wanted: whatever
+                    // is still in there is not this job's to remove.
+                    return match std::fs::remove_dir(path) {
+                        Ok(()) => true,
+                        Err(err) => {
+                            self.queue_error(path, Stage::DeleteSource, err);
+                            false
+                        }
+                    };
+                }
+                // This record stands for the whole subtree, so removing it
+                // would take anything added since with it. A directory's mtime
+                // moves when an entry is added, removed or renamed.
+                if meta.modified().ok() != *mtime {
+                    self.queue_error(
+                        path,
+                        Stage::Write,
+                        std::io::Error::other(
+                            "this has been added to or emptied since the transfer",
+                        ),
+                    );
+                    return false;
+                }
+                self.take_back(path, None)
+            }
             Undone::Created {
                 path,
                 from,
@@ -764,6 +828,20 @@ impl Worker {
                     // What it was: a copy across a boundary and then a delete.
                     // Reversing it is the same again the other way, through
                     // the same ladder, which is why this is a Worker at all.
+                    //
+                    // Checked first, because unlike the `rename_no_replace`
+                    // above, `copy_file_inner` ends in a plain rename and would
+                    // clobber. Something new at the original path is somebody
+                    // else's file, and putting ours back is not worth taking
+                    // theirs.
+                    if std::fs::symlink_metadata(home).is_ok() {
+                        self.queue_error(
+                            home,
+                            Stage::Write,
+                            std::io::Error::other("something else is here now"),
+                        );
+                        return false;
+                    }
                     let Ok(meta) = std::fs::symlink_metadata(path) else {
                         return true;
                     };
@@ -803,32 +881,21 @@ impl Worker {
                 false
             }
             None => {
-                // Same escape hatch as the overwrite it is undoing: nowhere
-                // here can hold a trash, and refusing would leave the copy in
-                // place and call the undo done.
-                if !self.warned_no_trash {
-                    self.warned_no_trash = true;
-                    self.warn(
-                        path,
-                        "nothing here can hold a trash, so this was removed rather than binned"
-                            .to_string(),
-                    );
-                }
-                let removed = if path.is_dir() {
-                    std::fs::remove_dir_all(path)
-                } else {
-                    std::fs::remove_file(path)
-                };
-                match removed {
-                    Ok(()) => {
-                        self.files_copied += 1;
-                        true
-                    }
-                    Err(err) => {
-                        self.queue_error(path, Stage::DeleteSource, err);
-                        false
-                    }
-                }
+                // Refused, not deleted. Undo is a guess about what somebody
+                // wanted, and the whole reason it moves files to the trash is
+                // so a wrong guess costs nothing. Falling back to unlinking
+                // where no trash exists made the one case that cannot be taken
+                // back the one case with no safety net — and for a directory
+                // that meant `remove_dir_all` over a subtree this job had
+                // stopped keeping records of.
+                self.queue_error(
+                    path,
+                    Stage::DeleteSource,
+                    std::io::Error::other(
+                        "nothing here can hold a trash, so this was left rather than deleted",
+                    ),
+                );
+                false
             }
         }
     }
@@ -1027,8 +1094,21 @@ impl Worker {
         // a sibling that merges into an existing tree still needs its own.
         let outer_claim = self.claimed;
         if made_it {
-            self.undone(Undone::CreatedDir(dest.to_path_buf()));
-            self.claimed = true;
+            // Only a copy may let the directory stand for its contents. A
+            // move deletes each source as it goes, and removing this directory
+            // would not put any of them back — its children have to speak for
+            // themselves, and say where they came from.
+            let whole = self.spec.op == Operation::Copy;
+            self.undone(Undone::CreatedDir {
+                path: dest.to_path_buf(),
+                whole,
+                // Stamped at the end of the job, once nothing more will be
+                // written into it.
+                mtime: None,
+            });
+            if whole {
+                self.claimed = true;
+            }
         }
         let step = self.process_dir_children(src, dest, src_meta);
         self.claimed = outer_claim;
@@ -1092,11 +1172,16 @@ impl Worker {
 
         // Move: remove the now-empty source dir, but never when a child failed,
         // that would orphan whatever is still inside.
-        if self.spec.op == Operation::Move
-            && !child_failed
-            && let Err(err) = std::fs::remove_dir(src)
-        {
-            self.queue_error(src, Stage::DeleteSource, err);
+        if self.spec.op == Operation::Move && !child_failed {
+            match std::fs::remove_dir(src) {
+                // Recorded after the children, so replaying backwards makes
+                // the directory again before trying to move anything into it.
+                // Without this every child's `Renamed` failed ENOENT on a
+                // parent that no longer existed, and a merged move could not
+                // be undone at all.
+                Ok(()) => self.undone(Undone::RemovedDir(src.to_path_buf())),
+                Err(err) => self.queue_error(src, Stage::DeleteSource, err),
+            }
         }
         Step::Ok
     }

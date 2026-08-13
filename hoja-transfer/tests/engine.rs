@@ -605,8 +605,15 @@ fn a_copy_into_a_fresh_name_is_one_record() {
     assert_eq!(summary.outcome, Outcome::Completed);
     assert!(summary.undoable);
     assert_eq!(
-        summary.undone,
-        vec![Undone::CreatedDir(dst_dir.path().join("tree"))],
+        summary
+            .undone
+            .iter()
+            .map(|r| match r {
+                Undone::CreatedDir { path, .. } => path.clone(),
+                other => panic!("expected only a directory record, got {other:?}"),
+            })
+            .collect::<Vec<_>>(),
+        vec![dst_dir.path().join("tree")],
         "one record for the directory, and none for anything under it"
     );
 }
@@ -648,7 +655,10 @@ fn a_copy_that_merges_records_what_it_added() {
     assert!(summary.undoable);
     let into = dst_dir.path().join("tree");
     match summary.undone.as_slice() {
-        [Undone::Created { path, from, .. }, Undone::CreatedDir(dir)] => {
+        [
+            Undone::Created { path, from, .. },
+            Undone::CreatedDir { path: dir, .. },
+        ] => {
             assert_eq!(path, &into.join("a.bin"));
             assert_eq!(*from, None, "a copy leaves its source where it was");
             assert_eq!(dir, &into.join("nested"));
@@ -677,11 +687,12 @@ fn a_cancelled_job_still_says_what_it_did() {
     let (_, summary) = drain(&handle, never_conflict);
     assert_eq!(summary.outcome, Outcome::Cancelled);
     assert!(summary.undoable);
-    assert_eq!(
-        summary.undone,
-        vec![Undone::CreatedDir(dst_dir.path().join("many"))],
-        "what it had made is still there to be taken away"
-    );
+    match summary.undone.as_slice() {
+        [Undone::CreatedDir { path, .. }] => {
+            assert_eq!(path, &dst_dir.path().join("many"));
+        }
+        other => panic!("what it had made is still there to be taken away: {other:?}"),
+    }
 }
 
 /// A source of many small files, so there are plenty of gaps between files for

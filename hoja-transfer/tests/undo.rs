@@ -66,7 +66,12 @@ fn undoing_a_copy_leaves_the_destination_as_it_was() {
         never_conflict,
     );
 
-    assert_eq!(reverse.outcome, Outcome::Completed);
+    assert_eq!(
+        reverse.outcome,
+        Outcome::Completed,
+        "errors: {:?}",
+        reverse.errors
+    );
     assert_eq!(
         shape(dst_dir.path()),
         before,
@@ -248,5 +253,175 @@ fn what_it_could_not_reverse_comes_back_in_order() {
         reverse.undone,
         vec![Undone::Lost(a), Undone::Lost(b)],
         "recorded order, not reversed"
+    );
+}
+
+#[test]
+fn undoing_a_cross_filesystem_directory_move_puts_the_files_back() {
+    // The collapse is a copy-only shortcut. A move deletes its sources as it
+    // goes, so a single `CreatedDir` standing for the destination would say
+    // nothing about where any of it came from — undo would take the copies
+    // away and leave the source empty, which is the transfer done twice
+    // rather than undone.
+    let _trash = trash_env();
+    let src_dir = tmpfs_dir();
+    let dst_dir = ext4_dir();
+    let tree = src_dir.path().join("tree");
+    std::fs::create_dir_all(tree.join("nested")).unwrap();
+    write_file(&tree, "a.bin", b"aaa");
+    write_file(&tree.join("nested"), "b.bin", b"bbb");
+
+    let (forward, reverse) = there_and_back(
+        move_spec(vec![tree.clone()], dst_dir.path()),
+        never_conflict,
+    );
+
+    assert_eq!(forward.stats.renames, 0, "it really did cross a boundary");
+    assert_eq!(
+        reverse.outcome,
+        Outcome::Completed,
+        "errors: {:?}",
+        reverse.errors
+    );
+    assert_eq!(
+        std::fs::read(tree.join("a.bin")).unwrap(),
+        b"aaa",
+        "back on the filesystem it came from"
+    );
+    assert_eq!(std::fs::read(tree.join("nested/b.bin")).unwrap(), b"bbb");
+    assert!(
+        !dst_dir.path().join("tree").exists(),
+        "and gone from where it was moved to"
+    );
+}
+
+#[test]
+fn undoing_a_move_that_merged_puts_the_source_directory_back() {
+    // The destination already held a directory of the same name, so nothing
+    // was created there and the children were recorded one by one. Their
+    // parent on the *source* side was emptied and removed, and without a
+    // record of that every one of them fails ENOENT on a directory that is no
+    // longer there.
+    let _trash = trash_env();
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let tree = src_dir.path().join("photos");
+    std::fs::create_dir(&tree).unwrap();
+    write_file(&tree, "one.jpg", b"1");
+    write_file(&tree, "two.jpg", b"2");
+    std::fs::create_dir(dst_dir.path().join("photos")).unwrap();
+
+    let (_, reverse) = there_and_back(
+        move_spec(vec![tree.clone()], dst_dir.path()),
+        never_conflict,
+    );
+
+    assert_eq!(
+        reverse.outcome,
+        Outcome::Completed,
+        "errors: {:?}",
+        reverse.errors
+    );
+    assert_eq!(std::fs::read(tree.join("one.jpg")).unwrap(), b"1");
+    assert_eq!(std::fs::read(tree.join("two.jpg")).unwrap(), b"2");
+    assert!(!dst_dir.path().join("photos/one.jpg").exists());
+}
+
+#[test]
+fn undo_refuses_a_directory_that_has_been_added_to() {
+    // The copy's record stands for the whole subtree, so removing it would
+    // take anything put there since along with it. A directory's mtime moves
+    // when an entry is added, which is what this notices.
+    let _trash = trash_env();
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let tree = src_dir.path().join("tree");
+    std::fs::create_dir(&tree).unwrap();
+    write_file(&tree, "a.bin", b"aaa");
+
+    let handle = spawn_job(copy_spec(vec![tree], dst_dir.path())).unwrap();
+    let (_, forward) = drain(&handle, never_conflict);
+
+    let landed = dst_dir.path().join("tree");
+    let mine = write_file(&landed, "mine.txt", b"work i did afterwards");
+
+    let back = spawn_undo("it".to_string(), forward.undone).unwrap();
+    let (_, reverse) = drain(&back, never_conflict);
+
+    assert_eq!(reverse.outcome, Outcome::CompletedWithErrors);
+    assert!(mine.exists(), "my file is still there");
+    assert!(landed.exists(), "and so is the directory holding it");
+    assert_eq!(
+        reverse.undone.len(),
+        1,
+        "the record stays outstanding rather than being called done"
+    );
+}
+
+#[test]
+fn undo_refuses_to_delete_where_it_cannot_bin() {
+    // Undo trashes rather than unlinks so that a wrong guess costs nothing.
+    // Falling back to deleting where no trash exists made the one case that
+    // cannot be taken back the one case with no safety net.
+    let _trash = trash_env();
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let src = write_file(src_dir.path(), "keep.txt", b"contents");
+
+    let handle = spawn_job(copy_spec(vec![src], dst_dir.path())).unwrap();
+    let (_, forward) = drain(&handle, never_conflict);
+    let landed = dst_dir.path().join("keep.txt");
+
+    let blocked = src_dir.path().join("not-a-dir");
+    std::fs::write(&blocked, b"").unwrap();
+    let previous = std::env::var_os("XDG_DATA_HOME");
+    // Safe under the guard every test in this file takes.
+    unsafe { std::env::set_var("XDG_DATA_HOME", &blocked) };
+
+    let back = spawn_undo("it".to_string(), forward.undone).unwrap();
+    let (_, reverse) = drain(&back, never_conflict);
+
+    match previous {
+        Some(value) => unsafe { std::env::set_var("XDG_DATA_HOME", value) },
+        None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
+    }
+
+    assert_eq!(reverse.outcome, Outcome::CompletedWithErrors);
+    assert!(
+        landed.exists(),
+        "left in place rather than deleted with no way back"
+    );
+    assert_eq!(reverse.undone.len(), 1, "and still owed");
+}
+
+#[test]
+fn undoing_a_cross_filesystem_move_refuses_an_occupied_original() {
+    // `rename_no_replace` refuses; the copy-back it falls through to ends in a
+    // plain rename and would not, so something new at the original path was
+    // silently destroyed by a keystroke meant to be conservative.
+    let _trash = trash_env();
+    let src_dir = tmpfs_dir();
+    let dst_dir = ext4_dir();
+    let src = write_file(src_dir.path(), "report.pdf", b"original");
+
+    let handle = spawn_job(move_spec(vec![src.clone()], dst_dir.path())).unwrap();
+    let (_, forward) = drain(&handle, never_conflict);
+    assert_eq!(forward.stats.renames, 0, "it crossed a boundary");
+
+    // Somebody put a different file back at the old name in the meantime.
+    write_file(src_dir.path(), "report.pdf", b"something else entirely");
+
+    let back = spawn_undo("it".to_string(), forward.undone).unwrap();
+    let (_, reverse) = drain(&back, never_conflict);
+
+    assert_eq!(reverse.outcome, Outcome::CompletedWithErrors);
+    assert_eq!(
+        std::fs::read(&src).unwrap(),
+        b"something else entirely",
+        "the newer file survives"
+    );
+    assert!(
+        dst_dir.path().join("report.pdf").exists(),
+        "and the copy is left alone rather than half-moved"
     );
 }
