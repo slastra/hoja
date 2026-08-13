@@ -5,12 +5,21 @@
 # and leaves the built tarballs beside the PKGBUILD. It also rewrites pkgver=
 # in the PKGBUILD after running pkgver() — that one has to be reverted by hand,
 # since the file itself is tracked.
-# Unanchored: makepkg leaves these wherever it is run, and a stray run inside
-# hoja-transfer/ once put 2.5GB of them past rules that were pinned to the
-# repository root.
+#
+# The built artifacts are unanchored, because makepkg leaves them wherever it
+# is run and a stray run inside hoja-transfer/ once put 2.5GB of them past
+# rules pinned to the repository root. Nothing else in the tree is named like
+# this, so matching at any depth costs nothing.
+*.pkg.tar.zst
+*.pkg.tar.zst.sig
+*.log
+
+# The directories stay pinned, and must. makepkg's scratch space is called
+# src/, and so is the application's — an unanchored rule here would ignore
+# ./src and ./hoja-transfer/src, quietly untracking the whole program. Pinned
+# rules catching only the sanctioned build location is the right trade: a
+# stray run somewhere else leaves visible directories that `git status` will
+# complain about, which is how it should be noticed.
 packaging/hoja/
 packaging/src/
 packaging/pkg/
-packaging/*.pkg.tar.zst
-packaging/*.log
-packaging/*-debug-*
