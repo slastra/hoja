@@ -184,8 +184,11 @@ impl Interrupted {
     /// a button would mean leaving it forever if they press the other one.
     /// Nobody wants a prompt about temporary files.
     ///
-    /// Blocking, and deliberately so: it runs once, before the window opens,
-    /// and it reads a directory that holds one small file per interrupted job.
+    /// Blocking, and so never called on the UI thread: reaping walks each
+    /// interrupted job's whole destination tree, which is tens of seconds for
+    /// a home directory and unbounded on a network mount that has stopped
+    /// answering. Doing this before the window opened meant hoja could fail to
+    /// draw at all, over files nobody was waiting for.
     fn collect() -> Vec<Interrupted> {
         journal::abandoned()
             .into_iter()
@@ -579,6 +582,9 @@ pub struct Workspace {
     /// Transfers that were running when hoja last stopped, waiting to be
     /// finished or dismissed. Read once, at startup.
     interrupted: Vec<Interrupted>,
+    /// Held so that closing the window abandons the search for them.
+    #[allow(dead_code)]
+    scan_task: Option<Task<()>>,
     /// What ctrl-z would take back, newest last.
     ///
     /// One entry per gesture rather than per file: one `Delete` press restores
@@ -638,7 +644,8 @@ impl Workspace {
             pane_subscriptions: HashMap::from([(pane.entity_id(), subscription)]),
             clipboard: None,
             jobs: Vec::new(),
-            interrupted: Interrupted::collect(),
+            interrupted: Vec::new(),
+            scan_task: None,
             undo_stack: Vec::new(),
             notice: None,
             modal: None,
@@ -682,6 +689,7 @@ impl Workspace {
             ],
         };
         workspace.watch_settings(cx);
+        workspace.scan_task = Some(workspace.find_interrupted(cx));
         workspace
     }
 
@@ -2225,6 +2233,25 @@ impl Workspace {
     /// channels lead to a worker that has stopped reading.
     fn purge_conflicts(&mut self, job: JobId) {
         self.pending_conflicts.retain(|pending| pending.job != job);
+    }
+
+    /// Look for what a previous run left behind, off the UI thread.
+    ///
+    /// The offer appears whenever the answer arrives. Nothing waits for it:
+    /// there is no work in flight that it could conflict with, and a window
+    /// that opens now and gains a row in a moment is better than one that does
+    /// not open.
+    fn find_interrupted(&self, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            let found = cx.background_spawn(async { Interrupted::collect() }).await;
+            if found.is_empty() {
+                return;
+            }
+            let _ = this.update(cx, |this, cx| {
+                this.interrupted = found;
+                cx.notify();
+            });
+        })
     }
 
     /// Finish what an interrupted transfer had left to do.

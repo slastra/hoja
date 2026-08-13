@@ -165,7 +165,7 @@ pub fn partial_path(final_dest: &Path) -> PathBuf {
     // a real syscall, and this runs for every file copied.
     static PID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let pid = PID.get_or_init(std::process::id);
-    let tail = format!(".{pid}-{nonce}");
+    let tail = format!(".{pid}-{:x}-{nonce}", run_token());
     // Truncating cannot collide two partials: the nonce alone is unique.
     let budget = NAME_MAX.saturating_sub(PARTIAL_PREFIX.len() + tail.len());
     let name = truncate_on_char_boundary(&name, budget);
@@ -406,16 +406,37 @@ pub fn percent_decode(text: &str) -> PathBuf {
     PathBuf::from(std::ffi::OsString::from_vec(out))
 }
 
-/// The process id baked into a partial file's name by `partial_path`.
+/// Something this run has and no other run will, even after it is gone.
+///
+/// A pid is not that. The kernel recycles them, so "the process with this
+/// number is gone" does not mean "the file named after that number is mine to
+/// remove" — a later hoja handed the same pid would have its live temp files
+/// deleted by a reaper acting on an older record. This is drawn once from the
+/// clock, which does not come round again.
+pub fn run_token() -> u64 {
+    static TOKEN: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *TOKEN.get_or_init(|| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        // The pid still contributes, so two runs starting inside the same
+        // nanosecond tick differ.
+        now ^ ((std::process::id() as u64) << 32)
+    })
+}
+
+/// The run token baked into a partial file's name by `partial_path`.
 ///
 /// What makes the reaper exact rather than a guess: a `.hoja-partial-` left
 /// behind belongs to a particular run, and only the run that is known to be
 /// dead may have its own removed.
-pub fn partial_pid(name: &str) -> Option<u32> {
+pub fn partial_token(name: &str) -> Option<u64> {
     let tail = name.strip_prefix(PARTIAL_PREFIX)?;
     let (_, stamp) = tail.rsplit_once('.')?;
-    let (pid, _) = stamp.split_once('-')?;
-    pid.parse().ok()
+    let mut parts = stamp.split('-');
+    let _pid = parts.next()?;
+    u64::from_str_radix(parts.next()?, 16).ok()
 }
 
 #[cfg(test)]
@@ -442,11 +463,16 @@ mod codec_tests {
             .unwrap()
             .to_string_lossy()
             .into_owned();
-        assert_eq!(partial_pid(&name), Some(std::process::id()));
+        assert_eq!(partial_token(&name), Some(run_token()));
         assert_eq!(
-            partial_pid("report.pdf"),
+            partial_token("report.pdf"),
             None,
             "an ordinary file is nobody's"
         );
+        // The pid is still in the name for anyone reading a directory by
+        // hand; it is simply not what the reaper matches on, because the
+        // kernel hands pids out again and a later run would lose its live
+        // temp files to an older run's record.
+        assert!(name.contains(&format!(".{}-", std::process::id())));
     }
 }

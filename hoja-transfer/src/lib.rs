@@ -26,7 +26,7 @@ pub use events::{
 };
 pub use job::{JobHandle, JobId, JobPolicy, JobSpec, Phase, Progress, spawn_job, spawn_undo};
 pub use sys::{
-    is_partial_name, partial_path, partial_pid, percent_decode, percent_encode, rename_no_replace,
-    same_filesystem, stem_end,
+    is_partial_name, partial_path, partial_token, percent_decode, percent_encode,
+    rename_no_replace, run_token, same_filesystem, stem_end,
 };
 pub use trash::{TrashDir, TrashedItem, restore, trash};

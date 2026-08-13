@@ -46,6 +46,9 @@ const VERSION: &str = "hoja-job 1";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     pub pid: u32,
+    /// What this run stamps into the names of its half-written files. A pid
+    /// can be recycled and a token cannot, so this is what the reaper matches.
+    pub token: u64,
     pub op: Operation,
     pub dest: PathBuf,
     pub sources: Vec<PathBuf>,
@@ -61,8 +64,9 @@ pub fn dir() -> Option<PathBuf> {
 impl Record {
     fn render(&self) -> String {
         let mut out = format!(
-            "{VERSION}\npid {}\nop {}\ndest {}\n",
+            "{VERSION}\npid {}\ntoken {:x}\nop {}\ndest {}\n",
             self.pid,
+            self.token,
             match self.op {
                 Operation::Copy => "copy",
                 Operation::Move => "move",
@@ -81,6 +85,7 @@ impl Record {
             return None;
         }
         let mut pid = None;
+        let mut token = None;
         let mut op = None;
         let mut dest = None;
         let mut sources = Vec::new();
@@ -90,6 +95,7 @@ impl Record {
             };
             match key {
                 "pid" => pid = value.parse().ok(),
+                "token" => token = u64::from_str_radix(value, 16).ok(),
                 "op" => {
                     op = match value {
                         "copy" => Some(Operation::Copy),
@@ -106,6 +112,7 @@ impl Record {
         }
         Some(Record {
             pid: pid?,
+            token: token?,
             op: op?,
             dest: dest?,
             sources,
@@ -174,6 +181,7 @@ impl Entry {
 
         let record = Record {
             pid,
+            token: hoja_transfer::run_token(),
             op: spec.op,
             dest: spec.dest_dir.clone(),
             sources: spec.sources.clone(),
@@ -255,13 +263,18 @@ pub fn reap(record: &Record) -> usize {
         for entry in entries.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
-            if hoja_transfer::partial_pid(&name) == Some(record.pid) {
+            if hoja_transfer::partial_token(&name) == Some(record.token) {
                 if std::fs::remove_file(&path).is_ok() {
                     removed += 1;
                 }
                 continue;
             }
-            if path.is_dir() {
+            // `file_type` from the directory entry, which does not follow a
+            // symlink, where `path.is_dir()` does. Following one took the walk
+            // out of the destination tree it is documented to stay inside, and
+            // a link back up it — `latest -> .`, which hoja copies verbatim —
+            // made this descend forever, before the window had opened.
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
                 stack.push(path);
             }
         }
@@ -277,6 +290,7 @@ mod tests {
     fn record(dest: &std::path::Path) -> Record {
         Record {
             pid: 4242,
+            token: 0xfeed_beef,
             op: Operation::Copy,
             dest: dest.to_path_buf(),
             sources: vec![PathBuf::from("/a/one"), PathBuf::from("/a/two")],
@@ -326,6 +340,7 @@ mod tests {
 
         let record = Record {
             pid: 1,
+            token: 0xfeed_beef,
             op: Operation::Move,
             dest: dir.clone(),
             sources: vec![here.clone(), dir.join("already-moved")],
@@ -348,16 +363,27 @@ mod tests {
         std::fs::create_dir_all(dir.join("down/deeper")).unwrap();
 
         // One of ours, one from another run, one ordinary file, one nested.
-        std::fs::write(dir.join(".hoja-partial-a.txt.4242-1"), b"").unwrap();
-        std::fs::write(dir.join(".hoja-partial-b.txt.9999-1"), b"").unwrap();
+        std::fs::write(dir.join(".hoja-partial-a.txt.4242-feedbeef-1"), b"").unwrap();
+        std::fs::write(dir.join(".hoja-partial-b.txt.9999-deadbeef-1"), b"").unwrap();
         std::fs::write(dir.join("ordinary.txt"), b"").unwrap();
-        std::fs::write(dir.join("down/deeper/.hoja-partial-c.txt.4242-2"), b"").unwrap();
+        std::fs::write(
+            dir.join("down/deeper/.hoja-partial-c.txt.4242-feedbeef-2"),
+            b"",
+        )
+        .unwrap();
+
+        // And one behind a symlink that points back at the top, which is what
+        // used to make this descend forever.
+        std::os::unix::fs::symlink(&dir, dir.join("down/latest")).unwrap();
 
         assert_eq!(reap(&record(&dir)), 2, "both of this run's, at any depth");
-        assert!(!dir.join(".hoja-partial-a.txt.4242-1").exists());
-        assert!(!dir.join("down/deeper/.hoja-partial-c.txt.4242-2").exists());
+        assert!(!dir.join(".hoja-partial-a.txt.4242-feedbeef-1").exists());
         assert!(
-            dir.join(".hoja-partial-b.txt.9999-1").exists(),
+            !dir.join("down/deeper/.hoja-partial-c.txt.4242-feedbeef-2")
+                .exists()
+        );
+        assert!(
+            dir.join(".hoja-partial-b.txt.9999-deadbeef-1").exists(),
             "another run's is not ours to remove"
         );
         assert!(dir.join("ordinary.txt").exists());
@@ -419,6 +445,7 @@ mod lock_tests {
         // As a dead run would have left it: written, never removed, unlocked.
         let record = Record {
             pid: 4242,
+            token: 0xfeed_beef,
             op: Operation::Move,
             dest: dest.clone(),
             sources: vec![dest.join("x")],
