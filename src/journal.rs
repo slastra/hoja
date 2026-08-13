@@ -200,12 +200,21 @@ impl Entry {
     /// `$XDG_STATE_HOME`, which is process-wide and would have to be set to
     /// test any of this — the same reason `config::State::commit_at` exists.
     fn open_in(dir: &Path, spec: &JobSpec, at: std::time::SystemTime) -> Option<Entry> {
+        use std::io::Write;
+
         std::fs::create_dir_all(dir).ok()?;
         let pid = std::process::id();
         // Timestamp first so the directory sorts chronologically, which is the
-        // order they would have to be offered back in.
+        // order they would have to be offered back in. The counter after it is
+        // what keeps two jobs started in the same millisecond — two panes, a
+        // held key, a drag onto a split — from naming the same file: the
+        // second used to truncate the first's record and then fail to lock it,
+        // leaving one job describing the other and the other describing
+        // nothing.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let stamp = at.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis();
-        let path = dir.join(format!("{stamp:013}-{pid}.job"));
+        let path = dir.join(format!("{stamp:013}-{pid}-{seq}.job"));
 
         let record = Record {
             pid,
@@ -215,11 +224,30 @@ impl Entry {
             dest: spec.dest_dir.clone(),
             sources: spec.sources.clone(),
         };
-        std::fs::write(&path, record.render()).ok()?;
 
-        let lock = std::fs::OpenOptions::new().write(true).open(&path).ok()?;
-        rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive).ok()?;
-        Some(Entry { path, _lock: lock })
+        // Created, locked, and only then written. The old order wrote first and
+        // locked after, which left two windows where the file existed with
+        // nobody holding it: a failure in between abandoned a record for a job
+        // that was about to run, and even on the way to success another hoja
+        // starting in that instant would have taken the lock, reaped this job's
+        // partial files out from under it, and offered to finish a transfer
+        // that had not started. `create_new` also makes a name collision an
+        // error rather than a silent truncation of somebody else's record.
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .ok()?;
+        let locked = rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+            .is_ok()
+            && file.write_all(record.render().as_bytes()).is_ok();
+        if !locked {
+            // Never leave a record nobody holds: the next start would treat it
+            // as the remains of a crash.
+            let _ = std::fs::remove_file(&path);
+            return None;
+        }
+        Some(Entry { path, _lock: file })
     }
 }
 
@@ -466,6 +494,46 @@ mod lock_tests {
             0,
             "ending the job takes the record with it"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_jobs_in_the_same_millisecond_get_records_of_their_own() {
+        // The name used to be the timestamp and the pid, so a second paste in
+        // the same millisecond truncated the first's record and then failed to
+        // lock it — one job describing the other, and the other describing
+        // nothing at all.
+        let dir = scratch("journal-same-ms");
+        let at = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(1_700_000);
+        let first = Entry::open_in(&dir, &spec(&dir), at).expect("the first is written");
+        let second = Entry::open_in(&dir, &spec(&dir), at).expect("and so is the second");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            2,
+            "two jobs, two records"
+        );
+        assert!(abandoned_in(&dir).is_empty(), "and both are held");
+        drop(first);
+        drop(second);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_record_is_never_left_where_nobody_holds_it() {
+        // Written under the lock rather than before taking it. A record that
+        // exists unlocked is, to the next start, the remains of a crash: it
+        // reaps that job's partial files and offers to finish a transfer that
+        // may be running right now.
+        let dir = scratch("journal-unheld");
+        let entry = Entry::open_in(&dir, &spec(&dir), std::time::SystemTime::now()).unwrap();
+        let held: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(held.len(), 1);
+        assert!(
+            abandoned_in(&dir).is_empty(),
+            "no window in which it is on disk and unheld"
+        );
+        drop(entry);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
