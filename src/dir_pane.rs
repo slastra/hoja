@@ -7,10 +7,10 @@ use std::time::{Duration, Instant, SystemTime};
 use file_icons::FileIcons;
 use gpui::AnimationExt as _;
 use gpui::{
-    App, ClickEvent, Context, DismissEvent, DragMoveEvent, Entity, EventEmitter, ExternalPaths,
-    FocusHandle, Focusable, MouseButton, MouseDownEvent, Pixels, Point, SharedString, Subscription,
-    Task, UniformListScrollHandle, Window, actions, anchored, deferred, div, prelude::*, px,
-    uniform_list,
+    App, Bounds, ClickEvent, Context, CursorStyle, DismissEvent, DragMoveEvent, Entity,
+    EventEmitter, ExternalPaths, FocusHandle, Focusable, MouseButton, MouseDownEvent, Pixels,
+    Point, SharedString, Subscription, Task, UniformListScrollHandle, Window, actions, anchored,
+    deferred, div, prelude::*, px, uniform_list,
 };
 use hoja_transfer::Operation;
 use theme::ActiveTheme;
@@ -161,6 +161,85 @@ fn drop_allowed(dragged: &dyn std::any::Any, target: &Path) -> bool {
     // ever offered to (the row-level and pane-level targets both already
     // require one) is a legal place to copy one out to.
     dragged.downcast_ref::<DraggedMembers>().is_some()
+}
+
+/// Point the cursor at whether a drop here would be taken or refused.
+///
+/// `target` is the directory a drop would land in, or `None` where there is no
+/// such place at all, which is what an archive is.
+///
+/// Only while the pointer is actually inside `bounds`: `on_drag_move` fires for
+/// **every** element that registered one, wherever the pointer is, so without
+/// this test a row on the far side of the window sets the cursor for a pointer
+/// nowhere near it. `bounds` is the last laid-out frame's, the same staleness
+/// the column drag documents above, and harmless for a question this coarse.
+fn point_at_drop(
+    bounds: Bounds<Pixels>,
+    position: Point<Pixels>,
+    dragged: &dyn std::any::Any,
+    target: Option<&Path>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if !bounds.contains(&position) {
+        return;
+    }
+    let wanted = match target {
+        Some(dir) if drop_allowed(dragged, dir) => CursorStyle::Arrow,
+        // Refused, and an archive reaches this arm by having no directory at
+        // all rather than by failing the predicate.
+        _ => CursorStyle::OperationNotAllowed,
+    };
+    // `set_active_drag_cursor_style` refreshes the window on every call, and
+    // this runs on every mouse event of every drag. Without the comparison a
+    // slow drag repaints continuously to set the cursor it already has.
+    if cx.active_drag_cursor_style() == Some(wanted) {
+        return;
+    }
+    cx.set_active_drag_cursor_style(wanted, window);
+}
+
+/// Attach `point_at_drop` for all three payload types.
+///
+/// Three registrations because `on_drag_move` is generic and fires only for the
+/// type it names — the same reason the `drag_over` lines at each drop site come
+/// in threes.
+///
+/// The cursor lives on the drag itself, so nothing here needs undoing when the
+/// drag ends: the `AnyDrag` is dropped with it and the next drag starts from
+/// its source element's own style again.
+fn cursor_follows_drops<E: InteractiveElement>(el: E, target: Option<PathBuf>) -> E {
+    let (for_paths, for_external, for_members) = (target.clone(), target.clone(), target);
+    el.on_drag_move(move |event: &DragMoveEvent<DraggedPaths>, window, cx| {
+        point_at_drop(
+            event.bounds,
+            event.event.position,
+            event.dragged_item(),
+            for_paths.as_deref(),
+            window,
+            cx,
+        );
+    })
+    .on_drag_move(move |event: &DragMoveEvent<ExternalPaths>, window, cx| {
+        point_at_drop(
+            event.bounds,
+            event.event.position,
+            event.dragged_item(),
+            for_external.as_deref(),
+            window,
+            cx,
+        );
+    })
+    .on_drag_move(move |event: &DragMoveEvent<DraggedMembers>, window, cx| {
+        point_at_drop(
+            event.bounds,
+            event.event.position,
+            event.dragged_item(),
+            for_members.as_deref(),
+            window,
+            cx,
+        );
+    })
 }
 
 /// An open rename editor, anchored by name rather than by row.
@@ -3738,44 +3817,56 @@ impl DirPane {
             // the disk. There is nowhere to put a file inside an archive.
             .when_some(on_disk.clone().filter(|_| is_dir), |row, target| {
                 let highlight = colors.drop_target_background;
-                row.can_drop({
-                    let target = target.clone();
-                    move |dragged, _, _| drop_allowed(dragged, &target)
-                })
-                .drag_over::<DraggedPaths>(move |style, _, _, _| style.bg(highlight))
-                .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(highlight))
-                .drag_over::<DraggedMembers>(move |style, _, _, _| style.bg(highlight))
-                .on_drop(cx.listener({
-                    let target = target.clone();
-                    move |this, dragged: &DraggedPaths, window, cx| {
-                        let sources = dragged.paths();
-                        this.accept_drop(
-                            sources,
-                            Some(&dragged.source_dir.clone()),
-                            target.clone(),
-                            window,
-                            cx,
-                        );
-                    }
-                }))
-                .on_drop(cx.listener({
-                    let target = target.clone();
-                    move |this, paths: &ExternalPaths, window, cx| {
-                        this.accept_drop(paths.paths().to_vec(), None, target.clone(), window, cx);
-                    }
-                }))
-                .on_drop(cx.listener({
-                    let target = target.clone();
-                    move |this, dragged: &DraggedMembers, _window, cx| {
-                        this.accept_extract_drop(
-                            dragged.archive.clone(),
-                            dragged.inside.clone(),
-                            dragged.roots(),
-                            target.clone(),
-                            cx,
-                        );
-                    }
-                }))
+                // `on_drag_move` dispatches in the capture phase, outermost
+                // first, so the pane's listener has already run by the time
+                // this one does and this simply overwrites its verdict. That
+                // ordering is the whole mechanism: the cursor is window-wide,
+                // so the innermost element to speak wins, with no bookkeeping.
+                cursor_follows_drops(row, Some(target.clone()))
+                    .can_drop({
+                        let target = target.clone();
+                        move |dragged, _, _| drop_allowed(dragged, &target)
+                    })
+                    .drag_over::<DraggedPaths>(move |style, _, _, _| style.bg(highlight))
+                    .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(highlight))
+                    .drag_over::<DraggedMembers>(move |style, _, _, _| style.bg(highlight))
+                    .on_drop(cx.listener({
+                        let target = target.clone();
+                        move |this, dragged: &DraggedPaths, window, cx| {
+                            let sources = dragged.paths();
+                            this.accept_drop(
+                                sources,
+                                Some(&dragged.source_dir.clone()),
+                                target.clone(),
+                                window,
+                                cx,
+                            );
+                        }
+                    }))
+                    .on_drop(cx.listener({
+                        let target = target.clone();
+                        move |this, paths: &ExternalPaths, window, cx| {
+                            this.accept_drop(
+                                paths.paths().to_vec(),
+                                None,
+                                target.clone(),
+                                window,
+                                cx,
+                            );
+                        }
+                    }))
+                    .on_drop(cx.listener({
+                        let target = target.clone();
+                        move |this, dragged: &DraggedMembers, _window, cx| {
+                            this.accept_extract_drop(
+                                dragged.archive.clone(),
+                                dragged.inside.clone(),
+                                dragged.roots(),
+                                target.clone(),
+                                cx,
+                            );
+                        }
+                    }))
             })
             .when_some(dragged, |row, dragged| {
                 // Also where the payload settles what it carries: see `resolve`.
@@ -3988,6 +4079,11 @@ impl Render for DirPane {
         div()
             .track_focus(&self.focus_handle)
             .key_context("DirPane")
+            // Outside the `when_some` below deliberately. That one skips an
+            // archive pane entirely, because there is nowhere in it to put a
+            // file — which is exactly the case the cursor has to speak up
+            // about, so this cannot be attached only where drops are taken.
+            .map(|pane| cursor_follows_drops(pane, here.clone()))
             // The pane body is the fallback target: anything not dropped on a
             // folder row lands in the directory being shown. A folder row that
             // accepts consumes the drop first, so the two never both fire.
