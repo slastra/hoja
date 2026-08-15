@@ -378,6 +378,11 @@ struct Footer {
     /// Whether the one re-sort a settled walk earns has happened yet.
     resorted: bool,
     selection: u64,
+    /// The columns the summary was built against. The line for a single row
+    /// says the things no column shows, so showing or hiding one changes what
+    /// it has to say without touching the listing or the selection, and
+    /// neither counter above would notice.
+    columns: ColumnsShown,
     summary: fs::Summary,
     /// The line as it reads now. Held rather than rebuilt per frame, and
     /// compared against by the poll so a total that has not moved a printed
@@ -1200,6 +1205,10 @@ impl DirPane {
     /// has gone.
     fn toggle_column(&mut self, column: Column, cx: &mut Context<Self>) {
         self.view.columns.toggle(column);
+        // The footer follows from `sync_footer`, which compares rather than
+        // being told: the same change also arrives from the settings file,
+        // and a line rebuilt here alone would be right for one of the two
+        // ways in and stale for the other.
         cx.emit(PaneEvent::ViewChanged);
         cx.notify();
     }
@@ -1607,7 +1616,7 @@ impl DirPane {
             return;
         }
 
-        let menu = cx.new(|cx| FileMenu::new(items, window, cx));
+        let menu = cx.new(|cx| FileMenu::new(items, position, window, cx));
 
         cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {
             this.context_menu = None;
@@ -2959,8 +2968,12 @@ impl DirPane {
         if relisted {
             self.footer.listing = self.listing_moved;
         }
-        if relisted || self.footer.selection != self.selected.revision() {
+        if relisted
+            || self.footer.selection != self.selected.revision()
+            || self.footer.columns != self.view.columns
+        {
             self.footer.selection = self.selected.revision();
+            self.footer.columns = self.view.columns;
             self.footer.summary = self.summarise();
             self.footer.text = self.footer_text();
         }
@@ -3011,7 +3024,7 @@ impl DirPane {
         } else if self.selected.is_empty() {
             fs::summarise_dir(&self.entries)
         } else {
-            fs::summarise_selection(&self.entries, &self.selected)
+            fs::summarise_selection(&self.entries, &self.selected, self.view.columns)
         }
     }
 

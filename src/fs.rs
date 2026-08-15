@@ -903,7 +903,12 @@ pub fn summarise_dir(entries: &[DirEntry]) -> Summary {
 }
 
 /// The selection line: one file, one folder, or a count.
-pub fn summarise_selection(entries: &[DirEntry], selected: &Selection) -> Summary {
+pub fn summarise_selection(
+    entries: &[DirEntry],
+    selected: &Selection,
+    columns: crate::dir_pane::ColumnsShown,
+) -> Summary {
+    use crate::dir_pane::Column;
     let rows = || selected.iter().filter_map(|ix| entries.get(ix));
 
     let mut summary = Summary {
@@ -920,6 +925,11 @@ pub fn summarise_selection(entries: &[DirEntry], selected: &Selection) -> Summar
         // the kind and the date. Repeating them here spent the whole line
         // saying what the eye had just read, so this says the things no column
         // shows: the mode, and who owns it.
+        //
+        // Which those are is now a question rather than a constant, since any
+        // of the three can be a column. Each drops out of the line the moment
+        // its column is drawn, and all three on leaves the line empty, which
+        // is right: everything it had to say is already on the row.
         (1, Some(entry)) => {
             return Summary {
                 // No size, so no walk to wait on either. Selecting a folder
@@ -928,9 +938,18 @@ pub fn summarise_selection(entries: &[DirEntry], selected: &Selection) -> Summar
                 // before the selection could land.
                 sized: false,
                 lead: [
-                    entry.mode.map(format_mode),
-                    entry.uid.map(crate::owners::user),
-                    entry.gid.map(crate::owners::group),
+                    entry
+                        .mode
+                        .filter(|_| !columns.get(Column::Permissions))
+                        .map(format_mode),
+                    entry
+                        .uid
+                        .filter(|_| !columns.get(Column::Owner))
+                        .map(crate::owners::user),
+                    entry
+                        .gid
+                        .filter(|_| !columns.get(Column::Group))
+                        .map(crate::owners::group),
                 ]
                 .into_iter()
                 .flatten()
@@ -1009,7 +1028,7 @@ mod tests {
             row("b.bin", false, Some(2000)),
             row("c.bin", false, Some(4000)),
         ];
-        let summary = summarise_selection(&entries, &selection([0, 2]));
+        let summary = summarise_selection(&entries, &selection([0, 2]), Default::default());
         assert!(summary.rows.is_empty(), "nothing to walk");
         assert_eq!(summary.known, 5000);
         assert_eq!(compose(&summary, 0, true), "2 selected · 4.9 KB");
@@ -1023,7 +1042,7 @@ mod tests {
         file.mode = Some(0o100644);
         file.uid = Some(0);
         file.gid = Some(0);
-        let summary = summarise_selection(&[file], &selection([0]));
+        let summary = summarise_selection(&[file], &selection([0]), Default::default());
         assert!(!summary.sized, "no size: the Size column has it");
         assert!(summary.rows.is_empty(), "and so nothing to walk for");
         let line = compose(&summary, 0, true);
@@ -1032,8 +1051,54 @@ mod tests {
     }
 
     #[test]
+    fn one_row_stops_saying_what_a_column_has_started_to_say() {
+        // The rule the line has always followed, now that which columns are
+        // drawn is a choice. Turn the Permissions column on and the mode
+        // leaves the line; turn all three on and there is nothing left for it
+        // to carry.
+        let mut file = row("Cargo.toml", false, Some(2867));
+        file.mode = Some(0o100644);
+        file.uid = Some(0);
+        file.gid = Some(0);
+
+        let shown = |names: &[&str]| {
+            crate::dir_pane::ColumnsShown::from_map(
+                &names.iter().map(|n| (n.to_string(), true)).collect(),
+            )
+        };
+
+        let columns = shown(&["permissions"]);
+        let line = compose(
+            &summarise_selection(&[file.clone()], &selection([0]), columns),
+            0,
+            true,
+        );
+        assert!(!line.contains("-rw-r--r--"), "the column has it: {line}");
+        assert_eq!(
+            line.split(" · ").count(),
+            2,
+            "user and group remain: {line}"
+        );
+
+        let columns = shown(&["permissions", "owner", "group"]);
+        assert_eq!(
+            compose(
+                &summarise_selection(&[file], &selection([0]), columns),
+                0,
+                true
+            ),
+            "",
+            "with all three drawn the line has nothing left to say"
+        );
+    }
+
+    #[test]
     fn one_row_whose_metadata_never_arrived_says_nothing_rather_than_guessing() {
-        let summary = summarise_selection(&[row("a.bin", false, Some(1))], &selection([0]));
+        let summary = summarise_selection(
+            &[row("a.bin", false, Some(1))],
+            &selection([0]),
+            Default::default(),
+        );
         assert_eq!(compose(&summary, 0, true), "");
     }
 
@@ -1042,7 +1107,7 @@ mod tests {
         // It used to total the folder here, which is now the Size column's job
         // and settled before the selection can land on it.
         let entries = vec![row("src", true, None), row("a.bin", false, Some(1000))];
-        let summary = summarise_selection(&entries, &selection([0]));
+        let summary = summarise_selection(&entries, &selection([0]), Default::default());
         assert!(summary.rows.is_empty(), "nothing to wait for");
         assert!(!summary.sized);
     }
@@ -1054,7 +1119,7 @@ mod tests {
             row("a.bin", false, Some(1000)),
             row("docs", true, None),
         ];
-        let summary = summarise_selection(&entries, &selection([0, 1, 2]));
+        let summary = summarise_selection(&entries, &selection([0, 1, 2]), Default::default());
         assert_eq!(summary.known, 1000, "the file only");
         assert_eq!(summary.rows, vec![0, 2], "both folders' rows");
         assert_eq!(compose(&summary, 9000, true), "3 selected · 9.8 KB");
@@ -1083,7 +1148,7 @@ mod tests {
     #[test]
     fn a_selection_of_vanished_rows_says_nothing() {
         // Mid-rebuild the indices outlive the rows for a frame.
-        let summary = summarise_selection(&[], &selection([3, 7]));
+        let summary = summarise_selection(&[], &selection([3, 7]), Default::default());
         assert_eq!(summary, Summary::default());
         assert_eq!(compose(&summary, 0, true), "");
     }

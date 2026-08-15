@@ -16,8 +16,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, SharedString,
-    Subscription, Window, actions, anchored, deferred, div, prelude::*, px, relative,
+    Anchor, AnyElement, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, Pixels,
+    Point, SharedString, Subscription, Window, actions, anchored, deferred, div, prelude::*, px,
+    relative,
 };
 use theme::ActiveTheme;
 
@@ -257,14 +258,34 @@ impl Nav {
     }
 }
 
+/// Roughly how wide a menu panel is, for deciding which side a submenu opens
+/// on. `min_w` is the floor rather than the width, and the real one depends on
+/// the longest label in the list, so this is deliberately generous: opening a
+/// submenu to the left where there was in fact room on the right looks
+/// unusual, and opening it to the right where there is no room lays it over
+/// the menu it came from.
+const PANEL_WIDTH: Pixels = px(220.);
+
 pub struct FileMenu {
     nav: Nav,
+    /// Where the menu was opened, in window coordinates.
+    ///
+    /// Only for choosing which side a submenu opens on, and taken from where
+    /// the menu was asked for rather than from where its panel was painted: a
+    /// painted bound is a frame old, and a submenu that picks its side one
+    /// frame late jumps across the screen in front of the person reading it.
+    position: Point<Pixels>,
     focus_handle: FocusHandle,
     _blur_subscription: Subscription,
 }
 
 impl FileMenu {
-    pub fn new(items: Vec<MenuItem>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        items: Vec<MenuItem>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         // Focus loss dismisses, this covers alt-tab, pane clicks that somehow
         // miss `on_mouse_down_out`, and keyboard focus moves.
@@ -274,6 +295,7 @@ impl FileMenu {
 
         Self {
             nav: Nav::new(items),
+            position,
             focus_handle,
             _blur_subscription,
         }
@@ -481,8 +503,13 @@ impl Focusable for FileMenu {
 impl EventEmitter<DismissEvent> for FileMenu {}
 
 impl Render for FileMenu {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors();
+        // Two panels have to fit between here and the right edge: this one and
+        // the submenu beside it. The view menu never manages it, its button
+        // being in the top right corner, and a right-click near the edge of a
+        // pane does not either.
+        let opens_left = self.position.x + PANEL_WIDTH + PANEL_WIDTH > window.viewport_size().width;
         // Slot reservation is a property of the menu, not the item: without it
         // a plain item in a menu of toggles sits left of everything else.
         let reserve_check_slot = self.nav.items.iter().any(|item| {
@@ -621,21 +648,44 @@ impl Render for FileMenu {
                                 ))
                                 .when(open, |el| {
                                     // `anchored()` with no explicit position anchors
-                                    // where it lands, so this opens at the row's right
-                                    // edge without measuring anything. Snapping rather
+                                    // where it lands, so this opens at the row's edge
+                                    // without measuring anything. Snapping rather
                                     // than the default corner-switch, because a long
                                     // list opened low on the screen would otherwise run
                                     // off the bottom with no way to reach the rest;
                                     // snapping slides it back on both axes.
+                                    //
+                                    // Which edge is `opens_left`. Snapping alone cannot
+                                    // answer it: with no room to the right it slides the
+                                    // submenu back over the menu it came from, which
+                                    // reads as the menu being replaced rather than
+                                    // extended.
                                     el.child(
-                                        div().absolute().left(relative(1.)).top(px(-4.)).child(
-                                            deferred(
-                                                anchored()
-                                                    .snap_to_window_with_margin(px(8.))
-                                                    .child(self.render_submenu(items, cx)),
-                                            )
-                                            .with_priority(2),
-                                        ),
+                                        div()
+                                            .absolute()
+                                            .map(|el| match opens_left {
+                                                true => el.right(relative(1.)),
+                                                false => el.left(relative(1.)),
+                                            })
+                                            .top(px(-4.))
+                                            .child(
+                                                deferred(
+                                                    anchored()
+                                                        // Which corner of the submenu
+                                                        // sits at that edge. Opening
+                                                        // left means its right corner,
+                                                        // or it grows back over the
+                                                        // panel from the same point and
+                                                        // the side made no difference.
+                                                        .anchor(match opens_left {
+                                                            true => Anchor::TopRight,
+                                                            false => Anchor::TopLeft,
+                                                        })
+                                                        .snap_to_window_with_margin(px(8.))
+                                                        .child(self.render_submenu(items, cx)),
+                                                )
+                                                .with_priority(2),
+                                            ),
                                     )
                                 })
                                 .into_any_element()

@@ -21,6 +21,14 @@ wait_for 'p[0]["rows"] == ["a-folder", "b-script"]'
 expect 'p[0]["columns"] == ["Size", "Kind", "Modified"]' \
     "a pane starts with the three columns it always had"
 
+# --- the footer, before any of them are drawn --------------------------------
+# The line for a single row says the things no column says. With the usual
+# three columns that is the mode and the owner, so it says them.
+click "$(named b-script)"
+wait_for 'p[0]["selected"] == [p[0]["rows"].index("b-script")]'
+expect '"-rwxr-xr-x" in p[0]["footer"]' \
+    "the footer carries the mode while no column does"
+
 # --- turning three on by hand ------------------------------------------------
 # Named out of table order on purpose: the header follows `Column::ALL`, not
 # the order a file happens to list them in.
@@ -39,6 +47,13 @@ echo "  ok   a line in settings.json turns them on, in table order"
 # --- what the Permissions column prints --------------------------------------
 expect 'p[0]["permissions"][p[0]["rows"].index("b-script")] == "-rwxr-xr-x"' \
     "a file chmod 0755 reads as -rwxr-xr-x"
+
+# The same string, now on the row, so the footer gives it up. All three drawn
+# leaves it with nothing to carry at all.
+expect 'p[0]["selected"] == [p[0]["rows"].index("b-script")]' \
+    "the selection survives the re-listing a settings change causes"
+expect 'p[0]["footer"] == ""' \
+    "and the footer stops repeating what the columns now show"
 expect 'p[0]["permissions"][p[0]["rows"].index("a-folder")] == "drwxr-x---"' \
     "a directory chmod 0750 reads as drwxr-x--- and leads with d"
 
