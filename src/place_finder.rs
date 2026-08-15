@@ -82,7 +82,7 @@ impl PlaceFinder {
             cx.subscribe_in(&query, window, |this, _, event, window, cx| match event {
                 PathEditorEvent::Edited => this.rematch(cx),
                 PathEditorEvent::Committed(_) => this.confirm(window, cx),
-                PathEditorEvent::Cancelled => cx.emit(DismissEvent),
+                PathEditorEvent::Cancelled | PathEditorEvent::Blurred => cx.emit(DismissEvent),
             }),
         ];
 

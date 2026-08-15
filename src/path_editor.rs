@@ -134,8 +134,17 @@ fn word_range_at(text: &str, offset: usize) -> std::ops::Range<usize> {
 pub enum PathEditorEvent {
     /// Enter pressed; payload is the raw text. Validation happens in the pane.
     Committed(String),
-    /// Escape, or focus left the editor.
+    /// Escape. Deliberately give up whatever was being edited.
     Cancelled,
+    /// Focus left the editor, by a click somewhere else or anything else that
+    /// moves it.
+    ///
+    /// Separate from `Cancelled` because the two are only the same thing for a
+    /// field that owns the screen. A search field does not: its results are the
+    /// pane's content, and clicking one is how they are meant to be used, so
+    /// treating that as a cancellation threw away what the click was reaching
+    /// for. Whoever handles this decides; most fields do want to give up.
+    Blurred,
     /// The text changed. The command palette re-matches on this; the address
     /// bar ignores it.
     Edited,
@@ -179,9 +188,9 @@ impl PathEditor {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
-        // Focus loss cancels the edit; the pane restores its own focus.
+        // What focus loss means is the owner's to decide; see `Blurred`.
         cx.on_blur(&focus_handle, window, |_, _, cx| {
-            cx.emit(PathEditorEvent::Cancelled);
+            cx.emit(PathEditorEvent::Blurred);
         })
         .detach();
 

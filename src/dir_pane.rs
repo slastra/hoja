@@ -2910,7 +2910,10 @@ impl DirPane {
                     }
                 }
                 PathEditorEvent::Edited => {}
-                PathEditorEvent::Cancelled => {
+                // A rename field owns the row it sits on, so losing focus and
+                // pressing Escape both mean the same thing: leave the name
+                // alone.
+                PathEditorEvent::Cancelled | PathEditorEvent::Blurred => {
                     this.renaming = None;
                     window.focus(&this.focus_handle, cx);
                     cx.notify();
@@ -2995,6 +2998,16 @@ impl DirPane {
             }
             PathEditorEvent::Cancelled => {
                 this.end_search(window, cx);
+                cx.notify();
+            }
+            // Focus left the field, which for a search is not a cancellation.
+            // The results *are* the pane's content, so clicking one is how
+            // they are meant to be used, and ending the search there threw
+            // away the thing the click was reaching for. This is where Enter
+            // already arrives, minus the focus grab: focus is going wherever
+            // the click landed, and taking it back would fight that.
+            PathEditorEvent::Blurred => {
+                this.path_editor = None;
                 cx.notify();
             }
         })
@@ -3640,6 +3653,13 @@ impl DirPane {
                 PathEditorEvent::Cancelled => {
                     this.path_editor = None;
                     window.focus(&this.focus_handle, cx);
+                    cx.notify();
+                }
+                // Abandoned the same way, but without pulling the focus back:
+                // it has already gone somewhere the user chose, and another
+                // pane is one of the places it can have gone.
+                PathEditorEvent::Blurred => {
+                    this.path_editor = None;
                     cx.notify();
                 }
             },

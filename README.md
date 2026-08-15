@@ -329,7 +329,7 @@ the window is, and everything after it is keystrokes sent somewhere unverified.
 An earlier version carried on, walked a pane up to the root of the filesystem
 and pressed paste there; nothing was written only because root is not writable.
 
-There are twelve suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
+There are thirteen suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
 `archive.sh` and `tar.sh` need fixtures, which `scripts/tests/setup-archives.sh`
 builds and prints the path of:
 
