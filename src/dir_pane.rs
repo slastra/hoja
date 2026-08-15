@@ -1051,6 +1051,8 @@ struct Cell {
     /// the size behind it is still being counted.
     counting: bool,
     right: bool,
+    /// Part of the column being dragged to a new slot, and tinted to say so.
+    carried: bool,
 }
 
 /// Drags need a preview view; column resizing shows nothing.
@@ -1368,6 +1370,30 @@ impl DirPane {
     /// the listing is currently sorted by can be hidden, and the order stays
     /// as it was, which is what was asked for even once the chevron saying so
     /// has gone.
+    /// The column being carried to a new slot, if one is.
+    ///
+    /// `moving` is set by any mouse down on a header, a plain click included,
+    /// so `dragged` is what separates a drag from a press. Cleared on release
+    /// by the header's two mouse-up handlers, which is what stops the tint
+    /// outliving the gesture.
+    /// Forget the header drag, so the tint stops with the gesture.
+    ///
+    /// The order it produced stands: it was applied to `view.columns` as the
+    /// pointer moved and there is nothing to commit here. `remember_view` has
+    /// already been told, on every one of those moves.
+    fn finish_move(&mut self, cx: &mut Context<Self>) {
+        if self.moving.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn moving_column(&self) -> Option<Column> {
+        self.moving
+            .as_ref()
+            .filter(|drag| drag.dragged)
+            .map(|drag| drag.column)
+    }
+
     fn toggle_column(&mut self, column: Column, cx: &mut Context<Self>) {
         self.view.columns.toggle(column);
         // The footer follows from `sync_footer`, which compares rather than
@@ -3900,6 +3926,8 @@ impl DirPane {
         // dragging a divider never lands a click on the cell beside it. `width` is
         // `None` for the flexible Name column.
         let widths = self.widths;
+        let moving = self.moving_column();
+        let carried_bg = colors.element_selected;
         // `None` is the Name column, which is not in the table: it flexes to
         // fill, it holds the icon and the rename editor, and it does not move.
         // Reordering permutes the fixed columns to its right.
@@ -3928,6 +3956,10 @@ impl DirPane {
                 .gap_1()
                 .cursor_pointer()
                 .hover(|style| style.bg(hover_bg))
+                // The header being carried, marked more strongly than its
+                // values are: this is the part with a hand on it, and the
+                // column below it follows.
+                .when(column.is_some() && column == moving, |el| el.bg(carried_bg))
                 // Held to the same edge as the figures under it. The sort
                 // chevron follows the label, so it sits outermost.
                 .when(right, |this| this.justify_end())
@@ -4009,6 +4041,25 @@ impl DirPane {
             .border_color(colors.border)
             .text_xs()
             .text_color(content)
+            // Released, wherever that happened. Two handlers because
+            // `on_mouse_up` is scoped to this element and a drag very often
+            // ends somewhere else entirely; without the `_out` half the tint
+            // outlives the gesture that put it there. Both run after the
+            // headers' own mouse-up handlers, which bubble outwards from the
+            // cell, so the click this recovers is decided before the state it
+            // is decided from goes away.
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    this.finish_move(cx);
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    this.finish_move(cx);
+                }),
+            )
             // One registration for all six, rather than one per header as the
             // resize needs: that one has to know which handle it belongs to,
             // and this one reads the column off the payload.
@@ -4121,6 +4172,7 @@ impl DirPane {
         // Cells line up with the header by using the same widths and the same
         // handle-sized spacers where the dividers sit.
         let spacer = || div().w(px(COL_HANDLE_WIDTH)).flex_none();
+        let carried_bg = colors.ghost_element_selected;
         let cell = move |cell: Cell| {
             let Cell {
                 width,
@@ -4128,6 +4180,7 @@ impl DirPane {
                 numeric,
                 counting,
                 right,
+                carried,
             } = cell;
             let body = div()
                 .w(width)
@@ -4135,6 +4188,10 @@ impl DirPane {
                 .px_2()
                 .truncate()
                 .text_color(content)
+                // Translucent, so a selected row still reads through it: the
+                // column is being moved, the row underneath is not, and both
+                // facts are worth keeping on screen at once.
+                .when(carried, |el| el.bg(carried_bg))
                 .when(right, |el| el.text_right())
                 // Digit under digit down the column, and the same shape as the
                 // footer totalling them below.
@@ -4175,6 +4232,7 @@ impl DirPane {
         // Resolved here with everything else the row needs, so nothing borrows
         // `self` past the end of this function.
         let folder_bytes = self.folder_bytes(ix);
+        let moving = self.moving_column();
         let numeric = crate::theming::numeric_font(cx);
         let counting = self.counting_size(ix);
         let cells: Vec<Cell> = self
@@ -4188,6 +4246,7 @@ impl DirPane {
                 // Only the column that holds a folder size has anything to wait for.
                 counting: counting && column == Column::Size,
                 right: column.aligns_right(),
+                carried: moving == Some(column),
             })
             .collect();
 
