@@ -109,9 +109,13 @@ fn try_exec_present(program: &str) -> bool {
     if path.is_absolute() {
         return is_executable(path);
     }
-    std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|dir| is_executable(&dir.join(program)))
-    })
+    // A missing `PATH` is not an answer, and this filter's job is to remove
+    // rows: treating "cannot tell" as "not installed" would empty the Open With
+    // list under a display manager or a systemd user unit with a stripped
+    // environment, silently, since an application that is filtered out leaves
+    // nothing behind to notice. The spec's own fallback is the system default.
+    let paths = std::env::var_os("PATH").unwrap_or_else(|| "/bin:/usr/bin".into());
+    std::env::split_paths(&paths).any(|dir| is_executable(&dir.join(program)))
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -478,6 +482,21 @@ mod tests {
         // it. `exists()` alone would wrongly offer the application.
         assert!(std::path::Path::new("/etc/hostname").exists());
         assert!(!try_exec_present("/etc/hostname"));
+    }
+
+    #[test]
+    fn a_stripped_environment_does_not_empty_the_list() {
+        // The failure this guards is silent: an application filtered out
+        // leaves no row and no message, so a launcher with no `PATH` would
+        // just show fewer handlers than it should.
+        //
+        // Serial with the other environment-reading tests would be safer, and
+        // `sh` in the spec's own fallback directories is the one thing that
+        // can be assumed present without one.
+        assert!(
+            try_exec_present("/bin/sh") || try_exec_present("/usr/bin/sh"),
+            "an absolute path is answered without PATH at all"
+        );
     }
 
     #[test]

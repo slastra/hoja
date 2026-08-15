@@ -222,17 +222,26 @@ impl Nav {
     }
 
     /// The handler Enter should run, if any.
-    fn confirmed(&self) -> Option<Handler> {
-        let (items, ix) = match self.open {
-            Some(_) => (self.open_items()?, self.sub_selected?),
-            None => (self.items.as_slice(), self.selected?),
+    /// The chosen row's handler, and whether running it should leave the menu
+    /// standing.
+    ///
+    /// True only for a toggle inside a submenu, which is the one shape where
+    /// dismissing is wrong: the Columns list holds six of them, and setting
+    /// three columns should not mean opening the menu three times and walking
+    /// back into the submenu each time. A toggle in the menu itself still
+    /// dismisses, as it always has.
+    fn confirmed(&self) -> Option<(Handler, bool)> {
+        let (items, ix, in_submenu) = match self.open {
+            Some(_) => (self.open_items()?, self.sub_selected?, true),
+            None => (self.items.as_slice(), self.selected?, false),
         };
         match items.get(ix) {
             Some(MenuItem::Action {
                 handler,
                 disabled: false,
+                checked,
                 ..
-            }) => Some(handler.clone()),
+            }) => Some((handler.clone(), in_submenu && checked.is_some())),
             _ => None,
         }
     }
@@ -303,6 +312,21 @@ impl FileMenu {
 
     /// Splice items in after the menu is already on screen. Used by the
     /// "Open With" section, which is resolved off the UI thread.
+    /// Replace every row, keeping where the keyboard is.
+    ///
+    /// For a menu that stays open across a change it caused: a toggle in a
+    /// submenu redraws its own check mark this way.
+    ///
+    /// The kept indices stay meaningful only because of where the change lands.
+    /// `sub_selected` indexes a submenu whose length is fixed, and `selected`
+    /// indexes the row the submenu hangs off, which sits above anything the
+    /// toggle can add or remove. A caller that rebuilt rows *above* the open
+    /// one would need to move these itself.
+    pub fn refresh_items(&mut self, items: Vec<MenuItem>, cx: &mut Context<Self>) {
+        self.nav.items = items;
+        cx.notify();
+    }
+
     pub fn insert_items(&mut self, ix: usize, items: Vec<MenuItem>, cx: &mut Context<Self>) {
         if items.is_empty() || ix > self.nav.items.len() {
             return;
@@ -361,8 +385,12 @@ impl FileMenu {
             self.open_submenu_action(&OpenSubmenu, window, cx);
             return;
         }
-        if let Some(handler) = self.nav.confirmed() {
+        if let Some((handler, keep_open)) = self.nav.confirmed() {
             handler(window, cx);
+            if keep_open {
+                cx.notify();
+                return;
+            }
         } else if self.nav.open.is_some() {
             // Inside a submenu with nothing chosen, hold rather than throwing
             // the menu away on a keypress that meant nothing.
@@ -465,7 +493,14 @@ impl FileMenu {
                                     .hover(|s| s.bg(hovered))
                                     .on_click(cx.listener(move |_, _, window, cx| {
                                         handler(window, cx);
-                                        cx.emit(DismissEvent);
+                                        // A toggle here leaves the menu up; see
+                                        // `Nav::confirmed`, which decides the
+                                        // same thing for the keyboard.
+                                        if checked.is_none() {
+                                            cx.emit(DismissEvent);
+                                        } else {
+                                            cx.notify();
+                                        }
                                     }))
                             })
                             .when(reserve_check_slot, |el| {

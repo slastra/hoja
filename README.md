@@ -329,7 +329,7 @@ the window is, and everything after it is keystrokes sent somewhere unverified.
 An earlier version carried on, walked a pane up to the root of the filesystem
 and pressed paste there; nothing was written only because root is not writable.
 
-There are eleven suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
+There are twelve suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
 `archive.sh` and `tar.sh` need fixtures, which `scripts/tests/setup-archives.sh`
 builds and prints the path of:
 
@@ -359,6 +359,15 @@ draws more than eight handlers. Images do; plain text does not.
 
 ```sh
 scripts/sway-harness.sh "$(scripts/tests/setup-context-menu.sh)" scripts/tests/context-menu.sh
+```
+
+`columns.sh` needs `setup-columns.sh`, which sets the modes it asserts with
+`chmod` rather than inheriting whatever `umask` gives it. The suite writes
+`settings.json` while Hoja runs and waits for the header to follow, so it covers
+the whole path a hand-written line takes without a coordinate in it.
+
+```sh
+scripts/sway-harness.sh "$(scripts/tests/setup-columns.sh)" scripts/tests/columns.sh
 ```
 
 `crash-phase1.sh` and `crash-phase2.sh` are one test in two runs against one

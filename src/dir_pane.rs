@@ -984,45 +984,64 @@ struct ColumnMove {
 struct ColumnMoveDrag {
     column: Column,
     start_x: Pixels,
-    /// Its slot among the drawn columns, and the widths of all of them.
+    /// Its slot among the drawn columns, and the distance from each slot to
+    /// the next: a column's width *plus* the resize handle in front of it,
+    /// because that is what a swap actually displaces the header by. Widths
+    /// alone fire the swap early and drift further with every column crossed.
     start_slot: usize,
-    start_widths: Vec<f32>,
+    start_pitches: Vec<f32>,
     start_layout: ColumnLayout,
-    /// Whether the pointer moved at all while the button was down. What tells
-    /// a drag that changed nothing from a click; see the mouse-up handler.
+    /// Whether the pointer moved at all while the button was down, and how far
+    /// it had gone when it last did. What tells a drag from a click, and a
+    /// press that wandered from one that did not; see the mouse-up handler.
     dragged: bool,
+    moved_by: f32,
 }
+
+/// How far a press may wander and still be a click on a header.
+///
+/// gpui promotes a press to a drag two pixels out (`DRAG_THRESHOLD`), which is
+/// well inside the hand movement in an ordinary click, so a header that can be
+/// dragged needs its own idea of how still a click has to be. Comfortably
+/// larger than gpui's number and far smaller than half a column, which is what
+/// it takes to actually move one.
+const HEADER_CLICK_SLOP: f32 = 5.;
 
 /// Which slot a header being dragged has reached.
 ///
-/// `widths` are the drawn columns' widths in slot order, `from` is the slot the
-/// drag started in, and `dx` is how far the pointer has travelled since.
-/// Advances a slot each time `|dx|` passes the widths already crossed plus half
-/// of the next one, which is the dragged column's centre passing its
+/// `pitches` is how far apart the drawn columns are in slot order, `from` is
+/// the slot the drag started in, and `dx` is how far the pointer has travelled
+/// since. Advances a slot each time `|dx|` passes the pitches already crossed
+/// plus half of the next one, which is the dragged column's centre passing its
 /// neighbour's.
+///
+/// A pitch is the column's width plus the handle in front of it, since the
+/// header lays out as `[handle][head][handle][head]`. That five pixels is the
+/// difference between the swap landing where the eye expects it and landing
+/// slightly early, every time, cumulatively.
 ///
 /// Arithmetic rather than a hit test against the headers, deliberately.
 /// `on_drag_move` sees the bounds of the last painted frame and a reorder
 /// changes exactly those bounds, so asking "am I over my neighbour now"
 /// answers a question about a layout that has already been replaced. This asks
 /// only where the pointer started and where it is, which no repaint can move.
-fn target_slot(widths: &[f32], from: usize, dx: f32) -> usize {
+fn target_slot(pitches: &[f32], from: usize, dx: f32) -> usize {
     let mut slot = from;
     let mut crossed = 0.;
     if dx > 0. {
-        for (ix, width) in widths.iter().enumerate().skip(from + 1) {
-            if dx < crossed + width / 2. {
+        for (ix, pitch) in pitches.iter().enumerate().skip(from + 1) {
+            if dx < crossed + pitch / 2. {
                 break;
             }
-            crossed += width;
+            crossed += pitch;
             slot = ix;
         }
     } else {
-        for (ix, width) in widths.iter().enumerate().take(from).rev() {
-            if -dx < crossed + width / 2. {
+        for (ix, pitch) in pitches.iter().enumerate().take(from).rev() {
+            if -dx < crossed + pitch / 2. {
                 break;
             }
-            crossed += width;
+            crossed += pitch;
             slot = ix;
         }
     }
@@ -1090,9 +1109,12 @@ pub struct DirPane {
     widths: ColumnWidths,
     /// Anchor for the resize in progress, if any.
     resize: Option<ColumnDrag>,
-    /// The same for a header being dragged to a new slot. Set on mouse down
-    /// and never cleared, as `resize` is: every handler filters on the live
-    /// payload's column, and the next mouse down overwrites it.
+    /// The same for a header being dragged to a new slot.
+    ///
+    /// Cleared on release, unlike `resize`, and by two handlers rather than
+    /// one so that a drag ending outside the header still counts. It has to
+    /// be: the tint saying which column is being carried is drawn from this,
+    /// so state that outlived the gesture would be paint that did too.
     moving: Option<ColumnMoveDrag>,
     /// Whether the scrollbar is mid-drag. The bar is rebuilt every frame; a
     /// drag is not.
@@ -1330,14 +1352,27 @@ impl DirPane {
         self.view
     }
 
-    /// Replace the view wholesale, as a settings edit does. Re-lists, because
-    /// hidden files and the sort order both change what the rows are.
+    /// Replace the view wholesale, as a settings edit does.
+    ///
+    /// Re-lists only where the rows themselves are in question: hidden files
+    /// and the sort order both change what they are and what order they come
+    /// in, and the columns change neither, which is the same thing
+    /// `toggle_column` says from the other side. Without the distinction,
+    /// saving `settings.json` re-read every directory in every pane to show or
+    /// hide one column.
     pub fn set_view_settings(&mut self, view: ViewSettings, cx: &mut Context<Self>) {
         if self.view == view {
             return;
         }
+        let rows_change = self.view.show_hidden != view.show_hidden
+            || self.view.folders_first != view.folders_first
+            || self.view.sort != view.sort;
         self.view = view;
-        self.relist(cx);
+        if rows_change {
+            self.relist(cx);
+        } else {
+            cx.notify();
+        }
     }
 
     pub fn column_widths(&self) -> std::collections::HashMap<String, f32> {
@@ -1363,19 +1398,6 @@ impl DirPane {
         self.relist(cx);
     }
 
-    /// Show or hide one column.
-    ///
-    /// No relist and no re-sort: which rows exist and what order they are in
-    /// have not changed, only which facts about them are drawn. A column that
-    /// the listing is currently sorted by can be hidden, and the order stays
-    /// as it was, which is what was asked for even once the chevron saying so
-    /// has gone.
-    /// The column being carried to a new slot, if one is.
-    ///
-    /// `moving` is set by any mouse down on a header, a plain click included,
-    /// so `dragged` is what separates a drag from a press. Cleared on release
-    /// by the header's two mouse-up handlers, which is what stops the tint
-    /// outliving the gesture.
     /// Forget the header drag, so the tint stops with the gesture.
     ///
     /// The order it produced stands: it was applied to `view.columns` as the
@@ -1387,6 +1409,12 @@ impl DirPane {
         }
     }
 
+    /// The column being carried to a new slot, if one is.
+    ///
+    /// `moving` is set by any mouse down on a header, a plain click included,
+    /// so `dragged` is what separates a drag from a press. Cleared on release
+    /// by the header's two mouse-up handlers, which is what stops the tint
+    /// outliving the gesture.
     fn moving_column(&self) -> Option<Column> {
         self.moving
             .as_ref()
@@ -1394,8 +1422,34 @@ impl DirPane {
             .map(|drag| drag.column)
     }
 
+    /// Show or hide one column.
+    ///
+    /// No relist and no re-sort: which rows exist and what order they are in
+    /// have not changed, only which facts about them are drawn. A column that
+    /// the listing is currently sorted by can be hidden, and the order stays
+    /// as it was, which is what was asked for even once the chevron saying so
+    /// has gone.
     fn toggle_column(&mut self, column: Column, cx: &mut Context<Self>) {
         self.view.columns.toggle(column);
+        // The menu this came from is still up, so its check marks are now out
+        // of date. Only the view menu can reach here, the Columns list being
+        // the only place a column is toggled, so the rows it is handed back are
+        // the right ones.
+        //
+        // Deferred, and that is not a nicety: this runs from inside the menu's
+        // own click handler, so the menu is already being updated and gpui
+        // panics outright rather than reentering it. Nothing here reads the
+        // menu, so there is nothing to be stale by waiting.
+        if let Some((_, menu)) = self.context_menu.clone() {
+            let pane = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                let Some(pane) = pane.upgrade() else {
+                    return;
+                };
+                let items = pane.update(cx, |pane, cx| pane.settings_menu_items(cx));
+                menu.update(cx, |menu, cx| menu.refresh_items(items, cx));
+            });
+        }
         // The footer follows from `sync_footer`, which compares rather than
         // being told: the same change also arrives from the settings file,
         // and a line rebuilt here alone would be right for one of the two
@@ -1663,13 +1717,13 @@ impl DirPane {
         .detach();
     }
 
-    /// The pane view menu behind the hamburger button.
-    fn open_settings_menu(
-        &mut self,
-        position: Point<Pixels>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// The rows of the pane view menu.
+    ///
+    /// Separate from opening it because the Columns toggles leave the menu
+    /// standing, and a check mark that does not follow the thing it reports is
+    /// worse than a menu that closes. `toggle_column` builds these again and
+    /// hands them back to the open menu.
+    fn settings_menu_items(&self, cx: &mut Context<Self>) -> Vec<MenuItem> {
         let pane_focus = self.focus_handle.clone();
         let dispatch = move |action: Box<dyn gpui::Action>| {
             let pane_focus = pane_focus.clone();
@@ -1682,17 +1736,18 @@ impl DirPane {
         // Straight to this pane rather than through an action, which the rows
         // around it use: six actions whose only caller is one submenu row
         // would be six more entries in the command palette saying what the
-        // submenu already says. The focus step is the one thing worth keeping
-        // from `dispatch`, so the keyboard is not left on a menu that has
-        // closed.
+        // submenu already says.
+        //
+        // And without `dispatch`'s focus step, deliberately. Focusing the pane
+        // blurs the menu, which dismisses it, and these are the rows that stay
+        // open so the next column is one keystroke away. Focus comes back to
+        // the pane when the menu really is dismissed; `show_menu` subscribes
+        // for exactly that.
         let toggle_column = {
-            let pane_focus = self.focus_handle.clone();
             let pane = cx.entity().downgrade();
             move |column: Column| {
-                let pane_focus = pane_focus.clone();
                 let pane = pane.clone();
-                move |window: &mut Window, cx: &mut App| {
-                    window.focus(&pane_focus, cx);
+                move |_: &mut Window, cx: &mut App| {
                     pane.update(cx, |pane, cx| pane.toggle_column(column, cx))
                         .ok();
                 }
@@ -1760,7 +1815,12 @@ impl DirPane {
             (Column::Owner, Box::new(SortByOwner)),
             (Column::Group, Box::new(SortByGroup)),
         ] {
-            if self.view.columns.get(column) {
+            // Offered when the column is drawn, and also when the listing is
+            // sorted by it whether it is drawn or not. Hiding a column does not
+            // change the order, and the chevron goes with the column, so
+            // without this second case nothing on screen names the order the
+            // rows are actually in.
+            if self.view.columns.get(column) || self.view.sort.key == column.sort_key() {
                 items.push(MenuItem::toggle(
                     format!("Sort by {}", column.label()),
                     self.view.sort.key == column.sort_key(),
@@ -1780,6 +1840,17 @@ impl DirPane {
             MenuItem::action("Refresh", dispatch(Box::new(Refresh))),
         ]);
 
+        items
+    }
+
+    /// The pane view menu behind the hamburger button.
+    fn open_settings_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let items = self.settings_menu_items(cx);
         self.show_menu(items, position, window, cx);
     }
 
@@ -3980,14 +4051,15 @@ impl DirPane {
                                 column,
                                 start_x: event.position.x,
                                 start_slot: this.view.columns.slot_of(column).unwrap_or(0),
-                                start_widths: this
+                                start_pitches: this
                                     .view
                                     .columns
                                     .iter()
-                                    .map(|c| f32::from(this.widths.get(c)))
+                                    .map(|c| f32::from(this.widths.get(c)) + COL_HANDLE_WIDTH)
                                     .collect(),
                                 start_layout: this.view.columns,
                                 dragged: false,
+                                moved_by: 0.,
                             });
                         }),
                     )
@@ -4012,15 +4084,18 @@ impl DirPane {
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                            let Some(started) = this
+                            // How far the pointer went, not whether the layout
+                            // ended where it started. Those are different
+                            // questions: a drag that goes out past two columns
+                            // and comes back lands on the slot it began in, and
+                            // reading that as a click turns a cancelled reorder
+                            // into a silent re-sort.
+                            let wandered = this
                                 .moving
                                 .as_ref()
                                 .filter(|drag| drag.column == column && drag.dragged)
-                                .map(|drag| drag.start_layout)
-                            else {
-                                return;
-                            };
-                            if this.view.columns != started {
+                                .map(|drag| drag.moved_by.abs());
+                            if wandered.is_none_or(|far| far > HEADER_CLICK_SLOP) {
                                 return;
                             }
                             this.moving = None;
@@ -4076,7 +4151,8 @@ impl DirPane {
                         .map(|drag| {
                             drag.dragged = true;
                             let dx = f32::from(event.event.position.x - drag.start_x);
-                            let slot = target_slot(&drag.start_widths, drag.start_slot, dx);
+                            drag.moved_by = dx;
+                            let slot = target_slot(&drag.start_pitches, drag.start_slot, dx);
                             drag.start_layout.moved(drag.column, slot)
                         })
                     else {
@@ -4927,7 +5003,7 @@ mod tests {
     #[test]
     fn a_column_moves_past_the_hidden_ones_without_counting_them() {
         // Slots count what is drawn. Kind is hidden between Size and Modified
-        // here, so moving Modified to slot 0 puts it before Size, and Kind
+        // here, so moving Permissions to slot 0 puts it before Size, and Kind
         // stays where it was rather than being dragged along.
         let columns = layout(&["size", "modified", "permissions"]);
         let moved = columns.moved(Column::Permissions, 0);
@@ -4954,9 +5030,9 @@ mod tests {
         assert_eq!(columns.moved(Column::Owner, 0), columns);
     }
 
-    /// Three columns of 100, 60 and 140, which is close enough to the real
-    /// defaults and different enough from each other that an implementation
-    /// treating them as equal fails.
+    /// Three slots 100, 60 and 140 apart: pitches rather than widths, so a
+    /// column is 5px narrower than each figure here. Different enough from each
+    /// other that an implementation treating them as equal fails.
     #[cfg(test)]
     const W: [f32; 3] = [100., 60., 140.];
 

@@ -6,7 +6,7 @@
 # The way in is the settings file rather than the menu, and that is the point.
 # hoja watches `settings.json` and pushes a re-read over every pane, so writing
 # it mid-run covers the whole path a hand-written line takes — serde, the merge
-# in `initial_view`, `ColumnsShown::from_map`, and the header — without a
+# in `initial_view`, `ColumnLayout::from_flags`, and the header — without a
 # single coordinate in the test. The menu is the same `toggle` underneath and
 # is checked by eye.
 #
@@ -51,7 +51,7 @@ expect 'p[0]["permissions"][p[0]["rows"].index("b-script")] == "-rwxr-xr-x"' \
 # The same string, now on the row, so the footer gives it up. All three drawn
 # leaves it with nothing to carry at all.
 expect 'p[0]["selected"] == [p[0]["rows"].index("b-script")]' \
-    "the selection survives the re-listing a settings change causes"
+    "the selection is untouched by a change of columns"
 expect 'p[0]["footer"] == ""' \
     "and the footer stops repeating what the columns now show"
 expect 'p[0]["permissions"][p[0]["rows"].index("a-folder")] == "drwxr-x---"' \
@@ -108,3 +108,32 @@ at $((WW - 50)) 40
 at $((WW - 50)) 40
 wait_for 'p[0]["rows"] == ["a-folder", "c-big", "b-script"]' 10
 echo "  ok   clicking a header still sorts by it"
+
+# --- the Columns list stays up while it is being used ------------------------
+# Six toggles behind one row: dismissing on each of them would mean opening the
+# menu once per column. The check marks have to follow, which is the reason the
+# rows are rebuilt rather than the menu simply being left alone.
+at $((WW - 16)) 14
+wait_for 'p[0]["menu_open"]' 20
+key -k Down
+key -k Down
+key -k Down
+key -k Right
+wait_for 'p[0]["submenu_open"]' 20
+expect 'p[0]["submenu_items"] == ["Size", "Kind", "Modified", "Permissions", "Owner", "Group"]' \
+    "the Columns list offers all six"
+
+# Opening a submenu lands on its first row, so three Downs from Size reaches
+# Permissions, the fourth. Four would be Owner, which is a real answer to a
+# different question and looks exactly like an off-by-one in the code.
+key -k Down
+key -k Down
+key -k Down
+key -k Return
+wait_for 'p[0]["columns"] == ["Size", "Permissions"]' 20
+echo "  ok   a toggle in the list shows the column"
+expect 'p[0]["submenu_open"]' \
+    "and leaves the list open to reach the next one"
+
+key -k Escape
+key -k Escape
