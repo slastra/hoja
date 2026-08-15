@@ -102,12 +102,13 @@ updates, and archive browsing that feels like working with ordinary folders.
 - **Columns you choose.** A pane shows the size, the kind and the modified
   time. It can also show the permissions, the owner and the group. Use the
   Columns list in the view menu to show a column or to hide one. Click a
-  header to sort by that column. A new pane from a split shows the same
-  columns as the pane it came from.
+  header to sort by that column, and drag a header sideways to move the
+  column. A new pane from a split shows the same columns as the pane it came
+  from.
 
-  Set the order in the settings file with a list. A column you hide keeps its
-  place until you close Hoja. After that it comes back in the usual place,
-  because a column that is not shown has no position to record.
+  You can also set the order in the settings file with a list. A column you
+  hide keeps its place until you close Hoja. After that it comes back in the
+  usual place, because a column that is not shown has no position to record.
 - **Git status.** File names are coloured by Git status, including folders,
   using Git's own status information so Hoja always matches the command
   line.

@@ -8,9 +8,9 @@ use file_icons::FileIcons;
 use gpui::AnimationExt as _;
 use gpui::{
     App, Bounds, ClickEvent, Context, CursorStyle, DismissEvent, DragMoveEvent, Entity,
-    EventEmitter, ExternalPaths, FocusHandle, Focusable, MouseButton, MouseDownEvent, Pixels,
-    Point, SharedString, Subscription, Task, UniformListScrollHandle, Window, actions, anchored,
-    deferred, div, prelude::*, px, uniform_list,
+    EventEmitter, ExternalPaths, FocusHandle, Focusable, MouseButton, MouseDownEvent, MouseUpEvent,
+    Pixels, Point, SharedString, Subscription, Task, UniformListScrollHandle, Window, actions,
+    anchored, deferred, div, prelude::*, px, uniform_list,
 };
 use hoja_transfer::Operation;
 use theme::ActiveTheme;
@@ -826,6 +826,42 @@ impl ColumnLayout {
         self.order.into_iter().filter(move |c| self.get(*c))
     }
 
+    /// Where `column` sits among the drawn ones, or `None` if it is not drawn.
+    fn slot_of(self, column: Column) -> Option<usize> {
+        self.iter().position(|c| c == column)
+    }
+
+    /// The same layout with `column` moved to `slot`, counting only the drawn
+    /// columns.
+    ///
+    /// Takes and returns a value rather than mutating, because the header drag
+    /// recomputes it from the layout it started with on every pointer move.
+    /// That is what makes the drag idempotent: the answer depends on where the
+    /// pointer started and where it is, never on what the last frame did.
+    ///
+    /// Hidden columns keep their absolute positions and the drawn ones are
+    /// rearranged among the slots that are left, so moving a visible column
+    /// never disturbs where an invisible one will reappear.
+    fn moved(mut self, column: Column, slot: usize) -> Self {
+        if !self.get(column) {
+            return self;
+        }
+        let mut drawn: Vec<Column> = self.iter().collect();
+        let Some(from) = drawn.iter().position(|c| *c == column) else {
+            return self;
+        };
+        drawn.remove(from);
+        drawn.insert(slot.min(drawn.len()), column);
+
+        let mut drawn = drawn.into_iter();
+        for column in self.order.iter_mut() {
+            if self.shown[*column as usize] {
+                *column = drawn.next().expect("as many drawn columns as slots");
+            }
+        }
+        self
+    }
+
     /// The drawn columns in slot order, by name, for the settings and state
     /// files. Keyed by name on the same reasoning as the widths: inserting a
     /// column must not change what an existing file means.
@@ -925,6 +961,74 @@ struct ColumnResize {
     column: Column,
 }
 
+/// What a header reorder dispatches on, and who started it.
+///
+/// The same shape as `ColumnResize` and for the same reason: gpui routes a
+/// drag-move to every handler registered for the payload's type, in every
+/// pane, so the payload has to say whose drag it is.
+#[derive(Clone, Copy)]
+struct ColumnMove {
+    pane: gpui::EntityId,
+    column: Column,
+}
+
+/// Where a header reorder started, captured once when the drag begins.
+///
+/// Everything here is frozen at the start, and that is the design rather than
+/// an economy. The target slot is recomputed from these on every pointer move,
+/// so the drag is a pure function of where it began and where the pointer is:
+/// nothing accumulates, nothing drifts, and there is no state to unwind when it
+/// ends. Recomputing from the *live* layout instead would feed the result back
+/// into its own input, which is the oscillation `on_drag_move`'s stale bounds
+/// are already known for.
+struct ColumnMoveDrag {
+    column: Column,
+    start_x: Pixels,
+    /// Its slot among the drawn columns, and the widths of all of them.
+    start_slot: usize,
+    start_widths: Vec<f32>,
+    start_layout: ColumnLayout,
+    /// Whether the pointer moved at all while the button was down. What tells
+    /// a drag that changed nothing from a click; see the mouse-up handler.
+    dragged: bool,
+}
+
+/// Which slot a header being dragged has reached.
+///
+/// `widths` are the drawn columns' widths in slot order, `from` is the slot the
+/// drag started in, and `dx` is how far the pointer has travelled since.
+/// Advances a slot each time `|dx|` passes the widths already crossed plus half
+/// of the next one, which is the dragged column's centre passing its
+/// neighbour's.
+///
+/// Arithmetic rather than a hit test against the headers, deliberately.
+/// `on_drag_move` sees the bounds of the last painted frame and a reorder
+/// changes exactly those bounds, so asking "am I over my neighbour now"
+/// answers a question about a layout that has already been replaced. This asks
+/// only where the pointer started and where it is, which no repaint can move.
+fn target_slot(widths: &[f32], from: usize, dx: f32) -> usize {
+    let mut slot = from;
+    let mut crossed = 0.;
+    if dx > 0. {
+        for (ix, width) in widths.iter().enumerate().skip(from + 1) {
+            if dx < crossed + width / 2. {
+                break;
+            }
+            crossed += width;
+            slot = ix;
+        }
+    } else {
+        for (ix, width) in widths.iter().enumerate().take(from).rev() {
+            if -dx < crossed + width / 2. {
+                break;
+            }
+            crossed += width;
+            slot = ix;
+        }
+    }
+    slot
+}
+
 /// Where a column resize started, captured once when the drag begins.
 #[derive(Clone, Copy)]
 struct ColumnDrag {
@@ -984,6 +1088,10 @@ pub struct DirPane {
     widths: ColumnWidths,
     /// Anchor for the resize in progress, if any.
     resize: Option<ColumnDrag>,
+    /// The same for a header being dragged to a new slot. Set on mouse down
+    /// and never cleared, as `resize` is: every handler filters on the live
+    /// payload's column, and the next mouse down overwrites it.
+    moving: Option<ColumnMoveDrag>,
     /// Whether the scrollbar is mid-drag. The bar is rebuilt every frame; a
     /// drag is not.
     scrollbar: crate::scrollbar::ScrollbarState,
@@ -1094,6 +1202,7 @@ impl DirPane {
             scroll: UniformListScrollHandle::new(),
             widths: ColumnWidths::default(),
             resize: None,
+            moving: None,
             scrollbar: crate::scrollbar::ScrollbarState::default(),
             git: crate::git::GitStatuses::new(),
             git_task: None,
@@ -3790,7 +3899,20 @@ impl DirPane {
         // Clickable header cell. The resize handles are siblings, not ancestors, so
         // dragging a divider never lands a click on the cell beside it. `width` is
         // `None` for the flexible Name column.
-        let head = |key: SortKey, label: &'static str, width: Option<Pixels>, right: bool| {
+        let widths = self.widths;
+        // `None` is the Name column, which is not in the table: it flexes to
+        // fill, it holds the icon and the rename editor, and it does not move.
+        // Reordering permutes the fixed columns to its right.
+        let head = |column: Option<Column>| {
+            let (key, label, width, right) = match column {
+                Some(c) => (
+                    c.sort_key(),
+                    c.label(),
+                    Some(widths.get(c)),
+                    c.aligns_right(),
+                ),
+                None => (SortKey::Name, "Name", None, false),
+            };
             let indicator = (sort.key == key).then_some(match sort.dir {
                 SortDir::Ascending => "icons/file_icons/chevron_up.svg",
                 SortDir::Descending => "icons/file_icons/chevron_down.svg",
@@ -3818,6 +3940,62 @@ impl DirPane {
                 .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
                     this.toggle_sort(key, cx);
                 }))
+                .when_some(column, |el, column| {
+                    el.on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                            this.moving = Some(ColumnMoveDrag {
+                                column,
+                                start_x: event.position.x,
+                                start_slot: this.view.columns.slot_of(column).unwrap_or(0),
+                                start_widths: this
+                                    .view
+                                    .columns
+                                    .iter()
+                                    .map(|c| f32::from(this.widths.get(c)))
+                                    .collect(),
+                                start_layout: this.view.columns,
+                                dragged: false,
+                            });
+                        }),
+                    )
+                    .on_drag(
+                        ColumnMove {
+                            pane: cx.entity_id(),
+                            column,
+                        },
+                        |_, _, _, cx| cx.new(|_| EmptyDrag),
+                    )
+                    // The click this header would have had.
+                    //
+                    // gpui starts a drag two pixels from the mouse down
+                    // (`DRAG_THRESHOLD`) and drops the pending click the moment
+                    // it does, so a header click with any hand movement in it
+                    // sorts nothing. That is the right trade for a listing row,
+                    // where the drag is the intent; it is the wrong one here,
+                    // where the click is. A drag that never moved a column was
+                    // a click, and this is where that is decided: `on_click`
+                    // has already been suppressed in exactly this case, so the
+                    // two can never both fire.
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                            let Some(started) = this
+                                .moving
+                                .as_ref()
+                                .filter(|drag| drag.column == column && drag.dragged)
+                                .map(|drag| drag.start_layout)
+                            else {
+                                return;
+                            };
+                            if this.view.columns != started {
+                                return;
+                            }
+                            this.moving = None;
+                            this.toggle_sort(key, cx);
+                        }),
+                    )
+                })
         };
 
         let header = div()
@@ -3831,17 +4009,42 @@ impl DirPane {
             .border_color(colors.border)
             .text_xs()
             .text_color(content)
-            .child(head(SortKey::Name, "Name", None, false));
+            // One registration for all six, rather than one per header as the
+            // resize needs: that one has to know which handle it belongs to,
+            // and this one reads the column off the payload.
+            .on_drag_move(
+                cx.listener(|this, event: &DragMoveEvent<ColumnMove>, _window, cx| {
+                    let active = *event.drag(cx);
+                    if active.pane != cx.entity_id() {
+                        return;
+                    }
+                    let Some(layout) = this
+                        .moving
+                        .as_mut()
+                        .filter(|drag| drag.column == active.column)
+                        .map(|drag| {
+                            drag.dragged = true;
+                            let dx = f32::from(event.event.position.x - drag.start_x);
+                            let slot = target_slot(&drag.start_widths, drag.start_slot, dx);
+                            drag.start_layout.moved(drag.column, slot)
+                        })
+                    else {
+                        return;
+                    };
+                    if this.view.columns == layout {
+                        return;
+                    }
+                    this.view.columns = layout;
+                    cx.emit(PaneEvent::ViewChanged);
+                    cx.notify();
+                }),
+            )
+            .child(head(None));
 
         self.view.columns.iter().fold(header, |header, column| {
             header
                 .child(self.render_column_handle(column, cx))
-                .child(head(
-                    column.sort_key(),
-                    column.label(),
-                    Some(self.widths.get(column)),
-                    column.aligns_right(),
-                ))
+                .child(head(Some(column)))
         })
     }
 
@@ -4643,6 +4846,109 @@ mod tests {
         let mut slots = columns.order.to_vec();
         slots.sort_by_key(|c| *c as usize);
         assert_eq!(slots, Column::ALL.to_vec());
+    }
+
+    #[test]
+    fn moving_a_column_leaves_a_permutation_behind() {
+        let mut columns = ColumnLayout::default();
+        for slot in 0..3 {
+            columns = columns.moved(Column::Modified, slot);
+            let mut slots = columns.order.to_vec();
+            slots.sort_by_key(|c| *c as usize);
+            assert_eq!(slots, Column::ALL.to_vec(), "moved to slot {slot}");
+        }
+    }
+
+    #[test]
+    fn moving_a_column_to_its_own_slot_changes_nothing() {
+        let columns = ColumnLayout::default();
+        assert_eq!(columns.moved(Column::Kind, 1), columns);
+    }
+
+    #[test]
+    fn a_column_moves_past_the_hidden_ones_without_counting_them() {
+        // Slots count what is drawn. Kind is hidden between Size and Modified
+        // here, so moving Modified to slot 0 puts it before Size, and Kind
+        // stays where it was rather than being dragged along.
+        let columns = layout(&["size", "modified", "permissions"]);
+        let moved = columns.moved(Column::Permissions, 0);
+        assert_eq!(moved.names(), ["permissions", "size", "modified"]);
+        assert!(!moved.get(Column::Kind));
+    }
+
+    #[test]
+    fn a_slot_past_the_end_lands_at_the_end() {
+        // The drag can ask for one: the arithmetic works in pointer distance,
+        // and the pointer can leave the header entirely.
+        let columns = ColumnLayout::default();
+        assert_eq!(
+            columns.moved(Column::Size, 99).names(),
+            ["kind", "modified", "size"]
+        );
+    }
+
+    #[test]
+    fn a_hidden_column_cannot_be_moved() {
+        // It has no slot to move to. Silently, because the only caller is a
+        // drag on a header that is not being drawn.
+        let columns = ColumnLayout::default();
+        assert_eq!(columns.moved(Column::Owner, 0), columns);
+    }
+
+    /// Three columns of 100, 60 and 140, which is close enough to the real
+    /// defaults and different enough from each other that an implementation
+    /// treating them as equal fails.
+    #[cfg(test)]
+    const W: [f32; 3] = [100., 60., 140.];
+
+    #[test]
+    fn a_column_stays_put_until_it_passes_half_of_its_neighbour() {
+        // The half is what makes the swap happen where the eye expects it,
+        // as the two centres cross, rather than when the dragged column has
+        // cleared its neighbour entirely.
+        assert_eq!(target_slot(&W, 0, 29.), 0);
+        assert_eq!(target_slot(&W, 0, 31.), 1);
+        // And it is the *neighbour's* half, not its own: moving right from
+        // slot 1 crosses a 140-wide column, not another 60-wide one.
+        assert_eq!(target_slot(&W, 1, 69.), 1);
+        assert_eq!(target_slot(&W, 1, 71.), 2);
+    }
+
+    #[test]
+    fn a_long_drag_passes_more_than_one() {
+        // 60 to clear the first, then half of 140 to take the second.
+        assert_eq!(target_slot(&W, 0, 129.), 1);
+        assert_eq!(target_slot(&W, 0, 131.), 2);
+    }
+
+    #[test]
+    fn it_works_the_same_way_backwards() {
+        assert_eq!(target_slot(&W, 2, -29.), 2);
+        assert_eq!(target_slot(&W, 2, -31.), 1);
+        // 60 to clear the middle column, then half of the 100-wide one.
+        assert_eq!(target_slot(&W, 2, -109.), 1);
+        assert_eq!(target_slot(&W, 2, -111.), 0);
+    }
+
+    #[test]
+    fn a_drag_that_leaves_the_header_stops_at_the_end() {
+        // The pointer can go anywhere; the slots cannot.
+        assert_eq!(target_slot(&W, 0, 100_000.), 2);
+        assert_eq!(target_slot(&W, 2, -100_000.), 0);
+        assert_eq!(target_slot(&W, 1, 0.), 1);
+    }
+
+    #[test]
+    fn asking_twice_gives_the_same_answer() {
+        // The property the whole drag rests on. Every pointer move recomputes
+        // this from the layout the drag started with, so it has to depend on
+        // nothing but its arguments; an implementation that walked the live
+        // order instead would drift a slot per frame.
+        let columns = ColumnLayout::default();
+        let slot = target_slot(&W, 0, 131.);
+        let once = columns.moved(Column::Size, slot);
+        assert_eq!(once, once.moved(Column::Size, target_slot(&W, 0, 131.)));
+        assert_eq!(once.names(), ["kind", "modified", "size"]);
     }
 
     #[test]

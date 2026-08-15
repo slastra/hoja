@@ -19,4 +19,8 @@ mkdir -p "$out/a-folder"
 : > "$out/b-script"
 chmod 0755 "$out/b-script"
 chmod 0750 "$out/a-folder"
+# A third row with something in it, so that sorting by size is observable at
+# all: empty files sort into the same order as their names and would let a
+# header click that did nothing pass.
+head -c 4096 /dev/zero > "$out/c-big"
 echo "$out"

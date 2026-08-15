@@ -15,7 +15,7 @@
 
 settings="$XDG_CONFIG_HOME/hoja/settings.json"
 
-wait_for 'p[0]["rows"] == ["a-folder", "b-script"]'
+wait_for 'p[0]["rows"] == ["a-folder", "b-script", "c-big"]'
 
 # --- the set that has always been there --------------------------------------
 expect 'p[0]["columns"] == ["Size", "Kind", "Modified"]' \
@@ -83,5 +83,28 @@ wait_for 'p[0]["columns"] == []' 20
 echo "  ok   every column can be hidden, leaving the Name column the pane"
 
 # The rows are still there. Hiding every column is a view, not a broken pane.
-expect 'p[0]["rows"] == ["a-folder", "b-script"]' \
+expect 'p[0]["rows"] == ["a-folder", "b-script", "c-big"]' \
     "and the listing is untouched by any of it"
+
+# --- a header still sorts when it is clicked ---------------------------------
+# The hazard the header drag introduces. gpui starts a drag two pixels from
+# the mouse down and drops the pending click when it does, so a header that is
+# draggable can quietly stop sorting. A click is all `wlrctl` can send — it
+# cannot press, move and release, which is why the drag itself is checked by
+# hand — but the click is the half that breaks silently.
+#
+# One column, so its position is arithmetic rather than a guess: Size alone is
+# the rightmost 100px of the pane, and the header is the 24px band under the
+# toolbar.
+cat > "$settings" <<'JSON'
+{
+    "theme": "Rosé Pine",
+    "view": { "columns": ["size"] }
+}
+JSON
+wait_for 'p[0]["columns"] == ["Size"]' 20
+
+at $((WW - 50)) 40
+at $((WW - 50)) 40
+wait_for 'p[0]["rows"] == ["a-folder", "c-big", "b-script"]' 10
+echo "  ok   clicking a header still sorts by it"
