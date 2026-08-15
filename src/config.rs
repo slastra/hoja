@@ -116,6 +116,9 @@ pub enum SortKeyName {
     Size,
     Kind,
     Modified,
+    Owner,
+    Group,
+    Permissions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -132,6 +135,9 @@ impl From<SortKey> for SortKeyName {
             SortKey::Size => Self::Size,
             SortKey::Kind => Self::Kind,
             SortKey::Modified => Self::Modified,
+            SortKey::Owner => Self::Owner,
+            SortKey::Group => Self::Group,
+            SortKey::Permissions => Self::Permissions,
         }
     }
 }
@@ -143,6 +149,9 @@ impl From<SortKeyName> for SortKey {
             SortKeyName::Size => Self::Size,
             SortKeyName::Kind => Self::Kind,
             SortKeyName::Modified => Self::Modified,
+            SortKeyName::Owner => Self::Owner,
+            SortKeyName::Group => Self::Group,
+            SortKeyName::Permissions => Self::Permissions,
         }
     }
 }

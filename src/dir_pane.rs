@@ -60,6 +60,9 @@ actions!(
         SortBySize,
         SortByKind,
         SortByModified,
+        SortByPermissions,
+        SortByOwner,
+        SortByGroup,
     ]
 );
 
@@ -548,13 +551,28 @@ pub enum Column {
     Size,
     Kind,
     Modified,
+    Permissions,
+    Owner,
+    Group,
 }
 
 impl Column {
     /// Display order. The length is part of the type, so adding a variant here
     /// makes the compiler point at `ColumnWidths` rather than silently leaving
     /// the new column without a width.
-    const ALL: [Column; 3] = [Column::Size, Column::Kind, Column::Modified];
+    /// The three that came first are first, and in the order they have always
+    /// been in: their widths are keyed by name, so reordering would cost
+    /// nobody anything, but it would move every column of every existing
+    /// install for no reason. The three added after them read in the order
+    /// `ls -l` prints the same facts.
+    const ALL: [Column; 6] = [
+        Column::Size,
+        Column::Kind,
+        Column::Modified,
+        Column::Permissions,
+        Column::Owner,
+        Column::Group,
+    ];
 
     /// The key this column's width is stored under. Deliberately not the
     /// display label: renaming what the header says must not discard the width
@@ -564,6 +582,9 @@ impl Column {
             Column::Size => "size",
             Column::Kind => "kind",
             Column::Modified => "modified",
+            Column::Permissions => "permissions",
+            Column::Owner => "owner",
+            Column::Group => "group",
         }
     }
 
@@ -572,6 +593,9 @@ impl Column {
             Column::Size => "Size",
             Column::Kind => "Kind",
             Column::Modified => "Modified",
+            Column::Permissions => "Permissions",
+            Column::Owner => "Owner",
+            Column::Group => "Group",
         }
     }
 
@@ -580,6 +604,9 @@ impl Column {
             Column::Size => SortKey::Size,
             Column::Kind => SortKey::Kind,
             Column::Modified => SortKey::Modified,
+            Column::Permissions => SortKey::Permissions,
+            Column::Owner => SortKey::Owner,
+            Column::Group => SortKey::Group,
         }
     }
 
@@ -593,17 +620,24 @@ impl Column {
     /// number and a left-aligned unit, as the transfer strip does.
     ///
     /// Modified gains nothing from it, since a timestamp is a fixed sixteen
-    /// characters and its two edges are the same edge. Kind is words.
+    /// characters and its two edges are the same edge. Kind is words, and so
+    /// are Owner and Group. Permissions is ten fixed characters, which is the
+    /// Modified case again: both edges are the same edge.
     fn aligns_right(self) -> bool {
         matches!(self, Column::Size)
     }
 
     /// Whether the column prints figures, and so is set in the numeric face.
     ///
-    /// Size alone. Kind and Modified are both words now: "Folder", "BIN",
-    /// "3 hours ago". Words in a monospaced face are just words set badly.
+    /// Size and Permissions. Kind and Modified are both words now: "Folder",
+    /// "BIN", "3 hours ago", and so are Owner and Group. Words in a monospaced
+    /// face are just words set badly.
+    ///
+    /// Permissions is the strongest case of the two. Its ten characters are
+    /// ten fixed positions, and a monospaced face is what turns a column of
+    /// them into a grid where the execute bit can be read straight down.
     fn is_numeric(self) -> bool {
-        matches!(self, Column::Size)
+        matches!(self, Column::Size | Column::Permissions)
     }
 
     /// Wide enough for the widest thing the column prints, at the row's text
@@ -615,6 +649,9 @@ impl Column {
             Column::Size => px(100.),
             Column::Kind => px(90.),
             Column::Modified => px(132.),
+            Column::Permissions => px(110.),
+            Column::Owner => px(90.),
+            Column::Group => px(90.),
         }
     }
 
@@ -628,13 +665,16 @@ impl Column {
     /// Size column widened for the monospaced face and everybody kept 90, which
     /// is two pixels short of "1023.0 MB".
     ///
-    /// Kind keeps the bare minimum: its content is words of no fixed length and
-    /// eliding them is what the column is for.
+    /// Kind, Owner and Group keep the bare minimum: their content is words of
+    /// no fixed length and eliding them is what the column is for. A user
+    /// named from LDAP rather than from `/etc/passwd` shows as a number, which
+    /// is shorter still.
     fn min_width(self) -> Pixels {
         match self {
-            Column::Kind => px(COL_MIN_WIDTH),
+            Column::Kind | Column::Owner | Column::Group => px(COL_MIN_WIDTH),
             Column::Size => px(94.),
             Column::Modified => px(124.),
+            Column::Permissions => px(102.),
         }
     }
 
@@ -651,6 +691,14 @@ impl Column {
             Column::Kind => "",
             // The longest `format_time_ago` prints, pinned by its own test.
             Column::Modified => "59 minutes ago",
+            // Ten characters, always, whatever the bits are. The sticky bit
+            // makes the last one a letter rather than a dash, which is the
+            // widest it comes to only because nothing here is wider than
+            // anything else.
+            Column::Permissions => "drwxrwxrwt",
+            // Not pinned, as Kind is not: a name has no fixed length, and an
+            // id no database claims prints as its number instead.
+            Column::Owner | Column::Group => "",
         }
     }
 
@@ -676,6 +724,17 @@ impl Column {
                 .modified
                 .map(|at| fs::format_time_ago(at, now))
                 .unwrap_or_default(),
+            // A symlink prints the mode of what it points at, never `l`:
+            // `from_std` follows one deliberately, so that a link to a
+            // directory sorts and behaves as a directory. Inside an archive
+            // this is the one of the three that has an answer, the member
+            // header carrying a mode where it carries no owner.
+            Column::Permissions => entry.mode.map(fs::format_mode).unwrap_or_default(),
+            // The name where the local database has one and the number where
+            // it does not, which is a footnote of `owners` rather than of this
+            // column. Blank only inside an archive, which names no owner.
+            Column::Owner => entry.uid.map(crate::owners::user).unwrap_or_default(),
+            Column::Group => entry.gid.map(crate::owners::group).unwrap_or_default(),
         }
     }
 }
@@ -1084,6 +1143,20 @@ impl DirPane {
     fn sort_by_modified(&mut self, _: &SortByModified, _w: &mut Window, cx: &mut Context<Self>) {
         self.select_sort_key(SortKey::Modified, cx);
     }
+    fn sort_by_permissions(
+        &mut self,
+        _: &SortByPermissions,
+        _w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_sort_key(SortKey::Permissions, cx);
+    }
+    fn sort_by_owner(&mut self, _: &SortByOwner, _w: &mut Window, cx: &mut Context<Self>) {
+        self.select_sort_key(SortKey::Owner, cx);
+    }
+    fn sort_by_group(&mut self, _: &SortByGroup, _w: &mut Window, cx: &mut Context<Self>) {
+        self.select_sort_key(SortKey::Group, cx);
+    }
 
     /// Identity keys for the current selection, in listing order.
     ///
@@ -1349,6 +1422,21 @@ impl DirPane {
                 "Sort by Modified",
                 self.view.sort.key == SortKey::Modified,
                 dispatch(Box::new(SortByModified)),
+            ),
+            MenuItem::toggle(
+                "Sort by Permissions",
+                self.view.sort.key == SortKey::Permissions,
+                dispatch(Box::new(SortByPermissions)),
+            ),
+            MenuItem::toggle(
+                "Sort by Owner",
+                self.view.sort.key == SortKey::Owner,
+                dispatch(Box::new(SortByOwner)),
+            ),
+            MenuItem::toggle(
+                "Sort by Group",
+                self.view.sort.key == SortKey::Group,
+                dispatch(Box::new(SortByGroup)),
             ),
             MenuItem::Separator,
             MenuItem::toggle(
@@ -4140,6 +4228,9 @@ impl Render for DirPane {
             .on_action(cx.listener(Self::sort_by_size))
             .on_action(cx.listener(Self::sort_by_kind))
             .on_action(cx.listener(Self::sort_by_modified))
+            .on_action(cx.listener(Self::sort_by_permissions))
+            .on_action(cx.listener(Self::sort_by_owner))
+            .on_action(cx.listener(Self::sort_by_group))
             .on_key_down(
                 cx.listener(|this, event: &gpui::KeyDownEvent, _window, cx| {
                     // Keys bubble up from descendants, so an open editor or menu
@@ -4284,11 +4375,21 @@ mod tests {
     }
 
     #[test]
-    fn only_kind_may_be_dragged_narrower_than_its_content() {
-        // Kind alone: its content has no fixed length, so a floor sized to it
-        // would be a guess. The other two hold figures of a known widest form
-        // and their floors are those.
-        assert_eq!(Column::Kind.min_width(), px(COL_MIN_WIDTH));
+    fn only_columns_of_words_may_be_dragged_narrower_than_their_content() {
+        // Kind, Owner and Group: their content has no fixed length, so a floor
+        // sized to it would be a guess. The rest hold figures or letters of a
+        // known widest form and their floors are those.
+        for column in [Column::Kind, Column::Owner, Column::Group] {
+            assert_eq!(column.min_width(), px(COL_MIN_WIDTH), "{column:?}");
+        }
+        for column in Column::ALL {
+            assert_eq!(
+                column.min_width() == px(COL_MIN_WIDTH),
+                column.widest().is_empty(),
+                "{column:?}: the bare minimum is for columns with no widest form, \
+                 and every column that has one needs a floor sized to it"
+            );
+        }
         for column in Column::ALL {
             assert!(f32::from(column.min_width()) <= f32::from(column.default_width()));
         }

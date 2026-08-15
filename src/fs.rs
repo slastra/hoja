@@ -198,6 +198,26 @@ pub enum SortKey {
     Size,
     Kind,
     Modified,
+    Owner,
+    Group,
+    Permissions,
+}
+
+impl SortKey {
+    /// Every key, so a test cannot cover six of seven by forgetting to add the
+    /// new one to a list it wrote out by hand. Only the tests want it: nothing
+    /// the program does iterates the sort keys, since a listing has exactly
+    /// one order at a time.
+    #[cfg(test)]
+    pub const ALL: [SortKey; 7] = [
+        SortKey::Name,
+        SortKey::Size,
+        SortKey::Kind,
+        SortKey::Modified,
+        SortKey::Owner,
+        SortKey::Group,
+        SortKey::Permissions,
+    ];
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -284,6 +304,26 @@ pub fn sort_entries(entries: &mut [DirEntry], sort: Sort, folders_first: bool) {
     sort_entries_by(entries, sort, folders_first, |entry| entry.size);
 }
 
+/// What the Owner column sorts on: the name it prints, and the id behind it.
+///
+/// The name first, because a sort that disagrees with what is on screen is a
+/// bug. The id second, so the ids no database names still come out in a fixed
+/// order rather than tying on the same `None` and falling to the filename.
+///
+/// Borrowed, never `owners::user`: that allocates, and this runs on every one
+/// of ~n log n comparisons, which is the same reason `SortKey::Kind` compares
+/// the raw extension rather than `kind()`. Unnamed ids sort before named ones,
+/// `None` being the smaller `Option`, which groups them rather than scattering
+/// them through the alphabet.
+fn owner_key(entry: &DirEntry) -> (Option<&'static str>, Option<u32>) {
+    (entry.uid.and_then(crate::owners::user_name), entry.uid)
+}
+
+/// The same for the Group column.
+fn group_key(entry: &DirEntry) -> (Option<&'static str>, Option<u32>) {
+    (entry.gid.and_then(crate::owners::group_name), entry.gid)
+}
+
 /// The same, where some rows carry a size the entry itself does not, a
 /// directory's recursive total, which is measured after the listing was built.
 pub fn sort_entries_by(
@@ -306,6 +346,11 @@ pub fn sort_entries_by(
                 // an uppercased String on every one of ~n log n comparisons.
                 SortKey::Kind => natural_cmp(extension_of(a), extension_of(b)),
                 SortKey::Modified => a.modified.cmp(&b.modified),
+                SortKey::Owner => owner_key(a).cmp(&owner_key(b)),
+                SortKey::Group => group_key(a).cmp(&group_key(b)),
+                // The raw bits, which sorts by type first and then by the
+                // permissions themselves, since the type is the high nibble.
+                SortKey::Permissions => a.mode.cmp(&b.mode),
             };
             let ordering = match sort.dir {
                 SortDir::Ascending => ordering,
@@ -1285,12 +1330,7 @@ mod tests {
         ];
 
         for dir in [SortDir::Ascending, SortDir::Descending] {
-            for key in [
-                SortKey::Name,
-                SortKey::Size,
-                SortKey::Kind,
-                SortKey::Modified,
-            ] {
+            for key in SortKey::ALL {
                 sort_entries(&mut v, Sort { key, dir }, true);
                 assert!(
                     v[0].is_dir && v[1].is_dir && !v[2].is_dir && !v[3].is_dir,
@@ -1532,12 +1572,7 @@ mod bench {
             })
             .collect();
 
-        for key in [
-            SortKey::Name,
-            SortKey::Size,
-            SortKey::Kind,
-            SortKey::Modified,
-        ] {
+        for key in SortKey::ALL {
             let mut work = entries.clone();
             let start = std::time::Instant::now();
             sort_entries(

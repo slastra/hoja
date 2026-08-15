@@ -30,29 +30,57 @@ fn read(path: &str) -> HashMap<u32, String> {
         .collect()
 }
 
+fn users() -> &'static HashMap<u32, String> {
+    static USERS: OnceLock<HashMap<u32, String>> = OnceLock::new();
+    USERS.get_or_init(|| read("/etc/passwd"))
+}
+
+fn groups() -> &'static HashMap<u32, String> {
+    static GROUPS: OnceLock<HashMap<u32, String>> = OnceLock::new();
+    GROUPS.get_or_init(|| read("/etc/group"))
+}
+
+/// The user's name, or `None` when nothing claims the id.
+///
+/// Borrowed rather than cloned, because the map lives for the run and the
+/// Owner column's sort compares one of these on every one of ~n log n
+/// comparisons. `user` is the same lookup with the number substituted, which
+/// is what a cell prints and what cannot be borrowed from anywhere.
+pub fn user_name(uid: u32) -> Option<&'static str> {
+    users().get(&uid).map(String::as_str)
+}
+
+/// The group's name, or `None` when nothing claims the id.
+pub fn group_name(gid: u32) -> Option<&'static str> {
+    groups().get(&gid).map(String::as_str)
+}
+
 /// The user's name, or the number when nothing claims it.
 pub fn user(uid: u32) -> String {
-    static USERS: OnceLock<HashMap<u32, String>> = OnceLock::new();
-    USERS
-        .get_or_init(|| read("/etc/passwd"))
-        .get(&uid)
-        .cloned()
+    user_name(uid)
+        .map(str::to_string)
         .unwrap_or_else(|| uid.to_string())
 }
 
 /// The group's name, or the number when nothing claims it.
 pub fn group(gid: u32) -> String {
-    static GROUPS: OnceLock<HashMap<u32, String>> = OnceLock::new();
-    GROUPS
-        .get_or_init(|| read("/etc/group"))
-        .get(&gid)
-        .cloned()
+    group_name(gid)
+        .map(str::to_string)
         .unwrap_or_else(|| gid.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unclaimed_id_has_no_name_to_borrow() {
+        // What the sort keys off. `None` rather than the number, so a column
+        // sorted by owner can put the unnamed ones together instead of
+        // interleaving them with names that happen to start with a digit.
+        assert_eq!(user_name(4_000_000_000), None);
+        assert_eq!(group_name(4_000_000_000), None);
+    }
 
     #[test]
     fn an_unclaimed_id_reads_as_its_number() {
