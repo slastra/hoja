@@ -265,7 +265,7 @@ pub struct ViewSettings {
     /// Sorting by a column and then hiding it leaves the order in force with
     /// no chevron to show it, which is correct: the rows are still in the
     /// order that was asked for.
-    pub columns: crate::dir_pane::ColumnsShown,
+    pub columns: crate::dir_pane::ColumnLayout,
 }
 
 impl Default for ViewSettings {
@@ -274,7 +274,7 @@ impl Default for ViewSettings {
             sort: Sort::default(),
             show_hidden: false,
             folders_first: true,
-            columns: crate::dir_pane::ColumnsShown::default(),
+            columns: crate::dir_pane::ColumnLayout::default(),
         }
     }
 }
@@ -906,7 +906,7 @@ pub fn summarise_dir(entries: &[DirEntry]) -> Summary {
 pub fn summarise_selection(
     entries: &[DirEntry],
     selected: &Selection,
-    columns: crate::dir_pane::ColumnsShown,
+    columns: crate::dir_pane::ColumnLayout,
 ) -> Summary {
     use crate::dir_pane::Column;
     let rows = || selected.iter().filter_map(|ix| entries.get(ix));
@@ -1062,7 +1062,7 @@ mod tests {
         file.gid = Some(0);
 
         let shown = |names: &[&str]| {
-            crate::dir_pane::ColumnsShown::from_map(
+            crate::dir_pane::ColumnLayout::from_flags(
                 &names.iter().map(|n| (n.to_string(), true)).collect(),
             )
         };

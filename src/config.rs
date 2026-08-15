@@ -87,10 +87,46 @@ pub struct ViewDefaults {
     pub sort: Option<SortSetting>,
     pub show_hidden: Option<bool>,
     pub folders_first: Option<bool>,
-    /// Which columns to draw, by name: `{"permissions": true}`. A column this
-    /// does not mention keeps its default, so turning one on is one line
-    /// rather than six.
-    pub columns: Option<std::collections::HashMap<String, bool>>,
+    /// Which columns to draw, and in what order. See `ColumnsSetting`.
+    pub columns: Option<ColumnsSetting>,
+}
+
+/// The `columns` block, in either of the two shapes it is written in.
+///
+/// A list is a layout: exactly these columns, in this order, which is what
+/// hoja writes to its state file and what somebody writes when they mean an
+/// arrangement.
+///
+/// ```jsonc
+/// "columns": ["permissions", "size", "modified"]
+/// ```
+///
+/// A map is an adjustment: the usual columns in the usual order, with only
+/// what it names changed, so turning one column on is one line rather than
+/// six.
+///
+/// ```jsonc
+/// "columns": { "permissions": true }
+/// ```
+///
+/// Untagged, and unambiguous: an array can only be the first, an object only
+/// the second. The two spellings exist because the shorter one is much the
+/// nicer thing to write by hand and cannot express an order, and the longer
+/// one is the only honest way to write one down.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum ColumnsSetting {
+    Order(Vec<String>),
+    Flags(std::collections::HashMap<String, bool>),
+}
+
+impl ColumnsSetting {
+    fn layout(&self) -> crate::dir_pane::ColumnLayout {
+        match self {
+            Self::Order(names) => crate::dir_pane::ColumnLayout::from_names(names),
+            Self::Flags(flags) => crate::dir_pane::ColumnLayout::from_flags(flags),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -215,8 +251,9 @@ pub struct State {
     /// Keyed by column name so reordering or inserting a column cannot shift
     /// everyone's saved widths onto the wrong ones.
     pub column_widths: std::collections::HashMap<String, f32>,
-    /// The same keys again, saying which of them are drawn at all.
-    pub columns: Option<std::collections::HashMap<String, bool>>,
+    /// The same keys again, saying which of them are drawn and in what
+    /// order. Always written in the list form; the map form is for hand.
+    pub columns: Option<ColumnsSetting>,
     pub window: Option<WindowState>,
 }
 
@@ -446,12 +483,12 @@ pub fn initial_view(settings: &Settings, state: &State, winner: Winner) -> ViewS
             .unwrap_or(default.show_hidden),
         folders_first: pick(state.folders_first, settings.view.folders_first, winner)
             .unwrap_or(default.folders_first),
-        // Whole map rather than field by field, as the sort block is: one file
-        // owns the column set or the other does. A file that names only some
-        // of the columns still leaves the rest at their defaults, which
-        // `from_map` is what decides.
+        // Whole block rather than field by field, as the sort is: one file
+        // owns the columns or the other does. Which of the two shapes it is
+        // written in decides how much it claims, a list being an arrangement
+        // and a map an adjustment.
         columns: pick(state.columns.clone(), settings.view.columns.clone(), winner)
-            .map(|map| crate::dir_pane::ColumnsShown::from_map(&map))
+            .map(|setting| setting.layout())
             .unwrap_or(default.columns),
     }
 }
@@ -533,6 +570,48 @@ mod tests {
     }
 
     #[test]
+    fn a_list_of_columns_is_an_arrangement() {
+        // The other shape the block takes, and the reason it exists: a map
+        // cannot say what order to draw them in.
+        let settings: Settings = serde_json_lenient::from_str(
+            r#"{"view": {"columns": ["permissions", "size", "modified"]}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            settings.view.columns,
+            Some(ColumnsSetting::Order(_))
+        ));
+
+        let view = initial_view(&settings, &State::default(), Winner::Settings);
+        assert_eq!(view.columns.names(), ["permissions", "size", "modified"]);
+        assert!(
+            !view.columns.get(crate::dir_pane::Column::Kind),
+            "a list draws what it names and nothing else"
+        );
+    }
+
+    #[test]
+    fn the_two_shapes_are_told_apart_by_their_punctuation() {
+        // Untagged, so this is serde matching a JSON array against one variant
+        // and an object against the other. Worth pinning: the failure mode is
+        // a settings file silently parsing as the wrong shape.
+        let map: Settings =
+            serde_json_lenient::from_str(r#"{"view": {"columns": {"owner": true}}}"#).unwrap();
+        assert!(matches!(map.view.columns, Some(ColumnsSetting::Flags(_))));
+
+        let list: Settings =
+            serde_json_lenient::from_str(r#"{"view": {"columns": ["owner"]}}"#).unwrap();
+        assert!(matches!(list.view.columns, Some(ColumnsSetting::Order(_))));
+
+        // And the two mean different things, which is the point of keeping
+        // both: the map leaves the usual columns alone, the list replaces them.
+        let map = initial_view(&map, &State::default(), Winner::Settings);
+        let list = initial_view(&list, &State::default(), Winner::Settings);
+        assert_eq!(map.columns.names(), ["size", "kind", "modified", "owner"]);
+        assert_eq!(list.columns.names(), ["owner"]);
+    }
+
+    #[test]
     fn one_file_owns_the_column_set() {
         // Whole map rather than field by field, so the two files cannot each
         // contribute half a set and produce one neither of them asked for.
@@ -541,10 +620,10 @@ mod tests {
         )
         .unwrap();
         let state = State {
-            columns: Some(std::collections::HashMap::from([(
+            columns: Some(ColumnsSetting::Flags(std::collections::HashMap::from([(
                 "permissions".to_string(),
                 true,
-            )])),
+            )]))),
             ..State::default()
         };
 

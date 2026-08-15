@@ -2082,7 +2082,7 @@ impl Workspace {
         self.dirty.sort |= self.state.sort != Some(sort);
         self.dirty.show_hidden |= self.state.show_hidden != Some(view.show_hidden);
         self.dirty.folders_first |= self.state.folders_first != Some(view.folders_first);
-        let columns = view.columns.to_map();
+        let columns = config::ColumnsSetting::Order(view.columns.names());
         self.dirty.columns |= self.state.columns.as_ref() != Some(&columns);
 
         self.state.sort = Some(sort);

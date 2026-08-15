@@ -382,7 +382,7 @@ struct Footer {
     /// says the things no column shows, so showing or hiding one changes what
     /// it has to say without touching the listing or the selection, and
     /// neither counter above would notice.
-    columns: ColumnsShown,
+    columns: ColumnLayout,
     summary: fs::Summary,
     /// The line as it reads now. Held rather than rebuilt per frame, and
     /// compared against by the poll so a total that has not moved a printed
@@ -762,71 +762,127 @@ impl Default for ColumnWidths {
     }
 }
 
-/// Which columns this pane draws, positional on the same rule as
-/// `ColumnWidths`: indexed by discriminant, so `ALL` must hold every variant
-/// exactly once.
+/// Which columns this pane draws, and in what order.
+///
+/// Two positional arrays, and they are positional in opposite directions,
+/// which is the whole of it. `shown` is indexed by discriminant like
+/// `ColumnWidths`, so `ALL` must hold every variant exactly once. `order` is
+/// the inverse: its positions are display slots and its values are the columns
+/// in them.
+///
+/// Holding the order as a permutation of *all* the columns rather than as a
+/// list of the visible ones buys three things. `ViewSettings` stays `Copy`,
+/// which several call sites rely on. `ColumnWidths` and `shown` keep indexing
+/// by discriminant, so neither of them changes. And a hidden column keeps its
+/// slot: hide Kind, show it again, and it comes back where it was rather than
+/// at the end.
 ///
 /// Lives in `ViewSettings` rather than beside the widths in the workspace
 /// state, which is a deliberate difference between the two. A width is a
-/// fiddle, remembered so a drag is not lost; a hidden column is a preference,
-/// worth copying to the pane a split creates and worth writing by hand in
-/// `settings.json`. Both of those come free from being a view setting.
+/// fiddle, remembered so a drag is not lost; a hidden column, or one moved
+/// somewhere else, is a preference, worth copying to the pane a split creates
+/// and worth writing by hand in `settings.json`. Both come free from being a
+/// view setting.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct ColumnsShown([bool; Column::ALL.len()]);
+pub struct ColumnLayout {
+    /// A permutation of `Column::ALL`. Every variant exactly once, or a column
+    /// is drawn twice and another not at all.
+    order: [Column; Column::ALL.len()],
+    shown: [bool; Column::ALL.len()],
+}
 
-impl Default for ColumnsShown {
-    /// Exactly the set that existed before any column could be hidden, so
-    /// nobody's pane changes under them on an upgrade.
+impl Default for ColumnLayout {
+    /// The table's own order, and exactly the set that existed before any
+    /// column could be hidden, so nobody's pane changes under them on an
+    /// upgrade.
     fn default() -> Self {
         let mut shown = [false; Column::ALL.len()];
         for column in [Column::Size, Column::Kind, Column::Modified] {
             shown[column as usize] = true;
         }
-        Self(shown)
+        Self {
+            order: Column::ALL,
+            shown,
+        }
     }
 }
 
-impl ColumnsShown {
+impl ColumnLayout {
     pub fn get(self, column: Column) -> bool {
-        self.0[column as usize]
+        self.shown[column as usize]
     }
 
     fn toggle(&mut self, column: Column) {
-        self.0[column as usize] = !self.0[column as usize];
+        self.shown[column as usize] = !self.shown[column as usize];
     }
 
-    /// The shown columns, in the display order `ALL` fixes.
+    /// The shown columns, in slot order.
     ///
-    /// Everything that draws a column goes through this rather than through
-    /// `ALL`: the header, the cells, and the resize handle that sits before
-    /// each one. Yielding nothing is allowed, and leaves the Name column with
-    /// the whole pane, which is a view somebody may well want.
+    /// Everything that draws a column goes through this: the header, the
+    /// cells, and the resize handle that sits before each one. Yielding
+    /// nothing is allowed, and leaves the Name column with the whole pane,
+    /// which is a view somebody may well want.
     pub fn iter(self) -> impl Iterator<Item = Column> {
-        Column::ALL.into_iter().filter(move |c| self.get(*c))
+        self.order.into_iter().filter(move |c| self.get(*c))
     }
 
-    /// For the settings and state files, keyed by name on the same reasoning
-    /// as the widths: inserting a column must not change what an existing
-    /// file means.
-    pub fn to_map(self) -> std::collections::HashMap<String, bool> {
-        Column::ALL
-            .into_iter()
-            .map(|column| (column.key().to_string(), self.get(column)))
-            .collect()
+    /// The drawn columns in slot order, by name, for the settings and state
+    /// files. Keyed by name on the same reasoning as the widths: inserting a
+    /// column must not change what an existing file means.
+    pub fn names(self) -> Vec<String> {
+        self.iter().map(|c| c.key().to_string()).collect()
     }
 
-    /// Apply what a file says. A key the file does not mention keeps its
-    /// default, so a hand-written `{"permissions": true}` turns one column on
-    /// rather than turning the other five off. Unknown keys are ignored, so a
-    /// column that no longer exists cannot resurrect itself.
-    pub fn from_map(map: &std::collections::HashMap<String, bool>) -> Self {
-        let mut shown = Self::default();
+    /// A layout from an ordered list of names: exactly those columns, in that
+    /// order.
+    ///
+    /// Total, so there is no error to report. Names it does not recognise are
+    /// ignored, a name given twice counts once, and anything the list leaves
+    /// out is hidden and keeps its place in the table. That last part is what
+    /// a list cannot say: a column that is not drawn has no slot to write
+    /// down, so one that was moved and then hidden comes back at its table
+    /// position rather than where it was left.
+    pub fn from_names(names: &[String]) -> Self {
+        let mut layout = Self {
+            order: Column::ALL,
+            shown: [false; Column::ALL.len()],
+        };
+        let mut slots = Vec::with_capacity(Column::ALL.len());
+        for name in names {
+            let Some(column) = Column::ALL.into_iter().find(|c| c.key() == name) else {
+                continue;
+            };
+            if layout.shown[column as usize] {
+                continue;
+            }
+            layout.shown[column as usize] = true;
+            slots.push(column);
+        }
+        // Whatever was not named, in the order the table has them, so the
+        // hidden columns sit in a defined place rather than wherever a `Vec`
+        // left them.
+        slots.extend(
+            Column::ALL
+                .into_iter()
+                .filter(|c| !layout.shown[*c as usize]),
+        );
+        layout.order = slots.try_into().expect("every column, exactly once");
+        layout
+    }
+
+    /// A layout from a map of adjustments: the usual set and the usual order,
+    /// with only the columns named changed.
+    ///
+    /// What a hand-written `{"permissions": true}` means. Unknown keys are
+    /// ignored, so a column that no longer exists cannot resurrect itself.
+    pub fn from_flags(flags: &std::collections::HashMap<String, bool>) -> Self {
+        let mut layout = Self::default();
         for column in Column::ALL {
-            if let Some(on) = map.get(column.key()) {
-                shown.0[column as usize] = *on;
+            if let Some(on) = flags.get(column.key()) {
+                layout.shown[column as usize] = *on;
             }
         }
-        shown
+        layout
     }
 }
 
@@ -4492,23 +4548,29 @@ impl Render for DirPane {
 mod tests {
     use super::*;
 
+    /// A layout naming exactly these columns, in this order.
+    #[cfg(test)]
+    fn layout(names: &[&str]) -> ColumnLayout {
+        ColumnLayout::from_names(&names.iter().map(|n| n.to_string()).collect::<Vec<_>>())
+    }
+
     #[test]
     fn the_set_shown_by_default_is_the_one_that_always_was() {
-        // The upgrade case. Anyone who has been using hoja has three columns
-        // and has never been asked about the other three.
-        let shown: Vec<Column> = ColumnsShown::default().iter().collect();
+        // The upgrade case. Anyone who has been using hoja has three columns,
+        // in this order, and has never been asked about the other three.
+        let shown: Vec<Column> = ColumnLayout::default().iter().collect();
         assert_eq!(shown, [Column::Size, Column::Kind, Column::Modified]);
     }
 
     #[test]
-    fn columns_are_drawn_in_the_order_the_table_fixes() {
-        // Not in the order they were turned on, and not with the new ones
-        // shuffled to the end: `ALL` decides, and `iter` filters it.
-        let mut shown = ColumnsShown::default();
-        shown.toggle(Column::Permissions);
-        shown.toggle(Column::Kind);
+    fn a_column_turned_on_appears_where_the_table_puts_it() {
+        // Not at the end, and not where it was named: the slots decide, and
+        // showing a column does not move anything.
+        let mut columns = ColumnLayout::default();
+        columns.toggle(Column::Permissions);
+        columns.toggle(Column::Kind);
         assert_eq!(
-            shown.iter().collect::<Vec<_>>(),
+            columns.iter().collect::<Vec<_>>(),
             [Column::Size, Column::Modified, Column::Permissions]
         );
     }
@@ -4517,13 +4579,13 @@ mod tests {
     fn hiding_every_column_is_allowed() {
         // The Name column then has the whole pane, which is a view somebody
         // may want and is not a broken one.
-        let mut shown = ColumnsShown::default();
+        let mut columns = ColumnLayout::default();
         for column in Column::ALL {
-            if shown.get(column) {
-                shown.toggle(column);
+            if columns.get(column) {
+                columns.toggle(column);
             }
         }
-        assert_eq!(shown.iter().count(), 0);
+        assert_eq!(columns.iter().count(), 0);
     }
 
     #[test]
@@ -4531,9 +4593,8 @@ mod tests {
         // What makes `{"permissions": true}` a usable line to write by hand:
         // it turns one column on rather than turning the other five off.
         let map = std::collections::HashMap::from([("permissions".to_string(), true)]);
-        let shown = ColumnsShown::from_map(&map);
         assert_eq!(
-            shown.iter().collect::<Vec<_>>(),
+            ColumnLayout::from_flags(&map).iter().collect::<Vec<_>>(),
             [
                 Column::Size,
                 Column::Kind,
@@ -4546,19 +4607,42 @@ mod tests {
     #[test]
     fn a_column_that_no_longer_exists_cannot_resurrect_itself() {
         let map = std::collections::HashMap::from([("inode".to_string(), true)]);
-        assert_eq!(ColumnsShown::from_map(&map), ColumnsShown::default());
+        assert_eq!(ColumnLayout::from_flags(&map), ColumnLayout::default());
+        assert_eq!(layout(&["inode", "size"]).names(), ["size"]);
     }
 
     #[test]
-    fn what_is_written_is_what_comes_back() {
-        // Every column named, including the hidden ones, so a set is restored
-        // exactly rather than partly falling back to the defaults.
-        let mut shown = ColumnsShown::default();
-        shown.toggle(Column::Kind);
-        shown.toggle(Column::Owner);
-        shown.toggle(Column::Group);
-        assert_eq!(ColumnsShown::from_map(&shown.to_map()), shown);
-        assert_eq!(shown.to_map().len(), Column::ALL.len());
+    fn a_list_is_the_columns_it_names_in_the_order_it_names_them() {
+        let columns = layout(&["permissions", "size", "modified"]);
+        assert_eq!(
+            columns.iter().collect::<Vec<_>>(),
+            [Column::Permissions, Column::Size, Column::Modified]
+        );
+        assert!(!columns.get(Column::Kind), "and nothing it leaves out");
+    }
+
+    #[test]
+    fn a_list_survives_being_written_and_read_back() {
+        let columns = layout(&["group", "modified", "size"]);
+        assert_eq!(ColumnLayout::from_names(&columns.names()), columns);
+    }
+
+    #[test]
+    fn a_name_given_twice_counts_once() {
+        // A hand-written file is the only thing that can say this, and the
+        // alternative to ignoring it is drawing a column twice.
+        assert_eq!(layout(&["size", "size", "kind"]).names(), ["size", "kind"]);
+    }
+
+    #[test]
+    fn an_empty_list_draws_nothing_and_is_still_a_permutation() {
+        let columns = layout(&[]);
+        assert_eq!(columns.iter().count(), 0);
+        // The invariant the whole type rests on, checked where it is most
+        // likely to be broken: a list that named none of them.
+        let mut slots = columns.order.to_vec();
+        slots.sort_by_key(|c| *c as usize);
+        assert_eq!(slots, Column::ALL.to_vec());
     }
 
     #[test]

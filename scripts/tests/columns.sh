@@ -57,6 +57,18 @@ expect 'p[0]["footer"] == ""' \
 expect 'p[0]["permissions"][p[0]["rows"].index("a-folder")] == "drwxr-x---"' \
     "a directory chmod 0750 reads as drwxr-x--- and leads with d"
 
+# --- a list, which sets the order as well as the set -------------------------
+# The other shape the block takes. Deliberately not table order, and
+# deliberately missing one of the six: a list says exactly what to draw.
+cat > "$settings" <<'JSON'
+{
+    "theme": "Rosé Pine",
+    "view": { "columns": ["permissions", "size", "modified"] }
+}
+JSON
+wait_for 'p[0]["columns"] == ["Permissions", "Size", "Modified"]' 20
+echo "  ok   a list draws the columns it names, in the order it names them"
+
 # --- and turning one off -----------------------------------------------------
 # The three that were always drawn are as hideable as the three that were not,
 # which is what makes the submenu one list rather than three fixed rows and
