@@ -164,6 +164,14 @@ fn main() {
             KeyBinding::new("ctrl-v", Paste, Some("DirPane && !AddressBar")),
             KeyBinding::new("up", MoveUp, Some("DirPane && !AddressBar")),
             KeyBinding::new("down", MoveDown, Some("DirPane && !AddressBar")),
+            // And the same two while the search field has the keyboard. Every
+            // pane binding is masked with `!AddressBar`, because on Linux the
+            // keymap is consulted before text input and a letter would
+            // otherwise fire whatever it is bound to. The arrows type nothing,
+            // so the mask costs more than it saves for them: the results are
+            // right there and reaching them meant leaving the field first.
+            KeyBinding::new("up", MoveUp, Some("SearchBar")),
+            KeyBinding::new("down", MoveDown, Some("SearchBar")),
             KeyBinding::new("shift-up", ExtendUp, Some("DirPane && !AddressBar")),
             KeyBinding::new("shift-down", ExtendDown, Some("DirPane && !AddressBar")),
             KeyBinding::new("pageup", MovePageUp, Some("DirPane && !AddressBar")),

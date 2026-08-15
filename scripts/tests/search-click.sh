@@ -33,6 +33,37 @@ expect 'p[0]["searching"]' "clicking a result leaves the search standing"
 expect 'p[0]["rows"] == ["b-script"]' "and the results are still the rows"
 expect 'p[0]["selected"] == [0]' "and the row a click landed on is selected"
 
+# --- the arrows reach the results without leaving the field ------------------
+# Every pane binding is masked while a field has the keyboard, because on Linux
+# the keymap is consulted before text input and a letter would otherwise fire
+# whatever it is bound to. The arrows type nothing, so the mask cost more than
+# it saved: the results were on screen with the first one already current, and
+# moving off it meant leaving the field first.
+key -M ctrl -P f -m ctrl
+sleep 0.3
+key -k BackSpace
+key -k BackSpace
+key -k BackSpace
+key c
+wait_for 'len(p[0]["rows"]) == 2' 20
+expect 'p[0]["cursor"] == 0' "results arrive with the first one current"
+
+key -k Down
+sleep 0.4
+expect 'p[0]["cursor"] == 1' "down moves to the next result"
+key -k Up
+sleep 0.4
+expect 'p[0]["cursor"] == 0' "and up moves back"
+
+# The field still has the keyboard, so the query can still be edited. This is
+# the half that says the arrows were given back rather than the focus moved.
+key -k BackSpace
+wait_for 'len(p[0]["rows"]) == 3' 20
+echo "  ok   and the query is still being typed into"
+
+key -k Escape
+sleep 0.4
+
 # --- Escape still means Escape -----------------------------------------------
 # The distinction this rests on: giving up is deliberate, losing focus is not.
 key -k Escape

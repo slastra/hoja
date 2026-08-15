@@ -169,6 +169,8 @@ pub struct PathEditor {
     pub error: bool,
     /// Drawn in place of the content while it is empty.
     placeholder: SharedString,
+    /// A second name for the key context; see `also_in`.
+    extra_context: Option<SharedString>,
     chrome: Chrome,
 }
 
@@ -208,6 +210,7 @@ impl PathEditor {
             is_selecting: false,
             error: false,
             placeholder: SharedString::default(),
+            extra_context: None,
             chrome: Chrome::Field,
         }
     }
@@ -220,6 +223,17 @@ impl PathEditor {
     /// Grey prompt shown while the field is empty.
     pub fn with_placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = placeholder.into();
+        self
+    }
+
+    /// Add an identifier to this field's key context.
+    ///
+    /// `AddressBar` is always there, and every pane binding is masked with
+    /// `!AddressBar` so that typing a letter cannot fire one. That mask is all
+    /// or nothing, which is why a field that wants a few of them back needs a
+    /// name of its own to bind against.
+    pub fn also_in(mut self, context: impl Into<SharedString>) -> Self {
+        self.extra_context = Some(context.into());
         self
     }
 
@@ -698,7 +712,13 @@ impl Render for PathEditor {
         };
 
         div()
-            .key_context("AddressBar")
+            .key_context(
+                match &self.extra_context {
+                    Some(extra) => format!("AddressBar {extra}"),
+                    None => "AddressBar".to_string(),
+                }
+                .as_str(),
+            )
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))

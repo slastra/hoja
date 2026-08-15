@@ -2982,8 +2982,12 @@ impl DirPane {
             .as_ref()
             .map(|s| s.query.clone())
             .unwrap_or_default();
-        let editor = cx
-            .new(|cx| PathEditor::new(initial, window, cx).with_placeholder("Search this folder"));
+        let editor = cx.new(|cx| {
+            PathEditor::new(initial, window, cx)
+                .with_placeholder("Search this folder")
+                // So the arrows can be given back; see the bindings in `main`.
+                .also_in("SearchBar")
+        });
 
         cx.subscribe_in(&editor, window, |this, _, event, window, cx| match event {
             PathEditorEvent::Edited => {}
