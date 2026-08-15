@@ -87,6 +87,10 @@ pub struct ViewDefaults {
     pub sort: Option<SortSetting>,
     pub show_hidden: Option<bool>,
     pub folders_first: Option<bool>,
+    /// Which columns to draw, by name: `{"permissions": true}`. A column this
+    /// does not mention keeps its default, so turning one on is one line
+    /// rather than six.
+    pub columns: Option<std::collections::HashMap<String, bool>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -211,6 +215,8 @@ pub struct State {
     /// Keyed by column name so reordering or inserting a column cannot shift
     /// everyone's saved widths onto the wrong ones.
     pub column_widths: std::collections::HashMap<String, f32>,
+    /// The same keys again, saying which of them are drawn at all.
+    pub columns: Option<std::collections::HashMap<String, bool>>,
     pub window: Option<WindowState>,
 }
 
@@ -233,6 +239,7 @@ pub struct Dirty {
     pub show_hidden: bool,
     pub folders_first: bool,
     pub column_widths: bool,
+    pub columns: bool,
     pub window: bool,
 }
 
@@ -272,6 +279,9 @@ impl State {
         }
         if dirty.column_widths {
             disk.column_widths = self.column_widths.clone();
+        }
+        if dirty.columns {
+            disk.columns = self.columns.clone();
         }
         if dirty.window {
             disk.window = self.window;
@@ -436,6 +446,13 @@ pub fn initial_view(settings: &Settings, state: &State, winner: Winner) -> ViewS
             .unwrap_or(default.show_hidden),
         folders_first: pick(state.folders_first, settings.view.folders_first, winner)
             .unwrap_or(default.folders_first),
+        // Whole map rather than field by field, as the sort block is: one file
+        // owns the column set or the other does. A file that names only some
+        // of the columns still leaves the rest at their defaults, which
+        // `from_map` is what decides.
+        columns: pick(state.columns.clone(), settings.view.columns.clone(), winner)
+            .map(|map| crate::dir_pane::ColumnsShown::from_map(&map))
+            .unwrap_or(default.columns),
     }
 }
 
@@ -497,6 +514,52 @@ mod tests {
         )
         .unwrap();
         assert_eq!(settings.view.show_hidden, Some(true));
+    }
+
+    #[test]
+    fn a_column_can_be_turned_on_by_hand() {
+        // The whole path a hand-written line takes: parsed, merged, and
+        // arrived at a pane's view.
+        let settings: Settings =
+            serde_json_lenient::from_str(r#"{"view": {"columns": {"permissions": true}}}"#)
+                .unwrap();
+        let view = initial_view(&settings, &State::default(), Winner::Settings);
+        assert!(view.columns.get(crate::dir_pane::Column::Permissions));
+        assert!(
+            view.columns.get(crate::dir_pane::Column::Size),
+            "and says nothing about the columns it does not name"
+        );
+        assert!(!view.columns.get(crate::dir_pane::Column::Owner));
+    }
+
+    #[test]
+    fn one_file_owns_the_column_set() {
+        // Whole map rather than field by field, so the two files cannot each
+        // contribute half a set and produce one neither of them asked for.
+        let settings: Settings = serde_json_lenient::from_str(
+            r#"{"view": {"columns": {"owner": true, "size": false}}}"#,
+        )
+        .unwrap();
+        let state = State {
+            columns: Some(std::collections::HashMap::from([(
+                "permissions".to_string(),
+                true,
+            )])),
+            ..State::default()
+        };
+
+        let view = initial_view(&settings, &state, Winner::State);
+        assert!(view.columns.get(crate::dir_pane::Column::Permissions));
+        assert!(
+            !view.columns.get(crate::dir_pane::Column::Owner),
+            "the remembered set wins whole, not merged with the configured one"
+        );
+        assert!(view.columns.get(crate::dir_pane::Column::Size));
+
+        let view = initial_view(&settings, &state, Winner::Settings);
+        assert!(view.columns.get(crate::dir_pane::Column::Owner));
+        assert!(!view.columns.get(crate::dir_pane::Column::Size));
+        assert!(!view.columns.get(crate::dir_pane::Column::Permissions));
     }
 
     #[test]

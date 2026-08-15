@@ -2082,10 +2082,13 @@ impl Workspace {
         self.dirty.sort |= self.state.sort != Some(sort);
         self.dirty.show_hidden |= self.state.show_hidden != Some(view.show_hidden);
         self.dirty.folders_first |= self.state.folders_first != Some(view.folders_first);
+        let columns = view.columns.to_map();
+        self.dirty.columns |= self.state.columns.as_ref() != Some(&columns);
 
         self.state.sort = Some(sort);
         self.state.show_hidden = Some(view.show_hidden);
         self.state.folders_first = Some(view.folders_first);
+        self.state.columns = Some(columns);
 
         if let Some(column_widths) = column_widths {
             self.dirty.column_widths |= self.state.column_widths != column_widths;

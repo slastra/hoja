@@ -257,6 +257,15 @@ pub struct ViewSettings {
     pub sort: Sort,
     pub show_hidden: bool,
     pub folders_first: bool,
+    /// Which columns the pane draws.
+    ///
+    /// The one field here that reaches back into `dir_pane`, because a column
+    /// is defined by the table there and splitting that table to keep the
+    /// dependency pointing one way would cost more than the dependency does.
+    /// Sorting by a column and then hiding it leaves the order in force with
+    /// no chevron to show it, which is correct: the rows are still in the
+    /// order that was asked for.
+    pub columns: crate::dir_pane::ColumnsShown,
 }
 
 impl Default for ViewSettings {
@@ -265,6 +274,7 @@ impl Default for ViewSettings {
             sort: Sort::default(),
             show_hidden: false,
             folders_first: true,
+            columns: crate::dir_pane::ColumnsShown::default(),
         }
     }
 }

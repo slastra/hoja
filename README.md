@@ -99,6 +99,11 @@ updates, and archive browsing that feels like working with ordinary folders.
 
 - **Human-friendly dates.** The Modified column shows relative times such as
   `just now`, `3 hours ago`, or `2 months ago`.
+- **Columns you choose.** A pane shows the size, the kind and the modified
+  time. It can also show the permissions, the owner and the group. Use the
+  Columns list in the view menu to show a column or to hide one. Click a
+  header to sort by that column. A new pane from a split shows the same
+  columns as the pane it came from.
 - **Git status.** File names are coloured by Git status, including folders,
   using Git's own status information so Hoja always matches the command
   line.
@@ -142,7 +147,10 @@ allowed, and Hoja applies a change as soon as you save.
   "view": {
     "sort": { "key": "name", "direction": "ascending" },
     "show_hidden": false,
-    "folders_first": true
+    "folders_first": true,
+
+    // Only the columns you name change. The others keep their usual state.
+    "columns": { "permissions": true }
   }
 }
 ```
@@ -150,7 +158,8 @@ allowed, and Hoja applies a change as soon as you save.
 `--theme` on the command line, then `$HOJA_THEME`, then this file.
 
 Hoja keeps what you change through the interface (the sort order, hidden
-files, and the column widths you drag) in `~/.local/state/hoja/state.json`,
+files, the columns you show, and the column widths you drag) in
+`~/.local/state/hoja/state.json`,
 and reads it back at the next start. It writes that file and you write the
 other one, so neither can overwrite the other. When both have an answer, the
 more recent one applies: what you last toggled survives a restart, and editing
@@ -421,7 +430,6 @@ Planned and not complete:
 
 - **Writing to an archive.** Everything here reads; rename, delete and paste
   inside one are refusals rather than half-features.
-- **Owner, group and permission columns**, for anyone who wants them.
 - **Tabs, previews and thumbnails.**
 - **Query history in the pickers**, and modal geometry that persists.
 - **Explicit sync between two directories**, chunked so that repeating it moves

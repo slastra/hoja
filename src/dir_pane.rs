@@ -757,6 +757,74 @@ impl Default for ColumnWidths {
     }
 }
 
+/// Which columns this pane draws, positional on the same rule as
+/// `ColumnWidths`: indexed by discriminant, so `ALL` must hold every variant
+/// exactly once.
+///
+/// Lives in `ViewSettings` rather than beside the widths in the workspace
+/// state, which is a deliberate difference between the two. A width is a
+/// fiddle, remembered so a drag is not lost; a hidden column is a preference,
+/// worth copying to the pane a split creates and worth writing by hand in
+/// `settings.json`. Both of those come free from being a view setting.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ColumnsShown([bool; Column::ALL.len()]);
+
+impl Default for ColumnsShown {
+    /// Exactly the set that existed before any column could be hidden, so
+    /// nobody's pane changes under them on an upgrade.
+    fn default() -> Self {
+        let mut shown = [false; Column::ALL.len()];
+        for column in [Column::Size, Column::Kind, Column::Modified] {
+            shown[column as usize] = true;
+        }
+        Self(shown)
+    }
+}
+
+impl ColumnsShown {
+    pub fn get(self, column: Column) -> bool {
+        self.0[column as usize]
+    }
+
+    fn toggle(&mut self, column: Column) {
+        self.0[column as usize] = !self.0[column as usize];
+    }
+
+    /// The shown columns, in the display order `ALL` fixes.
+    ///
+    /// Everything that draws a column goes through this rather than through
+    /// `ALL`: the header, the cells, and the resize handle that sits before
+    /// each one. Yielding nothing is allowed, and leaves the Name column with
+    /// the whole pane, which is a view somebody may well want.
+    pub fn iter(self) -> impl Iterator<Item = Column> {
+        Column::ALL.into_iter().filter(move |c| self.get(*c))
+    }
+
+    /// For the settings and state files, keyed by name on the same reasoning
+    /// as the widths: inserting a column must not change what an existing
+    /// file means.
+    pub fn to_map(self) -> std::collections::HashMap<String, bool> {
+        Column::ALL
+            .into_iter()
+            .map(|column| (column.key().to_string(), self.get(column)))
+            .collect()
+    }
+
+    /// Apply what a file says. A key the file does not mention keeps its
+    /// default, so a hand-written `{"permissions": true}` turns one column on
+    /// rather than turning the other five off. Unknown keys are ignored, so a
+    /// column that no longer exists cannot resurrect itself.
+    pub fn from_map(map: &std::collections::HashMap<String, bool>) -> Self {
+        let mut shown = Self::default();
+        for column in Column::ALL {
+            if let Some(on) = map.get(column.key()) {
+                shown.0[column as usize] = *on;
+            }
+        }
+        shown
+    }
+}
+
 impl ColumnWidths {
     fn get(&self, column: Column) -> Pixels {
         self.0[column as usize]
@@ -1045,6 +1113,13 @@ impl DirPane {
                 .collect(),
             sizes: column(Column::Size),
             modified: column(Column::Modified),
+            permissions: column(Column::Permissions),
+            columns: self
+                .view
+                .columns
+                .iter()
+                .map(|column| column.label().to_string())
+                .collect(),
             selected: self.selected.iter().collect(),
             cursor: self.cursor_ix,
             footer: self.footer_line(),
@@ -1114,6 +1189,19 @@ impl DirPane {
         self.view.show_hidden = !self.view.show_hidden;
         cx.emit(PaneEvent::ViewChanged);
         self.relist(cx);
+    }
+
+    /// Show or hide one column.
+    ///
+    /// No relist and no re-sort: which rows exist and what order they are in
+    /// have not changed, only which facts about them are drawn. A column that
+    /// the listing is currently sorted by can be hidden, and the order stays
+    /// as it was, which is what was asked for even once the chevron saying so
+    /// has gone.
+    fn toggle_column(&mut self, column: Column, cx: &mut Context<Self>) {
+        self.view.columns.toggle(column);
+        cx.emit(PaneEvent::ViewChanged);
+        cx.notify();
     }
 
     fn toggle_folders_first(
@@ -1391,7 +1479,27 @@ impl DirPane {
             }
         };
 
-        let items = vec![
+        // Straight to this pane rather than through an action, which the rows
+        // around it use: six actions whose only caller is one submenu row
+        // would be six more entries in the command palette saying what the
+        // submenu already says. The focus step is the one thing worth keeping
+        // from `dispatch`, so the keyboard is not left on a menu that has
+        // closed.
+        let toggle_column = {
+            let pane_focus = self.focus_handle.clone();
+            let pane = cx.entity().downgrade();
+            move |column: Column| {
+                let pane_focus = pane_focus.clone();
+                let pane = pane.clone();
+                move |window: &mut Window, cx: &mut App| {
+                    window.focus(&pane_focus, cx);
+                    pane.update(cx, |pane, cx| pane.toggle_column(column, cx))
+                        .ok();
+                }
+            }
+        };
+
+        let mut items = vec![
             MenuItem::toggle(
                 "Show Hidden Files",
                 self.view.show_hidden,
@@ -1401,6 +1509,20 @@ impl DirPane {
                 "Folders First",
                 self.view.folders_first,
                 dispatch(Box::new(ToggleFoldersFirst)),
+            ),
+            MenuItem::Separator,
+            MenuItem::submenu(
+                "Columns",
+                Column::ALL
+                    .into_iter()
+                    .map(|column| {
+                        MenuItem::toggle(
+                            column.label(),
+                            self.view.columns.get(column),
+                            toggle_column(column),
+                        )
+                    })
+                    .collect(),
             ),
             MenuItem::Separator,
             MenuItem::toggle(
@@ -1423,21 +1545,31 @@ impl DirPane {
                 self.view.sort.key == SortKey::Modified,
                 dispatch(Box::new(SortByModified)),
             ),
-            MenuItem::toggle(
-                "Sort by Permissions",
-                self.view.sort.key == SortKey::Permissions,
-                dispatch(Box::new(SortByPermissions)),
+        ];
+
+        // Only for the columns this pane draws. Sorting by a hidden column is
+        // still legitimate, and the palette can still ask for it, but offering
+        // it here beside a column nobody can see is how a short menu becomes a
+        // long one. The four above are always offered because Name is always
+        // drawn and the other three are the set that has always been there.
+        for (column, action) in [
+            (
+                Column::Permissions,
+                Box::new(SortByPermissions) as Box<dyn gpui::Action>,
             ),
-            MenuItem::toggle(
-                "Sort by Owner",
-                self.view.sort.key == SortKey::Owner,
-                dispatch(Box::new(SortByOwner)),
-            ),
-            MenuItem::toggle(
-                "Sort by Group",
-                self.view.sort.key == SortKey::Group,
-                dispatch(Box::new(SortByGroup)),
-            ),
+            (Column::Owner, Box::new(SortByOwner)),
+            (Column::Group, Box::new(SortByGroup)),
+        ] {
+            if self.view.columns.get(column) {
+                items.push(MenuItem::toggle(
+                    format!("Sort by {}", column.label()),
+                    self.view.sort.key == column.sort_key(),
+                    dispatch(action),
+                ));
+            }
+        }
+
+        items.extend([
             MenuItem::Separator,
             MenuItem::toggle(
                 "Reverse Order",
@@ -1446,7 +1578,7 @@ impl DirPane {
             ),
             MenuItem::Separator,
             MenuItem::action("Refresh", dispatch(Box::new(Refresh))),
-        ];
+        ]);
 
         self.show_menu(items, position, window, cx);
     }
@@ -3632,7 +3764,7 @@ impl DirPane {
             .text_color(content)
             .child(head(SortKey::Name, "Name", None, false));
 
-        Column::ALL.into_iter().fold(header, |header, column| {
+        self.view.columns.iter().fold(header, |header, column| {
             header
                 .child(self.render_column_handle(column, cx))
                 .child(head(
@@ -3773,14 +3905,19 @@ impl DirPane {
         let folder_bytes = self.folder_bytes(ix);
         let numeric = crate::theming::numeric_font(cx);
         let counting = self.counting_size(ix);
-        let cells = Column::ALL.map(|column| Cell {
-            width: self.widths.get(column),
-            text: column.value(entry, folder_bytes, now),
-            numeric: column.is_numeric().then(|| numeric.clone()).flatten(),
-            // Only the column that holds a folder size has anything to wait for.
-            counting: counting && column == Column::Size,
-            right: column.aligns_right(),
-        });
+        let cells: Vec<Cell> = self
+            .view
+            .columns
+            .iter()
+            .map(|column| Cell {
+                width: self.widths.get(column),
+                text: column.value(entry, folder_bytes, now),
+                numeric: column.is_numeric().then(|| numeric.clone()).flatten(),
+                // Only the column that holds a folder size has anything to wait for.
+                counting: counting && column == Column::Size,
+                right: column.aligns_right(),
+            })
+            .collect();
 
         // A search result is labelled by where it sits; everything else by its
         // own name.
@@ -4341,6 +4478,75 @@ impl Render for DirPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_set_shown_by_default_is_the_one_that_always_was() {
+        // The upgrade case. Anyone who has been using hoja has three columns
+        // and has never been asked about the other three.
+        let shown: Vec<Column> = ColumnsShown::default().iter().collect();
+        assert_eq!(shown, [Column::Size, Column::Kind, Column::Modified]);
+    }
+
+    #[test]
+    fn columns_are_drawn_in_the_order_the_table_fixes() {
+        // Not in the order they were turned on, and not with the new ones
+        // shuffled to the end: `ALL` decides, and `iter` filters it.
+        let mut shown = ColumnsShown::default();
+        shown.toggle(Column::Permissions);
+        shown.toggle(Column::Kind);
+        assert_eq!(
+            shown.iter().collect::<Vec<_>>(),
+            [Column::Size, Column::Modified, Column::Permissions]
+        );
+    }
+
+    #[test]
+    fn hiding_every_column_is_allowed() {
+        // The Name column then has the whole pane, which is a view somebody
+        // may want and is not a broken one.
+        let mut shown = ColumnsShown::default();
+        for column in Column::ALL {
+            if shown.get(column) {
+                shown.toggle(column);
+            }
+        }
+        assert_eq!(shown.iter().count(), 0);
+    }
+
+    #[test]
+    fn a_file_naming_one_column_leaves_the_rest_at_their_defaults() {
+        // What makes `{"permissions": true}` a usable line to write by hand:
+        // it turns one column on rather than turning the other five off.
+        let map = std::collections::HashMap::from([("permissions".to_string(), true)]);
+        let shown = ColumnsShown::from_map(&map);
+        assert_eq!(
+            shown.iter().collect::<Vec<_>>(),
+            [
+                Column::Size,
+                Column::Kind,
+                Column::Modified,
+                Column::Permissions
+            ]
+        );
+    }
+
+    #[test]
+    fn a_column_that_no_longer_exists_cannot_resurrect_itself() {
+        let map = std::collections::HashMap::from([("inode".to_string(), true)]);
+        assert_eq!(ColumnsShown::from_map(&map), ColumnsShown::default());
+    }
+
+    #[test]
+    fn what_is_written_is_what_comes_back() {
+        // Every column named, including the hidden ones, so a set is restored
+        // exactly rather than partly falling back to the defaults.
+        let mut shown = ColumnsShown::default();
+        shown.toggle(Column::Kind);
+        shown.toggle(Column::Owner);
+        shown.toggle(Column::Group);
+        assert_eq!(ColumnsShown::from_map(&shown.to_map()), shown);
+        assert_eq!(shown.to_map().len(), Column::ALL.len());
+    }
 
     #[test]
     fn a_column_is_wide_enough_for_what_it_prints() {

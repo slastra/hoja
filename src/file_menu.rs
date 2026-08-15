@@ -371,16 +371,29 @@ impl FileMenu {
     fn render_submenu(&self, items: &[MenuItem], cx: &Context<Self>) -> AnyElement {
         // Copied out rather than held: `colors` would borrow `cx`, which the
         // listeners below need mutably.
-        let (border, surface, text_muted, chosen, hovered) = {
+        let (border, surface, text, text_muted, chosen, hovered) = {
             let c = cx.theme().colors();
             (
                 c.border,
                 c.elevated_surface_background,
+                c.text,
                 c.text_muted,
                 c.element_selected,
                 c.element_hover,
             )
         };
+        // Over the submenu's own items, not the parent menu's: a submenu of
+        // toggles reserves the slot and a submenu of plain rows does not, the
+        // same rule the menu applies to itself.
+        let reserve_check_slot = items.iter().any(|item| {
+            matches!(
+                item,
+                MenuItem::Action {
+                    checked: Some(_),
+                    ..
+                }
+            )
+        });
         div()
             // `overflow_y_scroll` below lives on StatefulInteractiveElement, so
             // this needs an id before it can scroll at all.
@@ -410,10 +423,11 @@ impl FileMenu {
                         label,
                         handler,
                         disabled,
-                        ..
+                        checked,
                     } => {
                         let handler = handler.clone();
                         let disabled = *disabled;
+                        let checked = *checked;
                         div()
                             .id(("submenu", sub_ix))
                             .px_3()
@@ -421,6 +435,7 @@ impl FileMenu {
                             .flex()
                             .flex_row()
                             .items_center()
+                            .gap_1p5()
                             .when(self.nav.sub_selected == Some(sub_ix), |el| el.bg(chosen))
                             .when(disabled, |el| el.text_color(text_muted))
                             .when(!disabled, |el| {
@@ -430,6 +445,17 @@ impl FileMenu {
                                         handler(window, cx);
                                         cx.emit(DismissEvent);
                                     }))
+                            })
+                            .when(reserve_check_slot, |el| {
+                                el.child(div().w(px(14.)).flex_none().when(
+                                    checked == Some(true),
+                                    |slot| {
+                                        slot.child(crate::icon::Icon::from_path(
+                                            "icons/file_icons/check.svg",
+                                            text,
+                                        ))
+                                    },
+                                ))
                             })
                             .child(label.clone())
                             .into_any_element()

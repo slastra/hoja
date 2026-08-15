@@ -49,6 +49,14 @@ pub struct PaneProbe {
     /// how "still counting" reads.
     pub sizes: Vec<String>,
     pub modified: Vec<String>,
+    /// The Permissions column as printed. Carried where Owner and Group are
+    /// not, because this one is the same string on every machine: what the
+    /// other two print depends on whose `/etc/passwd` the test is running on.
+    pub permissions: Vec<String>,
+    /// Which columns this pane draws, by header label, in display order. The
+    /// set is no longer fixed, so a test that wants to know whether a column
+    /// arrived cannot infer it from anything else here.
+    pub columns: Vec<String>,
     pub selected: Vec<usize>,
     pub cursor: Option<usize>,
     pub footer: String,
