@@ -58,6 +58,39 @@ key r
 wait_for 'p[0]["rows"] == ["b-script"]' 20
 echo "  ok   and the query is still being typed into"
 
+# --- enter opens what the arrows chose ----------------------------------------
+# One press, not two. Enter used to hand the keyboard back to the listing,
+# because that was the only way to reach the results; with the arrows working
+# from inside the field that left it meaning nothing at the end of the journey
+# it exists for.
+#
+# A folder rather than a file, because opening a file hands it to the desktop
+# and a test should not launch anything. Navigating into it is the same call
+# either way.
+key -k Escape
+wait_for 'not p[0]["searching"]' 20
+key -M ctrl -P f -m ctrl
+sleep 0.3
+key f
+key o
+key l
+wait_for 'p[0]["rows"] == ["a-folder"]' 20
+expect 'p[0]["cursor"] == 0' "the one result is current"
+
+key -k Return
+wait_for 'p[0]["dir"].endswith("/a-folder")' 20
+echo "  ok   enter opens the result the arrows are on"
+expect 'not p[0]["searching"]' "and arriving somewhere ends the search"
+
+# Back out of it, and start another, so that the section below meets a search
+# that is actually running.
+key -k Backspace
+wait_for 'p[0]["rows"] == ["a-folder", "b-script", "c-big"]' 20
+key -M ctrl -P f -m ctrl
+sleep 0.3
+key c
+wait_for 'len(p[0]["rows"]) == 2' 20
+
 # --- Escape still means Escape ------------------------------------------------
 # Deliberately giving up, against a search that is still running: the whole
 # point of splitting the two events is that this still works.

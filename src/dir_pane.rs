@@ -2994,13 +2994,26 @@ impl DirPane {
             window,
             |this, editor, event, window, cx| match event {
                 PathEditorEvent::Edited => {}
-                // Enter hands the listing back the focus and *keeps* the search, so
-                // the arrow keys work on the results. They cannot work while the
-                // field has focus, because every pane binding is masked by
-                // `!AddressBar`. Escape from there clears it.
+                // Enter opens what is chosen.
+                //
+                // It used to mean "hand the keyboard back", because the arrows
+                // could not work while the field held it and that was the only
+                // way to reach the results at all. They work from inside the
+                // field now, which left Enter meaning nothing at the end of the
+                // one journey it exists for: arrow to a result, press Enter,
+                // watch the field close, press Enter again.
+                //
+                // Only while searching. With no query there is nothing the
+                // field has chosen, and closing it is the whole of what Enter
+                // should do rather than opening whatever the listing was on.
                 PathEditorEvent::Committed(_) => {
                     this.path_editor = None;
                     window.focus(&this.focus_handle, cx);
+                    if this.searching()
+                        && let Some(ix) = this.cursor_ix
+                    {
+                        this.activate(ix, cx);
+                    }
                     cx.notify();
                 }
                 PathEditorEvent::Cancelled => {

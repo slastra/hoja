@@ -83,8 +83,9 @@ updates, and archive browsing that feels like working with ordinary folders.
 ### Navigation & search
 
 - **Recursive search.** Press `ctrl-f` to search every directory below the
-  current one. Results appear as they are found, and pressing `enter` opens
-  the selected result. It works inside an archive too, where there is nothing
+  current one. Results appear as they are found. The first result is ready
+  immediately: use the arrow keys to move through them and `enter` to open one,
+  all without leaving the search field. It works inside an archive too, where there is nothing
   to walk: the member list the pane already read answers immediately, and
   results keep arriving if the archive is still being read. Each result is
   labelled by where it sits, and copying one out keeps the structure below the
