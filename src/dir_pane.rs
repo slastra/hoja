@@ -2989,32 +2989,47 @@ impl DirPane {
                 .also_in("SearchBar")
         });
 
-        cx.subscribe_in(&editor, window, |this, _, event, window, cx| match event {
-            PathEditorEvent::Edited => {}
-            // Enter hands the listing back the focus and *keeps* the search, so
-            // the arrow keys work on the results. They cannot work while the
-            // field has focus, because every pane binding is masked by
-            // `!AddressBar`. Escape from there clears it.
-            PathEditorEvent::Committed(_) => {
-                this.path_editor = None;
-                window.focus(&this.focus_handle, cx);
-                cx.notify();
-            }
-            PathEditorEvent::Cancelled => {
-                this.end_search(window, cx);
-                cx.notify();
-            }
-            // Focus left the field, which for a search is not a cancellation.
-            // The results *are* the pane's content, so clicking one is how
-            // they are meant to be used, and ending the search there threw
-            // away the thing the click was reaching for. This is where Enter
-            // already arrives, minus the focus grab: focus is going wherever
-            // the click landed, and taking it back would fight that.
-            PathEditorEvent::Blurred => {
-                this.path_editor = None;
-                cx.notify();
-            }
-        })
+        cx.subscribe_in(
+            &editor,
+            window,
+            |this, editor, event, window, cx| match event {
+                PathEditorEvent::Edited => {}
+                // Enter hands the listing back the focus and *keeps* the search, so
+                // the arrow keys work on the results. They cannot work while the
+                // field has focus, because every pane binding is masked by
+                // `!AddressBar`. Escape from there clears it.
+                PathEditorEvent::Committed(_) => {
+                    this.path_editor = None;
+                    window.focus(&this.focus_handle, cx);
+                    cx.notify();
+                }
+                PathEditorEvent::Cancelled => {
+                    this.end_search(window, cx);
+                    cx.notify();
+                }
+                // Focus left the field, which for a search is not a cancellation.
+                // The results *are* the pane's content, so clicking one is how
+                // they are meant to be used, and ending the search there threw
+                // away the thing the click was reaching for. This is where Enter
+                // already arrives, minus the focus grab: focus has gone wherever
+                // the click landed, and taking it back would fight that.
+                //
+                // Unless it has gone nowhere. The window losing focus blurs the
+                // field while leaving the keyboard exactly where it was, on the
+                // field this is about to drop, and a focus pointing at an element
+                // that no longer exists is a focus path with no `DirPane` in it:
+                // every pane binding stays masked by a field that has gone. The
+                // pane came back from an alt-tab with a dead keyboard.
+                PathEditorEvent::Blurred => {
+                    let stranded = editor.focus_handle(cx).is_focused(window);
+                    this.path_editor = None;
+                    if stranded {
+                        window.focus(&this.focus_handle, cx);
+                    }
+                    cx.notify();
+                }
+            },
+        )
         .detach();
 
         // Live: the pane re-filters on every keystroke rather than on enter.
@@ -3661,9 +3676,15 @@ impl DirPane {
                 }
                 // Abandoned the same way, but without pulling the focus back:
                 // it has already gone somewhere the user chose, and another
-                // pane is one of the places it can have gone.
+                // pane is one of the places it can have gone. Except when it
+                // has gone nowhere, which is what the window losing focus
+                // does; see the same arm on the search field.
                 PathEditorEvent::Blurred => {
+                    let stranded = editor.focus_handle(cx).is_focused(window);
                     this.path_editor = None;
+                    if stranded {
+                        window.focus(&this.focus_handle, cx);
+                    }
                     cx.notify();
                 }
             },

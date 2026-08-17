@@ -370,6 +370,13 @@ the whole path a hand-written line takes without a coordinate in it.
 scripts/sway-harness.sh "$(scripts/tests/setup-columns.sh)" scripts/tests/columns.sh
 ```
 
+`search-click.sh` uses the same fixture. It covers what a search does when it
+is used with the mouse and the arrows rather than only with enter.
+
+```sh
+scripts/sway-harness.sh "$(scripts/tests/setup-columns.sh)" scripts/tests/search-click.sh
+```
+
 `crash-phase1.sh` and `crash-phase2.sh` are one test in two runs against one
 state directory. The harness kills the app when a script returns, which is the
 crash; `HOJA_TEST_KEEP_STATE=1` stops the second run wiping what the first

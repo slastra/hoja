@@ -169,8 +169,8 @@ pub struct PathEditor {
     pub error: bool,
     /// Drawn in place of the content while it is empty.
     placeholder: SharedString,
-    /// A second name for the key context; see `also_in`.
-    extra_context: Option<SharedString>,
+    /// The key context this field renders with, built once. See `also_in`.
+    context: SharedString,
     chrome: Chrome,
 }
 
@@ -210,7 +210,7 @@ impl PathEditor {
             is_selecting: false,
             error: false,
             placeholder: SharedString::default(),
-            extra_context: None,
+            context: "AddressBar".into(),
             chrome: Chrome::Field,
         }
     }
@@ -232,8 +232,21 @@ impl PathEditor {
     /// `!AddressBar` so that typing a letter cannot fire one. That mask is all
     /// or nothing, which is why a field that wants a few of them back needs a
     /// name of its own to bind against.
-    pub fn also_in(mut self, context: impl Into<SharedString>) -> Self {
-        self.extra_context = Some(context.into());
+    ///
+    /// `&'static str` rather than anything stringy, and composed here rather
+    /// than at render: gpui parses this on the way in, and its parser walks
+    /// identifier characters and then recurses on what is left, so a name with
+    /// a hyphen or a space in it consumes nothing and never terminates. A
+    /// literal at the call site is most of the defence against that.
+    pub fn also_in(mut self, context: &'static str) -> Self {
+        debug_assert!(
+            !context.is_empty()
+                && context
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == ':'),
+            "a key context identifier, or gpui's parser will not terminate"
+        );
+        self.context = format!("AddressBar {context}").into();
         self
     }
 
@@ -712,13 +725,7 @@ impl Render for PathEditor {
         };
 
         div()
-            .key_context(
-                match &self.extra_context {
-                    Some(extra) => format!("AddressBar {extra}"),
-                    None => "AddressBar".to_string(),
-                }
-                .as_str(),
-            )
+            .key_context(self.context.as_ref())
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))

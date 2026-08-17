@@ -172,6 +172,15 @@ fn main() {
             // right there and reaching them meant leaving the field first.
             KeyBinding::new("up", MoveUp, Some("SearchBar")),
             KeyBinding::new("down", MoveDown, Some("SearchBar")),
+            // The rest of the movement keys, on the same reasoning: none of
+            // them types anything, and a result list long enough to want the
+            // arrows is exactly one long enough to want these. Leaving them
+            // out made them silent rather than harmless — no scroll, no
+            // extend, and no text either.
+            KeyBinding::new("pageup", MovePageUp, Some("SearchBar")),
+            KeyBinding::new("pagedown", MovePageDown, Some("SearchBar")),
+            KeyBinding::new("shift-up", ExtendUp, Some("SearchBar")),
+            KeyBinding::new("shift-down", ExtendDown, Some("SearchBar")),
             KeyBinding::new("shift-up", ExtendUp, Some("DirPane && !AddressBar")),
             KeyBinding::new("shift-down", ExtendDown, Some("DirPane && !AddressBar")),
             KeyBinding::new("pageup", MovePageUp, Some("DirPane && !AddressBar")),
