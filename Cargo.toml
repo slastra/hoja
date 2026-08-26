@@ -12,12 +12,20 @@ description = "A GPU-accelerated file manager with splittable panes"
 # our sole git source: nothing else in the graph depends on it, so there is no
 # source-unification hazard. Bump deliberately; `main` moves daily.
 #
-# The source is our fork, not zed-industries, and the difference is two commits
-# on `wayland-drag-icon` over upstream 5e1fd392. gpui passes `None` for
-# `wl_data_device.start_drag`'s icon argument, so a drag out of the window is
-# invisible the moment it leaves it; the branch builds an icon surface and hands
-# it over. Nothing else differs. Every crate below must come from the same
-# source — patching only some yields two incompatible copies of `gpui`.
+# Every crate below must come from the same source — patching only some yields
+# two incompatible copies of `gpui`.
+#
+# This was briefly a fork of ours, because gpui passes `None` for
+# `wl_data_device.start_drag`'s icon argument and so a drag carries nothing under
+# the cursor once it leaves the window. Dropped again: two chips drawn by two
+# unrelated pieces of code cannot be made to agree, and they visibly disagreed
+# about position most of all. Doing it properly needs the app to describe its own
+# drag icon, and that has to happen inside gpui: the icon must be a `wl_surface`
+# handed to `start_drag`, which needs the serial of the button press that began
+# the implicit grab, and gpui owns the seat and keeps that serial private. A
+# second wayland-client on the same display gets its own serial namespace with no
+# grab on our surface. So this is not reachable from outside gpui, whatever
+# library is used. The work is parked on `slastra/zed` `wayland-drag-icon`.
 #
 # `gpui_platform` is mandatory and not published on crates.io: since the Feb 2026
 # split, `gpui` holds the framework and platform traits while the actual backends
@@ -28,8 +36,8 @@ description = "A GPU-accelerated file manager with splittable panes"
 # without it `current_platform()` compiles fine and then hits an `unreachable!()`
 # at startup. `font-kit` alone is a macOS-only no-op on Linux.
 [dependencies]
-gpui = { git = "https://github.com/slastra/zed", rev = "b6bce6e19de15743a054cddf12b7976c8a86d36a" }
-gpui_platform = { git = "https://github.com/slastra/zed", rev = "b6bce6e19de15743a054cddf12b7976c8a86d36a", features = [
+gpui = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23", features = [
     "wayland",
     "x11",
 ] }
@@ -37,10 +45,10 @@ gpui_platform = { git = "https://github.com/slastra/zed", rev = "b6bce6e19de1574
 # GPL-3.0-or-later, which is why this crate is too. `theme` became genuinely
 # standalone in Mar 2026 (its settings dependency was inverted behind a
 # `ThemeSettingsProvider` trait we simply never register).
-theme = { git = "https://github.com/slastra/zed", rev = "b6bce6e19de15743a054cddf12b7976c8a86d36a" }
-file_icons = { git = "https://github.com/slastra/zed", rev = "b6bce6e19de15743a054cddf12b7976c8a86d36a" }
-theme_settings = { git = "https://github.com/slastra/zed", rev = "b6bce6e19de15743a054cddf12b7976c8a86d36a" }
-fuzzy_nucleo = { git = "https://github.com/slastra/zed", rev = "b6bce6e19de15743a054cddf12b7976c8a86d36a" }
+theme = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
+file_icons = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
+theme_settings = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
+fuzzy_nucleo = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
 
 hoja-transfer = { path = "hoja-transfer" }
 

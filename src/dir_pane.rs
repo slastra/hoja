@@ -519,8 +519,12 @@ impl DraggedMembers {
     }
 }
 
-/// What the cursor carries during a drag. The platform draws its own icons for
-/// a drag that leaves the window, so this is only ever seen inside pane.
+/// What the cursor carries during a drag, and the only preview there is.
+///
+/// A drag that leaves the window keeps working, and carries nothing visible: the
+/// icon a Wayland drag can hold has to be handed to `start_drag` from inside
+/// gpui, and gpui passes `None`. See the note in `Cargo.toml` for why that is not
+/// reachable from out here.
 struct DragPreview {
     label: SharedString,
 }
