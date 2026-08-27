@@ -1,0 +1,19 @@
+[package]
+name = "hoja-drag"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Owns hoja's outbound Wayland drag, so the chip under the cursor is ours"
+
+# Same contract as hoja-transfer: no gpui, no async runtime, no anyhow. This
+# crate knows Wayland and nothing about files, themes or the UI. It is handed
+# pixels and a list of URIs and it starts a drag with them.
+#
+# `client_system` is load-bearing. `Backend::from_foreign_display` exists only in
+# the libwayland-backed backend, and the whole point of this crate is to attach
+# to a `wl_display` gpui already owns rather than opening a second connection:
+# a separate connection would be a separate wl_client, with no implicit grab on
+# our surface and no valid serial to start a drag with.
+[dependencies]
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }

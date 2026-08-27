@@ -1,5 +1,5 @@
 [workspace]
-members = ["hoja-transfer"]
+members = ["hoja-transfer", "hoja-drag"]
 
 [package]
 name = "hoja"
@@ -51,6 +51,11 @@ theme_settings = { git = "https://github.com/zed-industries/zed", rev = "5e1fd39
 fuzzy_nucleo = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
 
 hoja-transfer = { path = "hoja-transfer" }
+# Owns the outbound Wayland drag so the chip that leaves the window is ours.
+hoja-drag = { path = "hoja-drag" }
+# Not re-exported by gpui, so the version must match the one gpui links or the
+# HasWindowHandle impl on gpui::Window is a different trait to ours.
+raw-window-handle = "0.6"
 
 anyhow = "1"
 rust-embed = "8"

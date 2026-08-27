@@ -3178,10 +3178,12 @@ dependencies = [
  "fuzzy_nucleo",
  "gpui",
  "gpui_platform",
+ "hoja-drag",
  "hoja-transfer",
  "lzma-rs",
  "notify 8.2.0",
  "parking_lot",
+ "raw-window-handle",
  "rayon",
  "rust-embed",
  "rustix 1.1.4",
@@ -3196,6 +3198,14 @@ dependencies = [
  "unicode-segmentation",
  "xdg-mime",
  "zip",
+]
+
+[[package]]
+name = "hoja-drag"
+version = "0.1.0"
+dependencies = [
+ "wayland-backend",
+ "wayland-client",
 ]
 
 [[package]]
