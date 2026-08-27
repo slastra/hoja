@@ -159,7 +159,7 @@ fn rasterise(spec: &ChipSpec) -> Option<hoja_drag::Chip> {
 
 /// Straight alpha to premultiplied, in place.
 fn premultiply(bgra: &mut [u8]) {
-    for px in bgra.chunks_exact_mut(4) {
+    for px in bgra.as_chunks_mut::<4>().0 {
         let a = px[3] as u32;
         if a == 255 {
             continue;
