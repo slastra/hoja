@@ -5,6 +5,7 @@ mod command_palette;
 mod config;
 mod conflict_dialog;
 mod dir_pane;
+mod dragging;
 mod failure_report;
 mod file_menu;
 mod fs;

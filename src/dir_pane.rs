@@ -166,6 +166,17 @@ fn drop_allowed(dragged: &dyn std::any::Any, target: &Path) -> bool {
     dragged.downcast_ref::<DraggedMembers>().is_some()
 }
 
+/// Say whether a drop will be taken, in colour.
+///
+/// The cursor used to carry this alone, and cannot any more: a drag that the
+/// compositor is carrying owns the pointer, so `set_cursor` is ignored for the
+/// whole gesture. Painting the target says the same thing and keeps saying it
+/// after a round trip out of the window, and for drags arriving from other
+/// applications, both of which the cursor never managed.
+fn tint(allowed: bool, accept: gpui::Hsla, refuse: gpui::Hsla) -> gpui::Hsla {
+    if allowed { accept } else { refuse }
+}
+
 /// Point the cursor at whether a drop here would be taken or refused.
 ///
 /// `target` is the directory a drop would land in, or `None` where there is no
@@ -200,6 +211,40 @@ fn point_at_drop(
         return;
     }
     cx.set_active_drag_cursor_style(wanted, window);
+}
+
+/// Hand the drag to the compositor, at the moment it begins.
+///
+/// Deliberately here rather than at the window edge. A drag icon follows the
+/// cursor everywhere, this window included, so starting now means one surface
+/// carries the chip for the whole gesture and there is no handoff to get wrong.
+/// The cost is that a drag grab takes the cursor away from us, which is why
+/// refusal is painted on the target rather than shown in the cursor.
+fn carry_drag(window: &mut Window, cx: &mut App) {
+    if !crate::dragging::launch() {
+        return;
+    }
+    // gpui still believes it is running an internal drag, and it will never
+    // learn otherwise: the compositor has the pointer, so no mouse-up is coming.
+    // Our own data source is the only thing that knows when this ends, and
+    // nothing else would ever run to ask it, because a window with the pointer
+    // elsewhere receives no input and draws no frames.
+    let handle = window.window_handle();
+    cx.spawn(async move |cx: &mut gpui::AsyncApp| {
+        loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(16))
+                .await;
+            if crate::dragging::poll().is_none() {
+                continue;
+            }
+            let _ = cx.update_window(handle, |_, window, cx| {
+                cx.stop_active_drag(window);
+            });
+            break;
+        }
+    })
+    .detach();
 }
 
 /// Attach `point_at_drop` for all three payload types.
@@ -531,6 +576,11 @@ struct DragPreview {
 
 impl Render for DragPreview {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Once the compositor carries the chip it carries it everywhere, this
+        // window included, so drawing here as well would stack two of them.
+        if crate::dragging::launched() {
+            return div();
+        }
         let colors = cx.theme().colors();
         div()
             .px_2()
@@ -4445,6 +4495,19 @@ impl DirPane {
         } else {
             entry.name.clone().into()
         };
+        // What the chip shows, in one place. `DragPreview` draws it inside the
+        // window and `dragging` rasterises the same description for the icon
+        // that leaves it, so the two cannot drift apart.
+        let chip_spec = crate::dragging::ChipSpec {
+            label: drag_label.clone(),
+            // A folder glyph only for a lone directory; a mixed or multiple
+            // selection gets the neutral one.
+            folder: is_dir && self.selected.len() <= 1,
+            background: colors.elevated_surface_background,
+            foreground: colors.text,
+            border: colors.border_selected,
+        };
+
         // `dragged` and `dragged_member` are never both `Some` for one row,
         // but both closures below are built regardless, so each needs its own
         // owned copy of the label rather than fighting over the one variable.
@@ -4511,18 +4574,31 @@ impl DirPane {
             // the disk. There is nowhere to put a file inside an archive.
             .when_some(on_disk.clone().filter(|_| is_dir), |row, target| {
                 let highlight = colors.drop_target_background;
-                // `on_drag_move` dispatches in the capture phase, outermost
-                // first, so the pane's listener has already run by the time
-                // this one does and this simply overwrites its verdict. That
-                // ordering is the whole mechanism: the cursor is window-wide,
-                // so the innermost element to speak wins, with no bookkeeping.
+                let refused = cx.theme().status().error_background;
+                // A tint either way rather than a border: a row has none, and
+                // adding one would resize it as the pointer passed over.
+                //
+                // `can_drop` is not the gate any more. It used to refuse, which
+                // suppressed the highlight and left the cursor to say why, but a
+                // compositor drag owns the cursor and we cannot set it. So every
+                // drop is taken and the style says whether it will do anything;
+                // `accept_drop` already discards an invalid one through
+                // `is_valid_drop`, so a refused drop lands on a handler that
+                // returns immediately, exactly as it was consumed before.
                 cursor_follows_drops(row, Some(target.clone()))
-                    .can_drop({
+                    .can_drop(|_, _, _| true)
+                    .drag_over::<DraggedPaths>({
                         let target = target.clone();
-                        move |dragged, _, _| drop_allowed(dragged, &target)
+                        move |style, dragged, _, _| {
+                            style.bg(tint(drop_allowed(dragged, &target), highlight, refused))
+                        }
                     })
-                    .drag_over::<DraggedPaths>(move |style, _, _, _| style.bg(highlight))
-                    .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(highlight))
+                    .drag_over::<ExternalPaths>({
+                        let target = target.clone();
+                        move |style, dragged, _, _| {
+                            style.bg(tint(drop_allowed(dragged, &target), highlight, refused))
+                        }
+                    })
                     .drag_over::<DraggedMembers>(move |style, _, _, _| style.bg(highlight))
                     .on_drop(cx.listener({
                         let target = target.clone();
@@ -4564,18 +4640,26 @@ impl DirPane {
             })
             .when_some(dragged, |row, dragged| {
                 // Also where the payload settles what it carries: see `resolve`.
-                row.on_drag(dragged, move |dragged: &DraggedPaths, _, _, cx| {
+                let spec = chip_spec.clone();
+                let row = row.on_drag(dragged, move |dragged: &DraggedPaths, _, window, cx| {
                     dragged.resolve(cx);
+                    // The label and the theme are only reachable from the row
+                    // that started the drag, so the chip is built here and the
+                    // compositor takes it immediately.
+                    crate::dragging::arm(&spec, &dragged.paths());
+                    carry_drag(window, cx);
                     cx.new(|_| DragPreview {
                         label: drag_label.clone(),
                     })
-                })
-                // Promotes the same drag to a native one when it leaves the
-                // window. The resolver runs once, at promotion, never per
-                // frame, which is why the is_dir probes belong here and not in
-                // the payload.
-                .external_drag_payload(
-                    |dragged: &DraggedPaths, _, _: &mut App| {
+                });
+                // Only when hoja is not carrying the drag itself. Both would
+                // start a gesture and the compositor would take whichever asked
+                // first, so this is either/or rather than belt and braces.
+                row.when(!crate::dragging::available(), |row| {
+                    // The resolver runs once, at promotion, never per frame,
+                    // which is why the is_dir probes belong here and not in the
+                    // payload.
+                    row.external_drag_payload(|dragged: &DraggedPaths, _, _: &mut App| {
                         Some(gpui::ExternalDragPayload::Files(gpui::FileDragPaths::new(
                             dragged
                                 .paths()
@@ -4583,8 +4667,8 @@ impl DirPane {
                                 .map(|path| (path.is_dir(), path))
                                 .map(|(is_dir, path)| (path, is_dir)),
                         )))
-                    },
-                )
+                    })
+                })
             })
             .when_some(dragged_member, |row, dragged| {
                 // No `external_drag_payload`: promoting this to a native drag
@@ -4769,6 +4853,7 @@ impl Render for DirPane {
         // there is nowhere in it to put a file.
         let here = self.dir.disk().map(Path::to_path_buf);
         let drop_border = cx.theme().colors().drop_target_background;
+        let refused = cx.theme().status().error_border;
 
         div()
             .track_focus(&self.focus_handle)
@@ -4782,41 +4867,64 @@ impl Render for DirPane {
             // folder row lands in the directory being shown. A folder row that
             // accepts consumes the drop first, so the two never both fire.
             .when_some(here, |pane, here| {
-                pane.can_drop({
-                    let here = here.clone();
-                    move |dragged, _, _| drop_allowed(dragged, &here)
-                })
-                // A border rather than a fill: the whole pane going solid would
-                // hide the listing you are aiming at.
-                .drag_over::<DraggedPaths>(move |style, _, _, _| style.border_color(drop_border))
-                .drag_over::<ExternalPaths>(move |style, _, _, _| style.border_color(drop_border))
-                .drag_over::<DraggedMembers>(move |style, _, _, _| style.border_color(drop_border))
-                .on_drop(cx.listener({
-                    let here = here.clone();
-                    move |this, dragged: &DraggedPaths, window, cx| {
-                        let sources = dragged.paths();
-                        let source_dir = dragged.source_dir.clone();
-                        this.accept_drop(sources, Some(&source_dir), here.clone(), window, cx);
-                    }
-                }))
-                .on_drop(cx.listener({
-                    let here = here.clone();
-                    move |this, paths: &ExternalPaths, window, cx| {
-                        this.accept_drop(paths.paths().to_vec(), None, here.clone(), window, cx);
-                    }
-                }))
-                .on_drop(cx.listener({
-                    let here = here.clone();
-                    move |this, dragged: &DraggedMembers, _window, cx| {
-                        this.accept_extract_drop(
-                            dragged.archive.clone(),
-                            dragged.inside.clone(),
-                            dragged.roots(),
-                            here.clone(),
-                            cx,
-                        );
-                    }
-                }))
+                pane.can_drop(|_, _, _| true)
+                    // A border rather than a fill: the whole pane going solid would
+                    // hide the listing you are aiming at.
+                    .drag_over::<DraggedPaths>({
+                        let here = here.clone();
+                        move |style, dragged, _, _| {
+                            style.border_color(tint(
+                                drop_allowed(dragged, &here),
+                                drop_border,
+                                refused,
+                            ))
+                        }
+                    })
+                    .drag_over::<ExternalPaths>({
+                        let here = here.clone();
+                        move |style, dragged, _, _| {
+                            style.border_color(tint(
+                                drop_allowed(dragged, &here),
+                                drop_border,
+                                refused,
+                            ))
+                        }
+                    })
+                    .drag_over::<DraggedMembers>(move |style, _, _, _| {
+                        style.border_color(drop_border)
+                    })
+                    .on_drop(cx.listener({
+                        let here = here.clone();
+                        move |this, dragged: &DraggedPaths, window, cx| {
+                            let sources = dragged.paths();
+                            let source_dir = dragged.source_dir.clone();
+                            this.accept_drop(sources, Some(&source_dir), here.clone(), window, cx);
+                        }
+                    }))
+                    .on_drop(cx.listener({
+                        let here = here.clone();
+                        move |this, paths: &ExternalPaths, window, cx| {
+                            this.accept_drop(
+                                paths.paths().to_vec(),
+                                None,
+                                here.clone(),
+                                window,
+                                cx,
+                            );
+                        }
+                    }))
+                    .on_drop(cx.listener({
+                        let here = here.clone();
+                        move |this, dragged: &DraggedMembers, _window, cx| {
+                            this.accept_extract_drop(
+                                dragged.archive.clone(),
+                                dragged.inside.clone(),
+                                dragged.roots(),
+                                here.clone(),
+                                cx,
+                            );
+                        }
+                    }))
             })
             .on_action(cx.listener(Self::go_up))
             .on_action(cx.listener(Self::open_selected))

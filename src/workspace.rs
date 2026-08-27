@@ -639,6 +639,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // Take over outbound drags before the first one can start. Without a
+        // Wayland connection this records that there is none and the panes keep
+        // letting gpui promote drags itself.
+        crate::dragging::attach(window);
+
         let view = config::initial_view(&settings, &state, config::newer());
         let widths = state.column_widths.clone();
         let pane = cx.new(|cx| {
