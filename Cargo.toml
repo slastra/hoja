@@ -16,16 +16,17 @@ description = "A GPU-accelerated file manager with splittable panes"
 # two incompatible copies of `gpui`.
 #
 # This was briefly a fork of ours, because gpui passes `None` for
-# `wl_data_device.start_drag`'s icon argument and so a drag carries nothing under
-# the cursor once it leaves the window. Dropped again: two chips drawn by two
-# unrelated pieces of code cannot be made to agree, and they visibly disagreed
-# about position most of all. Doing it properly needs the app to describe its own
-# drag icon, and that has to happen inside gpui: the icon must be a `wl_surface`
-# handed to `start_drag`, which needs the serial of the button press that began
-# the implicit grab, and gpui owns the seat and keeps that serial private. A
-# second wayland-client on the same display gets its own serial namespace with no
-# grab on our surface. So this is not reachable from outside gpui, whatever
-# library is used. The work is parked on `slastra/zed` `wayland-drag-icon`.
+# `wl_data_device.start_drag`'s icon argument, so a drag carries nothing under
+# the cursor once it leaves the window. The fork filled that argument in and made
+# things worse: two chips, drawn by two unrelated pieces of code, disagreeing
+# about position most of all.
+#
+# It turned out not to be needed. `hoja-drag` starts the drag itself, from a
+# second backend on this connection, and draws the chip for the whole gesture.
+# The thing that made the fork look unavoidable was the serial `start_drag`
+# demands, which gpui keeps private — but binding `wl_seat` a second time gives
+# us our own pointer and our own serials, and the compositor accepts those. See
+# that crate's header before assuming any of this has to move in here.
 #
 # `gpui_platform` is mandatory and not published on crates.io: since the Feb 2026
 # split, `gpui` holds the framework and platform traits while the actual backends
