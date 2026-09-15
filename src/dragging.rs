@@ -12,7 +12,7 @@
 //! is not an optimisation: the label and the theme are only reachable from the
 //! row that started the drag.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -45,15 +45,19 @@ pub mod chip {
 }
 
 static SOURCE: OnceLock<Option<hoja_drag::DragSource>> = OnceLock::new();
-static ARMED: Mutex<Option<(hoja_drag::Chip, Vec<String>)>> = Mutex::new(None);
+static ARMED: Mutex<Option<(hoja_drag::Chip, hoja_drag::Payload)>> = Mutex::new(None);
 /// Whether the compositor is currently carrying a chip of ours.
 static LAUNCHED: AtomicBool = AtomicBool::new(false);
+/// The files the current drag carries and the directory they came from, when
+/// it is a drag of files on the disk. See `origin_of`.
+static CARRYING: Mutex<Option<(Vec<PathBuf>, PathBuf)>> = Mutex::new(None);
 
 /// Attach to the window's Wayland connection, once.
 ///
 /// Safe to call on any platform: without Wayland handles this records that
 /// there is no source and everything falls back to gpui's own promotion.
 pub fn attach(window: &Window) {
+    sweep_drops();
     SOURCE.get_or_init(|| {
         use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
@@ -82,14 +86,81 @@ pub fn available() -> bool {
 ///
 /// A drag that never leaves simply leaves its chip armed; the next drag
 /// overwrites it, so there is nothing to tidy up.
-pub fn arm(spec: &ChipSpec, paths: &[std::path::PathBuf]) {
+pub fn arm(spec: &ChipSpec, paths: &[PathBuf], source_dir: &Path) {
+    let uris = paths.iter().map(|p| file_uri(p)).collect();
+    let mut carried = paths.to_vec();
+    carried.sort();
+    *CARRYING.lock().unwrap() = Some((carried, source_dir.to_path_buf()));
+    arm_with(spec, hoja_drag::Payload::Files(uris));
+}
+
+/// Where `paths` came from, if they are exactly what this drag is carrying.
+///
+/// A drag that leaves the window and comes back is not the drag that left.
+/// gpui drops its own record of the gesture when the pointer exits, since it
+/// is not the one carrying it, and on re-entry it reads the offer and builds
+/// a fresh drag of *external* paths from what it finds — which happen to be
+/// our own files. Dropped as external they would be copied, never moved, and
+/// with no memory of the directory they left. This is that memory. A drop
+/// handler that is handed external paths asks here first, and if they are
+/// ours it treats the drop as the internal one it really is.
+pub fn origin_of(paths: &[PathBuf]) -> Option<PathBuf> {
+    let carrying = CARRYING.lock().unwrap();
+    let (carried, from) = carrying.as_ref()?;
+    let mut given = paths.to_vec();
+    given.sort();
+    (given == *carried).then(|| from.clone())
+}
+
+/// Hold a chip ready for members of an archive, which have no files to hand
+/// over until somebody actually drops them.
+///
+/// Nothing is extracted here. The closure runs on the drag thread at the
+/// moment a target reads the offer after a drop, so a drag that is cancelled,
+/// or dropped back inside hoja, costs no I/O at all. What it extracts stays for
+/// the rest of the session: `Finished` only says the target has read the *list*,
+/// and a file manager is still copying the files it names for some time after.
+pub fn arm_extracting(spec: &ChipSpec, archive: PathBuf, inside: PathBuf, roots: Vec<String>) {
+    // Members have no directory on the disk to be moved from. Should this
+    // drag come back in, its files are the extracted copies and a copy from
+    // those is exactly right.
+    *CARRYING.lock().unwrap() = None;
+    // What the first reader is told. That reader is gpui looking at its own
+    // drag on entry; see `Payload::Lazy`. The archive itself: real, and the
+    // nearest thing to the truth there is until the members exist.
+    let first = vec![file_uri(&archive)];
+    let make = move || -> Vec<String> {
+        let Some(dest) = next_drop_dir() else {
+            return Vec::new();
+        };
+        let progress = crate::archive::Progress::default();
+        let cancel = crate::archive::Cancel::new();
+        // A failure here is a member that could not be written; the rest
+        // still were, and they are what the target is told about.
+        let _ = crate::archive::extract(&archive, &inside, &roots, &dest, &progress, &cancel);
+        roots
+            .iter()
+            .map(|root| crate::archive::extracted_path(&dest, &inside, root))
+            .filter(|path| path.exists())
+            .map(|path| file_uri(&path))
+            .collect()
+    };
+    arm_with(
+        spec,
+        hoja_drag::Payload::Lazy {
+            first,
+            make: Box::new(make),
+        },
+    );
+}
+
+fn arm_with(spec: &ChipSpec, payload: hoja_drag::Payload) {
     if !available() {
         return;
     }
     let Some(chip) = rasterise(spec) else { return };
-    let uris = paths.iter().map(|p| file_uri(p)).collect();
     LAUNCHED.store(false, Ordering::Relaxed);
-    *ARMED.lock().unwrap() = Some((chip, uris));
+    *ARMED.lock().unwrap() = Some((chip, payload));
 }
 
 /// Start the compositor drag. Returns false when there was nothing armed, or
@@ -98,10 +169,10 @@ pub fn launch() -> bool {
     let Some(Some(source)) = SOURCE.get() else {
         return false;
     };
-    let Some((chip, uris)) = ARMED.lock().unwrap().take() else {
+    let Some((chip, payload)) = ARMED.lock().unwrap().take() else {
         return false;
     };
-    let started = source.start(chip, &uris);
+    let started = source.start(chip, payload);
     LAUNCHED.store(started, Ordering::Relaxed);
     started
 }
@@ -126,6 +197,57 @@ pub fn poll() -> Option<hoja_drag::DragEvent> {
         LAUNCHED.store(false, Ordering::Relaxed);
     }
     event
+}
+
+/// This process's directory for extracted drops, and the lock that says it is
+/// alive. Created on first use, held for the rest of the session.
+static DROP_DIR: OnceLock<Option<(PathBuf, std::fs::File)>> = OnceLock::new();
+static DROP_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `$XDG_CACHE_HOME/hoja/drag/`, shared by every hoja that has ever run.
+fn drop_root() -> Option<PathBuf> {
+    Some(crate::config::cache_home()?.join("hoja").join("drag"))
+}
+
+/// A fresh, empty directory for one drop's files.
+fn next_drop_dir() -> Option<PathBuf> {
+    let (base, _lock) = DROP_DIR
+        .get_or_init(|| {
+            let dir = drop_root()?.join(std::process::id().to_string());
+            std::fs::create_dir_all(&dir).ok()?;
+            let lock = std::fs::File::create(dir.join("lock")).ok()?;
+            rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive).ok()?;
+            Some((dir, lock))
+        })
+        .as_ref()?;
+    let n = DROP_COUNT.fetch_add(1, Ordering::Relaxed);
+    let dir = base.join(n.to_string());
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Remove what earlier hojas extracted and never could clean up.
+///
+/// Ownership is the `flock`, not the pid, for the reason `journal.rs` gives: a
+/// pid can be recycled, but a lock is released the instant its holder dies,
+/// however it dies. A directory whose lock can be taken belongs to nobody.
+fn sweep_drops() {
+    let Some(root) = drop_root() else { return };
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        let Ok(lock) = std::fs::File::open(dir.join("lock")) else {
+            // No lock file at all: not one of ours, or one that never got as
+            // far as locking. Either way there is no owner to defer to.
+            let _ = std::fs::remove_dir_all(&dir);
+            continue;
+        };
+        if rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive).is_ok() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
 }
 
 /// Draw the chip to premultiplied BGRA.

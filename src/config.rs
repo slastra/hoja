@@ -53,6 +53,11 @@ pub fn state_home() -> Option<PathBuf> {
     base("XDG_STATE_HOME", ".local/state")
 }
 
+/// `$XDG_CACHE_HOME`, else `~/.cache`. For what can be thrown away.
+pub fn cache_home() -> Option<PathBuf> {
+    base("XDG_CACHE_HOME", ".cache")
+}
+
 /// The spec says a relative value is invalid and must be ignored, which is why
 /// this filters rather than trusting the variable.
 fn base(var: &str, fallback: &str) -> Option<PathBuf> {

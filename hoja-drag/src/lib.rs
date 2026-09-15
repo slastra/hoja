@@ -62,6 +62,42 @@ pub struct Chip {
     pub hotspot: (i32, i32),
 }
 
+/// What the drag hands to a target that reads it.
+pub enum Payload {
+    /// Files that exist now. Any reader gets them, at any point in the drag.
+    Files(Vec<String>),
+    /// Files that do not exist yet, and are made the first time anybody but
+    /// the source's own window asks for them.
+    ///
+    /// The **first** reader is given `first` and `make` does not run. The drag
+    /// begins with the pointer over the window it was picked up in, so the
+    /// compositor's first `enter` goes there, and gpui reads every offer once
+    /// on entry — before anything else can. So the first read is always gpui
+    /// looking at its own drag, and every read after it is somebody who means
+    /// it: a target peeking during motion to decide what to do, a target
+    /// reading at the drop, or gpui again after the drag has been out and
+    /// come back. `make` runs once, at the first of those, and its result is
+    /// what all of them get.
+    ///
+    /// That is what keeps an archive member cheap to pick up: a drag that is
+    /// cancelled, or dropped straight back inside hoja, is read exactly once
+    /// and nothing is extracted.
+    ///
+    /// `first` must not be empty. gpui destroys an offer whose list is empty,
+    /// which the compositor takes as the target refusing — and with the
+    /// source's own window the only target at that instant, the whole gesture
+    /// is cancelled. A real, existing file is the safe thing to name.
+    ///
+    /// Not keyed on `DndDropPerformed`, though that looks like the obvious
+    /// moment: file managers ask for the list during motion and act on what
+    /// they were told, so a placeholder served until the drop is the thing
+    /// that gets dropped.
+    Lazy {
+        first: Vec<String>,
+        make: Box<dyn FnOnce() -> Vec<String> + Send>,
+    },
+}
+
 /// How a drag ended. Every variant means the gesture is over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DragEvent {
@@ -106,7 +142,61 @@ struct Live {
 /// What a data source carries with it, so its handler needs no shared state.
 struct SourceData {
     generation: u64,
-    payload: Vec<u8>,
+    payload: Mutex<PayloadState>,
+}
+
+enum PayloadState {
+    Ready(Vec<u8>),
+    /// Nobody has read yet. The next reader is the source's own window.
+    Unread {
+        first: Vec<u8>,
+        make: Box<dyn FnOnce() -> Vec<String> + Send>,
+    },
+    /// The own-window read has happened. The next reader gets the real thing.
+    Pending(Box<dyn FnOnce() -> Vec<String> + Send>),
+}
+
+impl SourceData {
+    fn new(generation: u64, payload: Payload) -> Self {
+        let payload = match payload {
+            Payload::Files(uris) => PayloadState::Ready(uri_list(&uris)),
+            Payload::Lazy { first, make } => PayloadState::Unread {
+                first: uri_list(&first),
+                make,
+            },
+        };
+        Self {
+            generation,
+            payload: Mutex::new(payload),
+        }
+    }
+
+    /// The bytes to hand a reader right now.
+    fn bytes(&self) -> Vec<u8> {
+        let mut state = self.payload.lock().unwrap();
+        // Take the state out so the closure can be moved rather than borrowed.
+        let taken = std::mem::replace(&mut *state, PayloadState::Ready(Vec::new()));
+        let (next, bytes) = match taken {
+            PayloadState::Ready(bytes) => (PayloadState::Ready(bytes.clone()), bytes),
+            PayloadState::Unread { first, make } => (PayloadState::Pending(make), first),
+            PayloadState::Pending(make) => {
+                let bytes = uri_list(&make());
+                (PayloadState::Ready(bytes.clone()), bytes)
+            }
+        };
+        *state = next;
+        bytes
+    }
+}
+
+/// `text/uri-list`: one URI per line, CRLF terminated.
+fn uri_list(uris: &[String]) -> Vec<u8> {
+    let mut list = String::new();
+    for uri in uris {
+        list.push_str(uri);
+        list.push_str("\r\n");
+    }
+    list.into_bytes()
 }
 
 impl DragSource {
@@ -181,20 +271,14 @@ impl DragSource {
         })
     }
 
-    /// Begin a drag carrying `uris`, with `chip` under the cursor.
+    /// Begin a drag carrying `payload`, with `chip` under the cursor.
     ///
     /// Returns false when no press has been seen yet, which means there is no
     /// grab to start a drag from.
-    pub fn start(&self, chip: Chip, uris: &[String]) -> bool {
+    pub fn start(&self, chip: Chip, payload: Payload) -> bool {
         let serial = self.serial.load(Ordering::Relaxed);
         if serial == 0 {
             return false;
-        }
-
-        let mut list = String::new();
-        for uri in uris {
-            list.push_str(uri);
-            list.push_str("\r\n");
         }
 
         // Whatever the last drag left behind is over: a new press has begun a
@@ -207,13 +291,9 @@ impl DragSource {
             return false;
         };
         let icon = self.compositor.create_surface(&self.qh, ());
-        let source = self.manager.create_data_source(
-            &self.qh,
-            SourceData {
-                generation,
-                payload: list.into_bytes(),
-            },
-        );
+        let source = self
+            .manager
+            .create_data_source(&self.qh, SourceData::new(generation, payload));
         for mime in MIMES {
             source.offer((*mime).into());
         }
@@ -436,9 +516,14 @@ impl Dispatch<WlDataSource, SourceData> for Inner {
             // forever on a pipe nobody is writing to. The list travels with the
             // source, so a target still reading an old drag gets that drag's
             // files and not the next one's.
+            //
+            // An `OnDrop` payload does its work here, on this thread, with the
+            // target waiting on the other end of the pipe. That is the deal:
+            // the files exist by the time anybody is told where they are.
             wl_data_source::Event::Send { fd, .. } => {
+                let bytes = data.bytes();
                 let mut file = std::fs::File::from(fd);
-                let _ = file.write_all(&data.payload);
+                let _ = file.write_all(&bytes);
             }
             wl_data_source::Event::DndDropPerformed => {
                 state.emit(data.generation, DragEvent::Performed)
@@ -475,3 +560,53 @@ delegate_noop!(Inner: ignore WlShmPool);
 delegate_noop!(Inner: ignore WlBuffer);
 delegate_noop!(Inner: ignore WlDataDeviceManager);
 delegate_noop!(Inner: ignore WlDataOffer);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn a_uri_list_is_crlf_terminated_and_empty_when_empty() {
+        assert_eq!(uri_list(&[]), b"");
+        assert_eq!(
+            uri_list(&["file:///a".into(), "file:///b".into()]),
+            b"file:///a\r\nfile:///b\r\n"
+        );
+    }
+
+    #[test]
+    fn files_are_handed_to_every_reader() {
+        let data = SourceData::new(1, Payload::Files(vec!["file:///x".into()]));
+        assert_eq!(data.bytes(), b"file:///x\r\n");
+        assert_eq!(data.bytes(), b"file:///x\r\n");
+    }
+
+    #[test]
+    fn a_lazy_payload_placates_the_first_reader_and_is_made_once_for_the_rest() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counted = runs.clone();
+        let data = SourceData::new(
+            1,
+            Payload::Lazy {
+                first: vec!["file:///the.zip".into()],
+                make: Box::new(move || {
+                    counted.fetch_add(1, Ordering::Relaxed);
+                    vec!["file:///made".into()]
+                }),
+            },
+        );
+
+        // The first read is the source's own window, on entry. It must cost
+        // nothing and must not come back empty, or gpui refuses the offer.
+        assert_eq!(data.bytes(), b"file:///the.zip\r\n");
+        assert_eq!(runs.load(Ordering::Relaxed), 0);
+
+        // The second is somebody who means it — a target peeking during
+        // motion, say — and gets the real thing.
+        assert_eq!(data.bytes(), b"file:///made\r\n");
+        // And so does everybody after, from one extraction.
+        assert_eq!(data.bytes(), b"file:///made\r\n");
+        assert_eq!(runs.load(Ordering::Relaxed), 1);
+    }
+}

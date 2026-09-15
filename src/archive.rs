@@ -1000,6 +1000,15 @@ impl Sink for Extract {
     }
 }
 
+/// Where `extract` puts `root`, given the same `inside` and `dest`.
+///
+/// So a caller that needs to name what it just extracted, rather than merely
+/// know that it happened, agrees with `Extract` about the layout by
+/// construction rather than by repeating its arithmetic.
+pub fn extracted_path(dest: &Path, inside: &Path, root: &str) -> PathBuf {
+    dest.join(under_strip(root, &key(inside)).unwrap_or(root))
+}
+
 /// Copy things out of an archive onto the disk, in one pass.
 ///
 /// `roots` are member paths as the pane knows them, files and folders alike;
@@ -1065,6 +1074,31 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn an_extracted_root_lands_where_extract_put_it() {
+        let dest = Path::new("/tmp/out");
+        // Selected from inside `docs`: the path to it is stripped.
+        assert_eq!(
+            extracted_path(dest, Path::new("docs"), "docs/readme.md"),
+            PathBuf::from("/tmp/out/readme.md")
+        );
+        assert_eq!(
+            extracted_path(dest, Path::new("docs"), "docs/sub/deep.txt"),
+            PathBuf::from("/tmp/out/sub/deep.txt")
+        );
+        // Selected from the root: nothing to strip.
+        assert_eq!(
+            extracted_path(dest, Path::new(""), "top.txt"),
+            PathBuf::from("/tmp/out/top.txt")
+        );
+        // A root that is not under `inside` keeps its own path, exactly as
+        // `Extract` writes it.
+        assert_eq!(
+            extracted_path(dest, Path::new("docs"), "docs2/other.txt"),
+            PathBuf::from("/tmp/out/docs2/other.txt")
+        );
     }
 
     #[test]

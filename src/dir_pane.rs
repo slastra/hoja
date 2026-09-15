@@ -2324,7 +2324,12 @@ impl DirPane {
             return;
         }
 
-        let op = match source_dir {
+        // External paths that are in fact our own, back from a trip outside
+        // the window, are an internal drop that lost its papers at the door.
+        let source_dir = source_dir
+            .map(Path::to_path_buf)
+            .or_else(|| crate::dragging::origin_of(&sources));
+        let op = match source_dir.as_deref() {
             // An internal drag: the events are real, so the modifiers are live.
             // Within one filesystem a move is a rename and free; across one it
             // is a copy plus a delete, so the convention is to move within and
@@ -4512,6 +4517,7 @@ impl DirPane {
         // but both closures below are built regardless, so each needs its own
         // owned copy of the label rather than fighting over the one variable.
         let member_drag_label = drag_label.clone();
+        let member_chip_spec = chip_spec.clone();
 
         let row = div()
             .id(ix)
@@ -4646,7 +4652,7 @@ impl DirPane {
                     // The label and the theme are only reachable from the row
                     // that started the drag, so the chip is built here and the
                     // compositor takes it immediately.
-                    crate::dragging::arm(&spec, &dragged.paths());
+                    crate::dragging::arm(&spec, &dragged.paths(), &dragged.source_dir);
                     carry_drag(window, cx);
                     cx.new(|_| DragPreview {
                         label: drag_label.clone(),
@@ -4671,12 +4677,21 @@ impl DirPane {
                 })
             })
             .when_some(dragged_member, |row, dragged| {
-                // No `external_drag_payload`: promoting this to a native drag
-                // would need a real file to hand another application before
-                // any extraction has run. In-app only, for now, the same as
-                // `Cut` is not offered inside an archive at all.
-                row.on_drag(dragged, move |dragged: &DraggedMembers, _, _, cx| {
+                // Carried out of the window like any other drag, with nothing
+                // extracted up front: the files come into being only when a
+                // target has taken the drop and asks where they are. A drop
+                // back inside hoja never reaches that point and goes through
+                // `accept_extract_drop` as it always did.
+                let spec = member_chip_spec.clone();
+                row.on_drag(dragged, move |dragged: &DraggedMembers, _, window, cx| {
                     dragged.resolve(cx);
+                    crate::dragging::arm_extracting(
+                        &spec,
+                        dragged.archive.clone(),
+                        dragged.inside.clone(),
+                        dragged.roots(),
+                    );
+                    carry_drag(window, cx);
                     cx.new(|_| DragPreview {
                         label: member_drag_label.clone(),
                     })
