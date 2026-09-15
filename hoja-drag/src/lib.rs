@@ -25,7 +25,7 @@
 
 use std::ffi::c_void;
 use std::io::Write;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use wayland_backend::sys::client::{Backend, ObjectId};
@@ -88,8 +88,10 @@ pub struct DragSource {
     origin: WlSurface,
     /// The serial of the most recent left-button press our pointer saw.
     serial: Arc<AtomicU32>,
-    payload: Arc<Mutex<Vec<u8>>>,
-    events: Mutex<mpsc::Receiver<DragEvent>>,
+    /// Counts drags. Every event names the drag it belongs to, so one that
+    /// arrives late cannot be taken for news about the drag after it.
+    generation: AtomicU64,
+    events: Mutex<mpsc::Receiver<(u64, DragEvent)>>,
     /// Held so the icon outlives `start_drag`; replaced on the next drag.
     live: Mutex<Option<Live>>,
 }
@@ -99,6 +101,12 @@ struct Live {
     icon: WlSurface,
     buffer: WlBuffer,
     pool: WlShmPool,
+}
+
+/// What a data source carries with it, so its handler needs no shared state.
+struct SourceData {
+    generation: u64,
+    payload: Vec<u8>,
 }
 
 impl DragSource {
@@ -126,10 +134,8 @@ impl DragSource {
 
         let (tx, rx) = mpsc::channel();
         let serial = Arc::new(AtomicU32::new(0));
-        let payload = Arc::new(Mutex::new(Vec::new()));
         let mut inner = Inner {
             serial: serial.clone(),
-            payload: payload.clone(),
             events: Some(tx),
             ..Default::default()
         };
@@ -169,7 +175,7 @@ impl DragSource {
             manager,
             origin,
             serial,
-            payload,
+            generation: AtomicU64::new(0),
             events: Mutex::new(rx),
             live: Mutex::new(None),
         })
@@ -190,13 +196,24 @@ impl DragSource {
             list.push_str(uri);
             list.push_str("\r\n");
         }
-        *self.payload.lock().unwrap() = list.into_bytes();
+
+        // Whatever the last drag left behind is over: a new press has begun a
+        // new gesture. Its source may still owe a `Finished`, which will now
+        // arrive under the old generation and be ignored.
+        self.retire();
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
 
         let Some((pool, buffer)) = self.buffer(&chip) else {
             return false;
         };
         let icon = self.compositor.create_surface(&self.qh, ());
-        let source = self.manager.create_data_source(&self.qh, ());
+        let source = self.manager.create_data_source(
+            &self.qh,
+            SourceData {
+                generation,
+                payload: list.into_bytes(),
+            },
+        );
         for mime in MIMES {
             source.offer((*mime).into());
         }
@@ -236,11 +253,23 @@ impl DragSource {
     /// Any event means the gesture is over, so the caller should clear whatever
     /// drag state it holds of its own.
     pub fn poll(&self) -> Option<DragEvent> {
-        let event = self.events.lock().unwrap().try_recv().ok()?;
-        if matches!(event, DragEvent::Finished | DragEvent::Cancelled) {
-            self.retire();
+        let current = self.generation.load(Ordering::Relaxed);
+        let events = self.events.lock().unwrap();
+        loop {
+            let (generation, event) = events.try_recv().ok()?;
+            if generation != current {
+                // A drop yields `Performed` and then `Finished`, and a caller
+                // that stops listening at the first leaves the second behind.
+                // Read at the start of the next drag it would tear that one
+                // down, which is what made every other drag fail.
+                continue;
+            }
+            if matches!(event, DragEvent::Finished | DragEvent::Cancelled) {
+                drop(events);
+                self.retire();
+            }
+            return Some(event);
         }
-        Some(event)
     }
 
     /// Tear down the icon and source once the compositor is done with them.
@@ -308,14 +337,13 @@ struct Inner {
     seat_global: Option<(u32, u32)>,
     pointer: Option<WlPointer>,
     serial: Arc<AtomicU32>,
-    payload: Arc<Mutex<Vec<u8>>>,
-    events: Option<mpsc::Sender<DragEvent>>,
+    events: Option<mpsc::Sender<(u64, DragEvent)>>,
 }
 
 impl Inner {
-    fn emit(&self, event: DragEvent) {
+    fn emit(&self, generation: u64, event: DragEvent) {
         if let Some(tx) = &self.events {
-            let _ = tx.send(event);
+            let _ = tx.send((generation, event));
         }
     }
 }
@@ -394,26 +422,29 @@ impl Dispatch<WlPointer, ()> for Inner {
     }
 }
 
-impl Dispatch<WlDataSource, ()> for Inner {
+impl Dispatch<WlDataSource, SourceData> for Inner {
     fn event(
         state: &mut Self,
         _: &WlDataSource,
         event: wl_data_source::Event,
-        _: &(),
+        data: &SourceData,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         match event {
             // The target is reading. Hand it the list and close, or it waits
-            // forever on a pipe nobody is writing to.
+            // forever on a pipe nobody is writing to. The list travels with the
+            // source, so a target still reading an old drag gets that drag's
+            // files and not the next one's.
             wl_data_source::Event::Send { fd, .. } => {
-                let bytes = state.payload.lock().unwrap().clone();
                 let mut file = std::fs::File::from(fd);
-                let _ = file.write_all(&bytes);
+                let _ = file.write_all(&data.payload);
             }
-            wl_data_source::Event::DndDropPerformed => state.emit(DragEvent::Performed),
-            wl_data_source::Event::DndFinished => state.emit(DragEvent::Finished),
-            wl_data_source::Event::Cancelled => state.emit(DragEvent::Cancelled),
+            wl_data_source::Event::DndDropPerformed => {
+                state.emit(data.generation, DragEvent::Performed)
+            }
+            wl_data_source::Event::DndFinished => state.emit(data.generation, DragEvent::Finished),
+            wl_data_source::Event::Cancelled => state.emit(data.generation, DragEvent::Cancelled),
             _ => {}
         }
     }
