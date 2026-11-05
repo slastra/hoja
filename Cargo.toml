@@ -37,8 +37,8 @@ description = "A GPU-accelerated file manager with splittable panes"
 # without it `current_platform()` compiles fine and then hits an `unreachable!()`
 # at startup. `font-kit` alone is a macOS-only no-op on Linux.
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23", features = [
+gpui = { git = "https://github.com/zed-industries/zed", rev = "c7bea343838f42b4c14151393e41f0bbe033c95e" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "c7bea343838f42b4c14151393e41f0bbe033c95e", features = [
     "wayland",
     "x11",
 ] }
@@ -46,10 +46,10 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392
 # GPL-3.0-or-later, which is why this crate is too. `theme` became genuinely
 # standalone in Mar 2026 (its settings dependency was inverted behind a
 # `ThemeSettingsProvider` trait we simply never register).
-theme = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
-file_icons = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
-theme_settings = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
-fuzzy_nucleo = { git = "https://github.com/zed-industries/zed", rev = "5e1fd392f67e27fa1da91bad43eef7db1a5dec23" }
+theme = { git = "https://github.com/zed-industries/zed", rev = "c7bea343838f42b4c14151393e41f0bbe033c95e" }
+file_icons = { git = "https://github.com/zed-industries/zed", rev = "c7bea343838f42b4c14151393e41f0bbe033c95e" }
+theme_settings = { git = "https://github.com/zed-industries/zed", rev = "c7bea343838f42b4c14151393e41f0bbe033c95e" }
+fuzzy_nucleo = { git = "https://github.com/zed-industries/zed", rev = "c7bea343838f42b4c14151393e41f0bbe033c95e" }
 
 hoja-transfer = { path = "hoja-transfer" }
 # Owns the outbound Wayland drag so the chip that leaves the window is ours.
@@ -59,7 +59,12 @@ hoja-drag = { path = "hoja-drag" }
 raw-window-handle = "0.6"
 
 anyhow = "1"
-rust-embed = "8"
+# Held below 8.12 for zed's sake, not ours. From 8.12, with the `compression`
+# feature that zed turns on, `RustEmbed` has a required `compressed` method,
+# and zed's hand-written `fs_embed!` impl in `util` does not provide it, so
+# `settings` stops compiling. zed's own lockfile is at 8.11.0. Lift the cap
+# when a bump of the zed crates compiles against a newer one.
+rust-embed = ">=8.11, <8.12"
 # Lenient JSON: hand-edited themes routinely carry comments and trailing commas.
 # Already in the tree through the Zed crates; declared so the settings types
 # can derive rather than being parsed by hand.
@@ -104,6 +109,15 @@ smallvec = "1"
 xdg-mime = "0.4"
 freedesktop-desktop-entry = { version = "0.8", default-features = false }
 unicode-segmentation = "1"
+
+# Mirrors one line of zed's own `[patch.crates-io]`, which a dependency's
+# patches do not reach. Since mid-2026 zed takes tree-sitter from git, and the
+# grammar crates that `settings` pulls in (through `migrator`) ask crates.io
+# for `tree-sitter-language`. Both declare `links = "tree-sitter-language"`, so
+# without this the graph cannot resolve at all. Keep the rev in step with
+# zed's when bumping.
+[patch.crates-io]
+tree-sitter-language = { git = "https://github.com/tree-sitter/tree-sitter", rev = "803c6ebaac27d69e1808b45058482e868d073ceb" }
 
 [dev-dependencies]
 # Real zip files for the archive tests, written to a temporary path. Already in

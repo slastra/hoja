@@ -311,7 +311,11 @@ fn available_commands(origin: &FocusHandle, window: &mut Window, cx: &mut App) -
                     binding
                         .keystrokes()
                         .iter()
-                        .map(|keystroke| keystroke.to_string())
+                        // As gpui itself labels a key for people, which is what
+                        // `Display` did before it took the OS as an argument.
+                        .map(|keystroke| {
+                            keystroke.display(gpui::OperatingSystem::Linux).to_string()
+                        })
                         .collect()
                 })
                 .unwrap_or_default();

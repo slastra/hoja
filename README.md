@@ -144,7 +144,7 @@ It builds from the current `main`, since there are no releases yet.
 
 ### From source
 
-1. Install Rust 1.95 or later. The Zed source sets this minimum.
+1. Install Rust 1.98 or later. The Zed source sets this minimum.
 2. On Arch Linux, install these packages:
    `clang cmake pkgconf fontconfig freetype2 wayland wayland-protocols
    libxkbcommon libxkbcommon-x11 vulkan-icd-loader alsa-lib openssl zstd`
