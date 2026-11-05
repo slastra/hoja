@@ -18,7 +18,7 @@ use theme::ActiveTheme;
 use crate::file_menu::{FileMenu, MenuItem};
 use crate::fs::{self, DirEntry, Sort, SortDir, SortKey, ViewSettings};
 use crate::git::GitStatus;
-use crate::history::History;
+use crate::history::{History, Place};
 use crate::icon::Icon;
 use crate::location::Location;
 use crate::path_editor::{PathEditor, PathEditorEvent};
@@ -1234,6 +1234,9 @@ pub struct DirPane {
     /// Paths, not names: a search listing holds entries from many directories,
     /// where a name identifies nothing.
     pending_select: Vec<PathBuf>,
+    /// Where to stand in the next listing, when Back or Forward returns to
+    /// one that was left. Consumed by `restore_selection`.
+    pending_place: Option<Place>,
     /// Bumped whenever the rows themselves are replaced. Separate from
     /// `selection_moved` because the walk belongs to the listing: moving the
     /// selection must not restart it, and a re-listing must.
@@ -1300,6 +1303,7 @@ impl DirPane {
             search: None,
             renaming: None,
             pending_select: Vec::new(),
+            pending_place: None,
             listing_moved: 0,
             directory_read: 0,
             footer: Footer::default(),
@@ -1377,6 +1381,7 @@ impl DirPane {
                 .collect(),
             searching: self.searching(),
             search_field: matches!(self.path_editor, Some((BarMode::Search, _))),
+            top_row: self.top_row(),
             reading: self.reading_bytes.is_some(),
             error: self.error.clone(),
             menu_open: self.context_menu.is_some(),
@@ -2762,15 +2767,29 @@ impl DirPane {
     }
 
     fn restore_selection(&mut self) {
+        let place = self.pending_place.take();
+        let mut wanted = std::mem::take(&mut self.pending_select);
+        if wanted.is_empty()
+            && let Some(place) = &place
+        {
+            wanted = place.selected.clone();
+        }
         // A set, not the Vec: this runs once per entry, so a linear scan makes
         // restoring a large selection quadratic: measured at 11 seconds for
         // 100k rows selected, on the foreground executor.
-        let wanted: std::collections::HashSet<PathBuf> = std::mem::take(&mut self.pending_select)
-            .into_iter()
-            .collect();
+        let wanted: std::collections::HashSet<PathBuf> = wanted.into_iter().collect();
         self.selected.clear();
         self.anchor_ix = None;
         self.cursor_ix = None;
+        if let Some(place) = place {
+            for (ix, entry) in self.entries.iter().enumerate() {
+                if wanted.contains(entry.key()) {
+                    self.selected.insert(ix);
+                }
+            }
+            self.return_to(&place);
+            return;
+        }
         if wanted.is_empty() {
             self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
             return;
@@ -2903,8 +2922,70 @@ impl DirPane {
         if dir == self.dir {
             return;
         }
-        self.history.push(dir.clone());
+        let leaving = self.current_place();
+        self.history.push(dir.clone(), leaving);
         self.load_dir_only(dir, cx);
+    }
+
+    /// Where this listing is being left from, for Back to return to.
+    fn current_place(&self) -> Place {
+        let key = |ix: usize| self.entries.get(ix).map(|e| e.key().to_path_buf());
+        Place {
+            cursor: self.cursor_ix.and_then(key),
+            selected: self.selected_keys(),
+            top: key(self.top_row()),
+        }
+    }
+
+    /// The first row in view. From the scroll offset and the fixed row
+    /// height: gpui's own `logical_scroll_top_index` exists only in its test
+    /// builds.
+    fn top_row(&self) -> usize {
+        let offset = self.scroll.0.borrow().base_handle.offset();
+        (-offset.y / px(ROW_HEIGHT)).max(0.) as usize
+    }
+
+    /// Stand where `place` says, in the listing that has just landed: the
+    /// cursor on the row it was on, and the same row at the top, which is
+    /// what a browser does with a page's scroll position on Back.
+    ///
+    /// The top row is put back only while the cursor stays in view under it.
+    /// A pane resized while it was away could otherwise restore a scroll that
+    /// hides the very row the cursor is on, so then the cursor wins.
+    fn return_to(&mut self, place: &Place) {
+        let find = |key: &Path| self.entries.iter().position(|e| e.key() == key);
+        let cursor = place
+            .cursor
+            .as_deref()
+            .and_then(find)
+            .or_else(|| self.selected.first());
+        let top = place.top.as_deref().and_then(find);
+        self.anchor_ix = cursor;
+        self.cursor_ix = cursor;
+        let in_view = |top: usize, row: usize| row >= top && row < top + self.visible_rows();
+        match (top, cursor) {
+            (Some(top), Some(row)) if in_view(top, row) => self
+                .scroll
+                .scroll_to_item_strict(top, gpui::ScrollStrategy::Top),
+            (Some(top), None) => self
+                .scroll
+                .scroll_to_item_strict(top, gpui::ScrollStrategy::Top),
+            (_, Some(row)) => self
+                .scroll
+                .scroll_to_item(row, gpui::ScrollStrategy::Nearest),
+            (None, None) => self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top),
+        }
+    }
+
+    /// Whole rows the viewport holds, from the last layout. Measured against
+    /// the fixed row height rather than the list's contents, which still
+    /// describe the listing that was there before this one.
+    fn visible_rows(&self) -> usize {
+        match self.scroll.0.borrow().last_item_size {
+            Some(size) => (size.item.height / px(ROW_HEIGHT)) as usize,
+            // No layout yet, so nothing to say the cursor would be hidden.
+            None => usize::MAX / 2,
+        }
     }
 
     /// Change directory without touching history, the back/forward path.
@@ -2915,13 +2996,19 @@ impl DirPane {
     }
 
     fn nav_back(&mut self, _: &NavBack, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(dir) = self.history.back().cloned() {
+        let leaving = self.current_place();
+        if let Some((dir, place)) = self.history.back(leaving) {
+            let dir = dir.clone();
+            self.pending_place = place.cloned();
             self.load_dir_only(dir, cx);
         }
     }
 
     fn nav_forward(&mut self, _: &NavForward, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(dir) = self.history.forward().cloned() {
+        let leaving = self.current_place();
+        if let Some((dir, place)) = self.history.forward(leaving) {
+            let dir = dir.clone();
+            self.pending_place = place.cloned();
             self.load_dir_only(dir, cx);
         }
     }

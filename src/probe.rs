@@ -59,6 +59,8 @@ pub struct PaneProbe {
     pub columns: Vec<String>,
     pub selected: Vec<usize>,
     pub cursor: Option<usize>,
+    /// The first row in view, which is what Back restores.
+    pub top_row: usize,
     pub footer: String,
     /// Rows whose folder size the walk has not finished, by index.
     pub counting: Vec<usize>,
