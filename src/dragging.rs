@@ -445,8 +445,18 @@ mod tests {
                 border: gpui::white(),
             };
             let chip = rasterise(&spec).expect("the chip renders");
-            assert_eq!(chip.width % chip.scale, 0, "{len} chars: width {}", chip.width);
-            assert_eq!(chip.height % chip.scale, 0, "{len} chars: height {}", chip.height);
+            assert_eq!(
+                chip.width % chip.scale,
+                0,
+                "{len} chars: width {}",
+                chip.width
+            );
+            assert_eq!(
+                chip.height % chip.scale,
+                0,
+                "{len} chars: height {}",
+                chip.height
+            );
         }
     }
 
