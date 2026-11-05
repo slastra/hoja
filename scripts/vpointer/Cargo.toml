@@ -1,0 +1,16 @@
+[package]
+name = "vpointer"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Press, move and release a virtual pointer, for driving a drag in the test compositor"
+publish = false
+
+# Not a member of hoja's workspace: a test tool, built on first use by
+# `scripts/sway-harness.sh`. The empty table stops cargo looking upward for
+# one and finding hoja's.
+[workspace]
+
+[dependencies]
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }

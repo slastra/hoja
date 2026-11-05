@@ -186,6 +186,32 @@ right() {
 # shellcheck disable=SC2317
 key()   { wtype "$@"; }
 
+# --- drag ----------------------------------------------------------------------
+# `wlrctl` can only click: its press and release are one call, so nothing it does
+# is a drag. `vpointer` speaks the same virtual-pointer protocol with the two
+# apart, and is built here on first use, into the ignored target directory.
+VPOINTER="$PWD/target/vpointer/release/vpointer"
+# shellcheck disable=SC2317
+vpointer_ready() {
+    [ -x "$VPOINTER" ] || cargo build --quiet --release \
+        --manifest-path scripts/vpointer/Cargo.toml --target-dir target/vpointer >&2
+}
+# shellcheck disable=SC2317
+# drag X1 Y1 X2 Y2: press at one point in hoja's window, move there with the
+# button held, release at the other.
+drag() {
+    vpointer_ready
+    "$VPOINTER" drag "$((WX + $1))" "$((WY + $2))" "$((WX + $3))" "$((WY + $4))" \
+        --extent "${W}x${H}"
+}
+# shellcheck disable=SC2317
+# drag_at X1 Y1 X2 Y2: the same in output coordinates, for a drag that starts
+# or ends in some other window.
+drag_at() {
+    vpointer_ready
+    "$VPOINTER" drag "$@" --extent "${W}x${H}"
+}
+
 # --- pointer -----------------------------------------------------------------
 # wlrctl's absolute positioning is a corner reset followed by a relative move,
 # which is why every one of these starts by slamming into the top-left.

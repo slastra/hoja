@@ -85,6 +85,20 @@ cursor, the selection and the first row in view are where they were.
 scripts/sway-harness.sh "$(scripts/tests/setup-history.sh)" scripts/tests/history.sh
 ```
 
+`drag-external.sh` needs `setup-drag-external.sh` and nemo. It starts nemo in
+the nested sway beside Hoja and drags a file out to it, a file in from it, and
+a member out of a zip. nemo gets a private D-Bus and a keyfile settings
+backend, so it does not touch the session that the test runs in.
+
+```sh
+scripts/sway-harness.sh "$(scripts/tests/setup-drag-external.sh)" scripts/tests/drag-external.sh
+```
+
+The harness drives a drag with `scripts/vpointer`, a small tool that presses,
+moves and releases a virtual pointer. `wlrctl` cannot do this: its press and
+release are one call. The harness builds the tool into `target/vpointer` the
+first time a script calls `drag` or `drag_at`.
+
 `crash-phase1.sh` and `crash-phase2.sh` are one test in two runs against one
 state directory. The harness kills the app when a script returns, which is the
 crash; `HOJA_TEST_KEEP_STATE=1` stops the second run wiping what the first
