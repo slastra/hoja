@@ -51,6 +51,7 @@ actions!(
         GoHome,
         EditPath,
         StartSearch,
+        FocusResults,
         RenameSelected,
         ToggleHiddenFiles,
         ToggleFoldersFirst,
@@ -1375,6 +1376,7 @@ impl DirPane {
                 .filter(|ix| self.counting_size(*ix))
                 .collect(),
             searching: self.searching(),
+            search_field: matches!(self.path_editor, Some((BarMode::Search, _))),
             reading: self.reading_bytes.is_some(),
             error: self.error.clone(),
             menu_open: self.context_menu.is_some(),
@@ -3582,6 +3584,22 @@ impl DirPane {
 
     /// Leave search mode from wherever: escape, the toolbar button, or the
     /// field being cancelled. Each used to clear a different subset.
+    /// Leave the search field for the results, and keep them.
+    ///
+    /// Enter opens the result it is on and Escape ends the search, so without
+    /// this the keyboard had no way to the results themselves: the arrows
+    /// move through them from inside the field, but copy, cut, delete and
+    /// rename are the listing's, and the field held the keyboard. This is what
+    /// a click on a result already does (see the `Blurred` arm in
+    /// `start_search`), without the click.
+    fn focus_results(&mut self, _: &FocusResults, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((BarMode::Search, _)) = &self.path_editor {
+            self.path_editor = None;
+            window.focus(&self.focus_handle, cx);
+            cx.notify();
+        }
+    }
+
     fn end_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((BarMode::Search, _)) = &self.path_editor {
             self.path_editor = None;
@@ -5018,6 +5036,7 @@ impl Render for DirPane {
                 cx.listener(|this, _: &CursorDown, _, cx| this.focus_cursor(Motion::Down, cx)),
             )
             .on_action(cx.listener(Self::toggle_selection))
+            .on_action(cx.listener(Self::focus_results))
             .on_mouse_down(
                 MouseButton::Navigate(gpui::NavigationDirection::Back),
                 cx.listener(|this, _: &MouseDownEvent, window, cx| {

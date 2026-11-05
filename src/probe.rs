@@ -63,6 +63,10 @@ pub struct PaneProbe {
     /// Rows whose folder size the walk has not finished, by index.
     pub counting: Vec<usize>,
     pub searching: bool,
+    /// Whether the search field is open and holds the keyboard. A search can
+    /// outlive its field, which is the point of Tab, so `searching` alone
+    /// cannot tell a test where the keys are going.
+    pub search_field: bool,
     /// Whether rows are still arriving.
     ///
     /// Without it a test cannot tell "still reading" from "that is all there

@@ -41,9 +41,9 @@ use assets::Assets;
 use command_palette as palette;
 use dir_pane::{
     ClearSelection, CursorDown, CursorUp, EditPath, ExtendDown, ExtendPageDown, ExtendPageUp,
-    ExtendToBottom, ExtendToTop, ExtendUp, GoHome, GoUp, MoveDown, MovePageDown, MovePageUp,
-    MoveToBottom, MoveToTop, MoveUp, NavBack, NavForward, OpenSelected, RenameSelected, SelectAll,
-    StartSearch, ToggleHiddenFiles, ToggleSelection,
+    ExtendToBottom, ExtendToTop, ExtendUp, FocusResults, GoHome, GoUp, MoveDown, MovePageDown,
+    MovePageUp, MoveToBottom, MoveToTop, MoveUp, NavBack, NavForward, OpenSelected, RenameSelected,
+    SelectAll, StartSearch, ToggleHiddenFiles, ToggleSelection,
 };
 use file_menu::{
     Cancel as MenuCancel, CloseSubmenu, Confirm as MenuConfirm, OpenSubmenu, SelectNext,
@@ -177,6 +177,9 @@ fn main() {
             // otherwise fire whatever it is bound to. The arrows type nothing,
             // so the mask costs more than it saves for them: the results are
             // right there and reaching them meant leaving the field first.
+            // Out of the field and onto the results, keeping them, so the
+            // keys that act on files reach the files. See `focus_results`.
+            KeyBinding::new("tab", FocusResults, Some("SearchBar")),
             KeyBinding::new("up", MoveUp, Some("SearchBar")),
             KeyBinding::new("down", MoveDown, Some("SearchBar")),
             // The rest of the movement keys, on the same reasoning: none of

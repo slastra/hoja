@@ -201,12 +201,14 @@ sleep 0.3
 key Mono
 wait_for 'p[0]["rows"] == ["sub/Mono.ttf"]'
 expect 'p[0]["rows"] == ["sub/Mono.ttf"]' "the nested hit is labelled from the directory searched"
-# Enter keeps the results and gives the listing back the keyboard. Without it
-# the arrow and the copy below go to the search field, where ctrl-c copies
-# text rather than files and the paste later does nothing at all.
-key -k Return
-key -k Down
-wait_for 'p[0]["cursor"] == 0'
+# The hit is already under the cursor, so Enter would open it; Tab instead
+# leaves the field for the results and keeps them. Without it the copy below
+# goes to the search field, where ctrl-c copies text rather than files, and the
+# paste later puts back whatever was on the clipboard before.
+key -k Tab
+wait_for 'not p[0]["search_field"]'
+expect 'p[0]["searching"] and p[0]["rows"] == ["sub/Mono.ttf"]' "tab keeps the results"
+expect 'p[0]["cursor"] == 0 and p[0]["selected"] == [0]' "with the hit still the one chosen"
 key -M ctrl -P c -m ctrl
 key -k Escape
 

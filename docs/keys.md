@@ -17,6 +17,7 @@ Every key and mouse binding. Keys work on the pane that has focus.
 | <kbd>Alt</kbd> + <kbd>Home</kbd> | Go to the home directory |
 | <kbd>Ctrl</kbd> + <kbd>L</kbd> | Edit the path |
 | <kbd>Ctrl</kbd> + <kbd>F</kbd> | Search this folder and everything below it |
+| <kbd>Tab</kbd> in the search field | Go to the results and keep them, so that copy, cut, delete and rename act on them |
 
 ## Select
 
