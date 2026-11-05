@@ -307,7 +307,13 @@ fn svg(spec: &ChipSpec) -> String {
         "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6"
     };
     let text_width = spec.label.chars().count() as f32 * FONT * 0.58;
-    let width = PAD + GLYPH + GAP + text_width + PAD;
+    // Whole pixels. The chip renders at a buffer scale of 2, and Wayland
+    // requires a buffer's size to be a multiple of its scale: a fractional
+    // width came out an odd number of device pixels about half the time, and
+    // a wlroots compositor answers that with a protocol error, which ends the
+    // whole connection and so the app. Hyprland does not check, which is why
+    // nothing had shown it.
+    let width = (PAD + GLYPH + GAP + text_width + PAD).ceil();
     format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{HEIGHT}" viewBox="0 0 {width} {HEIGHT}">
   <rect x="0.75" y="0.75" width="{inner_w}" height="{inner_h}" rx="{RADIUS}"
@@ -423,6 +429,25 @@ mod tests {
         let mut px = [200, 100, 51, 128];
         premultiply(&mut px);
         assert_eq!(px, [100, 50, 26, 128]);
+    }
+
+    #[test]
+    fn every_chip_fits_its_buffer_scale() {
+        // A buffer whose size is not a multiple of its scale is a protocol
+        // error on wlroots, fatal to the connection. The width follows the
+        // label, so every length up to a long name has to come out even.
+        for len in 1..=120 {
+            let spec = ChipSpec {
+                label: "n".repeat(len).into(),
+                folder: len % 2 == 0,
+                background: gpui::black(),
+                foreground: gpui::white(),
+                border: gpui::white(),
+            };
+            let chip = rasterise(&spec).expect("the chip renders");
+            assert_eq!(chip.width % chip.scale, 0, "{len} chars: width {}", chip.width);
+            assert_eq!(chip.height % chip.scale, 0, "{len} chars: height {}", chip.height);
+        }
     }
 
     #[test]

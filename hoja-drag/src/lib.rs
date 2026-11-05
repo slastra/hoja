@@ -308,7 +308,11 @@ impl DragSource {
         // Only now does the surface have the dnd_icon role, and only a commit
         // made after that maps it. Committing first compiles, runs, and shows
         // nothing at all.
-        if chip.scale > 1 {
+        // A buffer whose size is not a multiple of its scale is a protocol
+        // error, and a protocol error ends the connection: gpui's as well as
+        // ours, since they share it. A chip drawn at the wrong scale is a
+        // blemish, so that is the price paid instead.
+        if chip.scale > 1 && chip.width % chip.scale == 0 && chip.height % chip.scale == 0 {
             icon.set_buffer_scale(chip.scale);
         }
         icon.attach(Some(&buffer), chip.hotspot.0, chip.hotspot.1);
