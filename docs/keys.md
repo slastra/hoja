@@ -12,6 +12,7 @@ Every key and mouse binding. Keys work on the pane that has focus.
 | <kbd>Enter</kbd> | Open the selected entry. A folder or a `.zip` opens in the pane. |
 | Type a name | Jump to the first match. Repeat one letter to cycle the matches. |
 | <kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>Alt</kbd> + <kbd>→</kbd> | Go back and forward in the history |
+| <kbd>Back</kbd> / <kbd>Forward</kbd> | Go back and forward in the history. These are the dedicated keys that a browser also uses. |
 | <kbd>Alt</kbd> + <kbd>↑</kbd> / <kbd>Backspace</kbd> | Go to the parent directory |
 | <kbd>Alt</kbd> + <kbd>Home</kbd> | Go to the home directory |
 | <kbd>Ctrl</kbd> + <kbd>L</kbd> | Edit the path |

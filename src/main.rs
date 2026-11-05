@@ -143,6 +143,12 @@ fn main() {
         cx.bind_keys([
             KeyBinding::new("backspace", GoUp, Some("DirPane && !AddressBar")),
             KeyBinding::new("alt-up", GoUp, Some("DirPane && !AddressBar")),
+            // The dedicated Back and Forward keys (XF86Back, XF86Forward), as a
+            // browser takes them. Some keyboards have them, and keyd or a mouse
+            // tool can put them on a mouse button. They come before alt-left
+            // and alt-right because the palette shows the binding added last.
+            KeyBinding::new("back", NavBack, Some("DirPane && !AddressBar")),
+            KeyBinding::new("forward", NavForward, Some("DirPane && !AddressBar")),
             KeyBinding::new("alt-left", NavBack, Some("DirPane && !AddressBar")),
             KeyBinding::new("alt-right", NavForward, Some("DirPane && !AddressBar")),
             KeyBinding::new("alt-home", GoHome, Some("DirPane && !AddressBar")),
