@@ -80,10 +80,12 @@ pub fn copy_xattrs(src: &File, dest: &File) -> Result<(), String> {
         // Source fs has no xattrs: nothing to lose.
         Err(rustix::io::Errno::OPNOTSUPP) => return Ok(()),
         // A list too long for the stack buffer. Rare enough to pay for a second
-        // call: size zero asks how much room it needs.
+        // call that asks how much room it needs. This must be the `_query`
+        // function. Since rustix 1.1.6, `flistxattr` with an empty buffer
+        // returns 0 and not the size, and a 0 here copies no xattrs and gives
+        // no warning.
         Err(rustix::io::Errno::RANGE) => {
-            let empty: &mut [u8] = &mut [];
-            let needed = rustix::fs::flistxattr(src, empty)
+            let needed = rustix::fs::flistxattr_query(src)
                 .map_err(|err| format!("xattrs not read: {err}"))?;
             heap = vec![0u8; needed];
             let len = rustix::fs::flistxattr(src, &mut heap[..])

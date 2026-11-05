@@ -103,7 +103,10 @@ impl Format for Zip {
                     skipped += 1;
                     continue;
                 };
-                let Some(path) = tidy(file.name()) else {
+                // A name that does not decode is skipped like one `tidy`
+                // refuses. zip tries UTF-8 first whatever the flag says, then
+                // cp437, so this is rare.
+                let Some(path) = file.name().ok().and_then(|name| tidy(&name)) else {
                     skipped += 1;
                     continue;
                 };
@@ -351,8 +354,7 @@ mod tests {
             .tempfile()
             .expect("temp file");
         let mut writer = ::zip::ZipWriter::new(file.reopen().expect("reopen"));
-        let options: ::zip::write::FileOptions<'_, ()> =
-            ::zip::write::FileOptions::default().compression_method(method);
+        let options = ::zip::write::SimpleFileOptions::default().compression_method(method);
         for (name, body) in entries {
             if name.ends_with('/') {
                 writer.add_directory(*name, options).expect("add dir");

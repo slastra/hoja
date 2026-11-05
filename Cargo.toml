@@ -71,12 +71,10 @@ notify = "8"
 # 127 zip files on a real machine, 39616 were deflate, 10640 stored, and 7 zstd
 # in a test fixture inside a cargo registry. Deflate alone is the format.
 #
-# One crate more to compile. zip's only non-optional dependencies are crc32fast,
-# indexmap and memchr; those three and flate2 are all already in the tree through
-# the Zed crates, so `cargo tree -p zip` adds nothing under it. The lockfile also
-# gains `derive_arbitrary`, which is a resolution artefact of a feature on a
-# crate already in the graph and is not built for this target.
-zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
+# Two crates more to compile: zip and, since zip 9, `typed-path`. Its other
+# dependencies (crc32fast, flate2, getrandom, indexmap, libc, memchr, nix) are
+# already in the tree through the Zed crates.
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 # Browsing a tarball. One crate: `filetime`, `libc` and `xattr` are already here.
 tar = "0.4"
 # The four codecs a tarball comes wrapped in, all pure Rust and all measured
@@ -101,7 +99,7 @@ rayon = "1"
 # flock, for the state file's read-modify-write. Already in the graph at 1.x
 # through gpui's smol chain and hoja-transfer, so this is feature unification.
 rustix = { version = "1.1", features = ["fs"] }
-parking_lot = "0.12"
+parking_lot = "0.13"
 smallvec = "1"
 xdg-mime = "0.4"
 freedesktop-desktop-entry = { version = "0.8", default-features = false }
