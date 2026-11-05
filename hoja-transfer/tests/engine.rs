@@ -884,6 +884,155 @@ fn a_directory_cannot_be_moved_into_itself() {
     assert!(spawn_job(copy_spec(vec![tree], &sibling)).is_ok());
 }
 
+#[test]
+fn a_folder_cannot_be_copied_into_itself_through_a_symlink() {
+    // A pane that reached a folder through a symlink names it by the link, so
+    // comparing paths as written let this through. The walk then met its own
+    // output, recursed into it and overflowed the worker's stack, which
+    // aborts the process: the app, not only the job.
+    let root = ext4_dir();
+    let tree = root.path().join("proj");
+    std::fs::create_dir_all(tree.join("sub")).unwrap();
+    write_file(&tree, "f.txt", b"x");
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink(&tree, &link).unwrap();
+
+    match spawn_job(copy_spec(vec![tree.clone()], &link.join("sub"))) {
+        Ok(_) => panic!("a copy into its own subfolder must be refused"),
+        Err(err) => assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput),
+    }
+    assert_eq!(std::fs::read_dir(tree.join("sub")).unwrap().count(), 0);
+
+    // A symlink as the source is a link, copied and never walked, so it may
+    // land inside what it points at.
+    assert!(spawn_job(copy_spec(vec![link.clone()], &tree.join("sub"))).is_ok());
+}
+
+#[test]
+fn merging_leaves_the_existing_folder_as_it_was() {
+    // Copying a private folder into a shared one of the same name used to make
+    // the shared one private: the source's mode went onto every destination
+    // directory, made or merely merged into.
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let src = src_dir.path().join("shared");
+    std::fs::create_dir(&src).unwrap();
+    write_file(&src, "new.txt", b"x");
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let dest = dst_dir.path().join("shared");
+    std::fs::create_dir(&dest).unwrap();
+    std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o775)).unwrap();
+
+    let handle = spawn_job(copy_spec(vec![src], dst_dir.path())).unwrap();
+    let (_, summary) = drain(&handle, never_conflict);
+
+    assert_eq!(summary.outcome, Outcome::Completed);
+    assert!(dest.join("new.txt").exists());
+    let mode = std::fs::metadata(&dest).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o775, "the folder that was there keeps its mode");
+}
+
+#[test]
+fn a_move_that_skips_a_conflict_keeps_the_folder_quietly() {
+    // The skipped file is still in the source folder, so the folder stays.
+    // That is the user's choice, not a failure, and it used to be reported as
+    // "directory not empty".
+    let src_dir = ext4_dir();
+    let dst_dir = tmpfs_dir();
+    let tree = src_dir.path().join("tree");
+    std::fs::create_dir(&tree).unwrap();
+    write_file(&tree, "clash.txt", b"mine");
+    write_file(&tree, "fresh.txt", b"f");
+    std::fs::create_dir(dst_dir.path().join("tree")).unwrap();
+    write_file(&dst_dir.path().join("tree"), "clash.txt", b"theirs");
+
+    let handle = spawn_job(move_spec(vec![tree.clone()], dst_dir.path())).unwrap();
+    let (_, summary) = drain(&handle, || ConflictDecision::Apply {
+        choice: ConflictChoice::Skip,
+        apply_to_all: false,
+    });
+
+    assert_eq!(summary.outcome, Outcome::Completed, "{:?}", summary.errors);
+    assert_eq!(summary.files_skipped, 1);
+    assert_eq!(std::fs::read(tree.join("clash.txt")).unwrap(), b"mine");
+    assert!(!tree.join("fresh.txt").exists(), "the rest moved");
+}
+
+#[test]
+fn a_symlink_moved_on_one_filesystem_is_renamed() {
+    let root = ext4_dir();
+    let dest = ext4_dir();
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink("somewhere/else", &link).unwrap();
+
+    let handle = spawn_job(move_spec(vec![link.clone()], dest.path())).unwrap();
+    let (_, summary) = drain(&handle, never_conflict);
+
+    assert_eq!(summary.outcome, Outcome::Completed);
+    assert_eq!((summary.stats.renames, summary.stats.symlinks), (1, 0));
+    assert_eq!(
+        std::fs::read_link(dest.path().join("link")).unwrap(),
+        Path::new("somewhere/else")
+    );
+    assert!(link.symlink_metadata().is_err());
+}
+
+#[test]
+fn a_cross_filesystem_move_of_many_files_removes_every_source() {
+    // The sync-then-delete of waiting sources has to remove every one of
+    // them, and the folder they were in once it is empty.
+    let src_dir = tmpfs_dir();
+    let dst_dir = ext4_dir();
+    let tree = src_dir.path().join("many");
+    std::fs::create_dir(&tree).unwrap();
+    for i in 0..1500 {
+        write_file(&tree, &format!("f{i:04}"), b"x");
+    }
+
+    let handle = spawn_job(move_spec(vec![tree.clone()], dst_dir.path())).unwrap();
+    let (_, summary) = drain(&handle, never_conflict);
+
+    assert_eq!(summary.outcome, Outcome::Completed, "{:?}", summary.errors);
+    assert_eq!(summary.files_copied, 1500);
+    assert!(!tree.exists(), "the source folder went once it was empty");
+    assert_eq!(
+        std::fs::read_dir(dst_dir.path().join("many"))
+            .unwrap()
+            .count(),
+        1500
+    );
+}
+
+#[test]
+fn a_cancelled_cross_filesystem_move_leaves_nothing_in_both_places() {
+    // Sources wait for a sync before they go. Cancelling must still release
+    // the ones whose copies landed, or a cancelled move would leave two of
+    // every file it finished.
+    let src_dir = tmpfs_dir();
+    let dst_dir = ext4_dir();
+    let tree = many_files(src_dir.path(), 400);
+
+    let handle = spawn_job(move_spec(vec![tree.clone()], dst_dir.path())).unwrap();
+    use std::sync::atomic::Ordering;
+    let progress = handle.progress().clone();
+    wait_until(
+        || progress.files_done.load(Ordering::Relaxed) > 5,
+        "the move never started",
+    );
+    handle.cancel();
+    let (_, summary) = drain(&handle, never_conflict);
+    assert_eq!(summary.outcome, Outcome::Cancelled);
+
+    let moved = dst_dir.path().join("many");
+    for i in 0..400 {
+        let name = format!("f{i:04}.bin");
+        let here = tree.join(&name).exists();
+        let there = moved.join(&name).exists();
+        assert!(here != there, "{name}: in the source {here}, moved {there}");
+    }
+    no_partials_under(dst_dir.path());
+}
+
 // ---- Name limits ----------------------------------------------------------
 
 #[test]

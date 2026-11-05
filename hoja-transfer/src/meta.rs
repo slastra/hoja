@@ -43,18 +43,23 @@ pub fn apply_file_meta(src: &File, src_meta: &std::fs::Metadata, dest: &File) ->
     MetaOutcome { warnings }
 }
 
-fn apply_mtime(src_meta: &std::fs::Metadata, dest: &File, warnings: &mut Vec<String>) {
-    let times = Timestamps {
-        // Leave atime alone; copying should not pretend the file was read then.
+/// An mtime to set, with the atime left as it is: copying should not pretend
+/// the file was read at that moment.
+fn mtime_only(secs: i64, nanos: i64) -> Timestamps {
+    Timestamps {
         last_access: Timespec {
             tv_sec: 0,
             tv_nsec: UTIME_OMIT,
         },
         last_modification: Timespec {
-            tv_sec: src_meta.mtime(),
-            tv_nsec: src_meta.mtime_nsec(),
+            tv_sec: secs,
+            tv_nsec: nanos,
         },
-    };
+    }
+}
+
+fn apply_mtime(src_meta: &std::fs::Metadata, dest: &File, warnings: &mut Vec<String>) {
+    let times = mtime_only(src_meta.mtime(), src_meta.mtime_nsec());
     if let Err(err) = rustix::fs::futimens(dest, &times) {
         warnings.push(format!("mtime not preserved: {err}"));
     }
@@ -150,16 +155,7 @@ pub fn apply_dir_meta(src_meta: &std::fs::Metadata, dest: &Path) -> MetaOutcome 
         warnings.push(format!("dir mode not preserved: {err}"));
     }
 
-    let times = Timestamps {
-        last_access: Timespec {
-            tv_sec: 0,
-            tv_nsec: UTIME_OMIT,
-        },
-        last_modification: Timespec {
-            tv_sec: src_meta.mtime(),
-            tv_nsec: src_meta.mtime_nsec(),
-        },
-    };
+    let times = mtime_only(src_meta.mtime(), src_meta.mtime_nsec());
     if let Err(err) =
         rustix::fs::utimensat(rustix::fs::CWD, dest, &times, rustix::fs::AtFlags::empty())
     {
@@ -185,16 +181,7 @@ pub fn restore_dir_meta(dest: &Path, mode: Option<u32>, mtime: Option<(i64, i64)
     }
 
     if let Some((secs, nanos)) = mtime {
-        let times = Timestamps {
-            last_access: Timespec {
-                tv_sec: 0,
-                tv_nsec: UTIME_OMIT,
-            },
-            last_modification: Timespec {
-                tv_sec: secs,
-                tv_nsec: nanos,
-            },
-        };
+        let times = mtime_only(secs, nanos);
         if let Err(err) =
             rustix::fs::utimensat(rustix::fs::CWD, dest, &times, rustix::fs::AtFlags::empty())
         {

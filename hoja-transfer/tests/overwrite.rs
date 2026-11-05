@@ -348,3 +348,125 @@ fn replacing_a_symlink_where_no_trash_exists_still_replaces_it() {
         "the replacement the user asked for actually happened"
     );
 }
+
+/// Run `body` with no trash anywhere, the way a FAT stick or a mount owned by
+/// root has none: a data home that cannot be made into a directory.
+fn without_trash<T>(scratch: &std::path::Path, body: impl FnOnce() -> T) -> T {
+    let blocked = scratch.join("not-a-dir");
+    std::fs::write(&blocked, b"").unwrap();
+    let previous = std::env::var_os("XDG_DATA_HOME");
+    // Safe under the guard every test in this file takes.
+    unsafe { std::env::set_var("XDG_DATA_HOME", &blocked) };
+    let out = body();
+    match previous {
+        Some(value) => unsafe { std::env::set_var("XDG_DATA_HOME", value) },
+        None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
+    }
+    out
+}
+
+fn overwrite() -> ConflictDecision {
+    ConflictDecision::Apply {
+        choice: ConflictChoice::Overwrite,
+        apply_to_all: true,
+    }
+}
+
+#[test]
+fn a_move_into_the_folder_it_is_in_does_nothing() {
+    // Cut, then paste in the same folder. The "conflict" was the file with
+    // itself, and answering Overwrite moved the source out of the way: to the
+    // trash where there is one, and unlinked where there is not.
+    let _trash = trash_env();
+    let dir = ext4_dir();
+    let scratch = ext4_dir();
+    let file = write_file(dir.path(), "precious.txt", b"only copy");
+    let folder = dir.path().join("photos");
+    std::fs::create_dir(&folder).unwrap();
+    write_file(&folder, "a.jpg", b"a");
+
+    for with_trash in [true, false] {
+        let run = || {
+            let spec = JobSpec {
+                policy: JobPolicy {
+                    conflict: Some(ConflictChoice::Overwrite),
+                    abort_on_first_error: false,
+                },
+                ..move_spec(vec![file.clone(), folder.clone()], dir.path())
+            };
+            let handle = spawn_job(spec).unwrap();
+            drain(&handle, overwrite)
+        };
+        let (_, summary) = if with_trash {
+            run()
+        } else {
+            without_trash(scratch.path(), run)
+        };
+        assert_eq!(summary.outcome, Outcome::Completed, "{:?}", summary.errors);
+        assert_eq!(std::fs::read(&file).unwrap(), b"only copy");
+        assert_eq!(std::fs::read(folder.join("a.jpg")).unwrap(), b"a");
+        assert!(
+            summary.undone.is_empty(),
+            "nothing happened, so nothing to undo"
+        );
+    }
+}
+
+#[test]
+fn a_copy_into_the_folder_it_is_in_lands_beside_it() {
+    let _trash = trash_env();
+    let dir = ext4_dir();
+    let file = write_file(dir.path(), "notes.txt", b"n");
+    let folder = dir.path().join("photos");
+    std::fs::create_dir(&folder).unwrap();
+    write_file(&folder, "a.jpg", b"a");
+
+    let handle = spawn_job(copy_spec(vec![file.clone(), folder.clone()], dir.path())).unwrap();
+    let (events, summary) = drain(&handle, never_conflict);
+
+    assert_eq!(summary.outcome, Outcome::Completed, "{:?}", summary.errors);
+    assert_eq!(conflict_count(&events), 0, "not a conflict, so not asked");
+    assert_eq!(
+        std::fs::read(dir.path().join("notes (copy).txt")).unwrap(),
+        b"n"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("photos (copy)/a.jpg")).unwrap(),
+        b"a"
+    );
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        b"n",
+        "the original is untouched"
+    );
+}
+
+#[test]
+fn a_cross_filesystem_move_that_fails_leaves_what_it_would_replace() {
+    // The move's rename fails EXDEV and falls back to a copy. The file being
+    // replaced used to be cleared before the rename was even tried, so a copy
+    // that then failed had already destroyed it. Without a trash, for good.
+    use std::os::unix::fs::PermissionsExt;
+
+    let _trash = trash_env();
+    let src_dir = ext4_dir();
+    let dst_dir = tmpfs_dir();
+    let scratch = ext4_dir();
+    let src = write_file(src_dir.path(), "r.txt", b"new");
+    let dest = write_file(dst_dir.path(), "r.txt", b"old");
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let (_, summary) = without_trash(scratch.path(), || {
+        let handle = spawn_job(move_spec(vec![src.clone()], dst_dir.path())).unwrap();
+        drain(&handle, overwrite)
+    });
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert_eq!(summary.outcome, Outcome::CompletedWithErrors);
+    assert_eq!(
+        std::fs::read(&dest).unwrap(),
+        b"old",
+        "still there, unchanged"
+    );
+    assert_eq!(std::fs::read(&src).unwrap(), b"new", "and so is the source");
+}
