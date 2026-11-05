@@ -390,7 +390,7 @@ fn a_move_into_the_folder_it_is_in_does_nothing() {
             let spec = JobSpec {
                 policy: JobPolicy {
                     conflict: Some(ConflictChoice::Overwrite),
-                    abort_on_first_error: false,
+                    ..JobPolicy::default()
                 },
                 ..move_spec(vec![file.clone(), folder.clone()], dir.path())
             };

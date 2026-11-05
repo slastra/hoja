@@ -192,8 +192,15 @@ impl Interrupted {
     fn collect() -> Vec<Interrupted> {
         journal::abandoned()
             .into_iter()
-            .map(|(at, record)| {
+            .filter_map(|(at, record)| {
                 journal::reap(&record);
+                // Nothing left to finish, so nothing to offer. A record from
+                // an extraction that died before its move began names no
+                // sources at all; it was there only so this reap would run.
+                if record.remaining().is_none() {
+                    let _ = std::fs::remove_file(&at);
+                    return None;
+                }
                 let what = match record.sources.len() {
                     1 => record
                         .sources
@@ -212,11 +219,11 @@ impl Interrupted {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| record.dest.display().to_string());
-                Interrupted {
+                Some(Interrupted {
                     label: format!("{verb} {what} → {to} was interrupted"),
                     record,
                     at,
-                }
+                })
             })
             .collect()
     }
@@ -702,7 +709,19 @@ impl Workspace {
                 // app. A quit observer therefore runs when the workspace is
                 // already gone, and its callback, which needs `&mut self`,
                 // never fires at all. Measured: the toggle was still lost.
-                cx.on_release(|this, _| this.state.save_now(this.dirty)),
+                cx.on_release(|this, _| {
+                    this.state.save_now(this.dirty);
+                    // A job still running dies with the process, wherever it
+                    // is, so its record stays for the next start to reap and
+                    // offer to finish. See `journal::Entry::keep`.
+                    for job in &mut this.jobs {
+                        if job.done.is_none()
+                            && let Some(record) = job.record.take()
+                        {
+                            record.keep();
+                        }
+                    }
+                }),
             ],
         };
         workspace.watch_settings(cx);
@@ -1042,8 +1061,25 @@ impl Workspace {
         };
         self.set_notice(Some(Notice::Info(format!("Extracting {label}…"))), cx);
 
+        // A record for the extraction itself, held until the move that follows
+        // has one of its own. Without it a crash while extracting left the
+        // staging directory with nothing that knew it was there: it is hidden
+        // from every listing, so it stayed in the destination for good. With
+        // it, the next start reaps the directory, finds nothing to finish, and
+        // says nothing.
+        let extracting = journal::Entry::open(
+            &JobSpec {
+                op: Operation::Move,
+                sources: Vec::new(),
+                dest_dir: dest_dir.clone(),
+                policy: JobPolicy::default(),
+                staging: None,
+            },
+            std::time::SystemTime::now(),
+        );
         let cancel = crate::archive::Cancel::new();
         let task = cx.spawn_in(window, async move |this, cx| {
+            let _extracting = extracting;
             let out = temp.clone();
             let extracted = cx
                 .background_spawn(async move {

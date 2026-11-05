@@ -161,9 +161,9 @@ impl Record {
             sources,
             dest_dir: self.dest.clone(),
             // A resumed job's sources are wherever they always were. An
-            // extraction's scratch directory does not survive a crash, and
-            // `remaining` drops sources that are gone, so nothing here can
-            // still be staged.
+            // extraction's staging directory is a partial by name, so `reap`
+            // has removed it before anyone can ask for this, and `remaining`
+            // drops sources that are gone: nothing here can still be staged.
             staging: None,
             policy: hoja_transfer::JobPolicy {
                 // The answer the user gave the first time, not Skip.
@@ -177,6 +177,11 @@ impl Record {
                 // they were never asked, they are asked now.
                 conflict: self.conflict,
                 abort_on_first_error: false,
+                // What the dead run had finished is at the destination already,
+                // and a move had not yet removed its source: the engine deletes
+                // sources only once a sync has confirmed their copies. Without
+                // this every such file was a conflict with itself.
+                resume: true,
             },
         })
     }
@@ -256,6 +261,21 @@ impl Entry {
     }
 }
 
+impl Entry {
+    /// Leave the record in place for the next start, as a crash would.
+    ///
+    /// For a job still running when the window closes. Its worker dies with
+    /// the process, part-way through whatever it was doing, which can be the
+    /// sync before a move deletes its sources: so there may be files at both
+    /// ends, and a partial file nobody will finish. Removing the record, which
+    /// dropping it does, left both with nothing that knew about them. Kept,
+    /// the lock is released when the process exits, and the next start reaps
+    /// the partial files and offers to finish the job.
+    pub fn keep(self) {
+        std::mem::forget(self);
+    }
+}
+
 impl Drop for Entry {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
@@ -326,7 +346,16 @@ pub fn reap(record: &Record) -> usize {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
             if hoja_transfer::partial_token(&name) == Some(record.token) {
-                if std::fs::remove_file(&path).is_ok() {
+                // A directory with a partial's name is an extraction's staging
+                // directory, which `extract_into` names that way so listings
+                // hide it. `remove_file` cannot take one, and every crash
+                // during an extraction left one behind in the destination.
+                let gone = if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    std::fs::remove_dir_all(&path)
+                } else {
+                    std::fs::remove_file(&path)
+                };
+                if gone.is_ok() {
                     removed += 1;
                 }
                 continue;
@@ -421,6 +450,27 @@ mod tests {
     }
 
     #[test]
+    fn the_reaper_takes_an_extractions_staging_directory() {
+        let dir = std::env::temp_dir().join(format!("hoja-reap-stage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let staging = dir.join(".hoja-partial-extract.4242-feedbeef-7");
+        std::fs::create_dir_all(staging.join("ttf")).unwrap();
+        std::fs::write(staging.join("ttf/Mono.ttf"), b"x").unwrap();
+        std::fs::create_dir(dir.join(".hoja-partial-extract.9999-deadbeef-7")).unwrap();
+
+        assert_eq!(reap(&record(&dir)), 1);
+        assert!(
+            !staging.exists(),
+            "the staging directory went, contents and all"
+        );
+        assert!(
+            dir.join(".hoja-partial-extract.9999-deadbeef-7").exists(),
+            "another run's is not ours to remove"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn the_reaper_takes_only_its_own() {
         let dir = std::env::temp_dir().join(format!("hoja-reap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -474,6 +524,20 @@ mod lock_tests {
             policy: Default::default(),
             staging: None,
         }
+    }
+
+    #[test]
+    fn a_kept_record_outlives_its_entry_and_stays_locked() {
+        // What the window closing does to a job still running: the record has
+        // to be there for the next start, and still nobody else's until this
+        // process is gone and the lock with it.
+        let dir = scratch("journal-keep");
+        Entry::open_in(&dir, &spec(&dir), std::time::SystemTime::now())
+            .expect("a record was written")
+            .keep();
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "still there");
+        assert!(abandoned_in(&dir).is_empty(), "and still held by this run");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

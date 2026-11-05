@@ -1033,6 +1033,80 @@ fn a_cancelled_cross_filesystem_move_leaves_nothing_in_both_places() {
     no_partials_under(dst_dir.path());
 }
 
+/// What a move left behind when it died between landing its copies and
+/// removing their sources: both ends hold `a.txt`, and `b.txt` is not done.
+fn half_moved() -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
+    let src_dir = tmpfs_dir();
+    let dst_dir = ext4_dir();
+    let tree = src_dir.path().join("tree");
+    std::fs::create_dir(&tree).unwrap();
+    let a = write_file(&tree, "a.txt", b"landed");
+    write_file(&tree, "b.txt", b"not yet");
+    std::fs::create_dir(dst_dir.path().join("tree")).unwrap();
+    let copy = write_file(&dst_dir.path().join("tree"), "a.txt", b"landed");
+    // The engine sets a copy's mtime from its source, to the nanosecond.
+    let mtime = std::fs::metadata(&a).unwrap().modified().unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&copy)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    (src_dir, dst_dir, tree)
+}
+
+fn resumed(spec: JobSpec) -> JobSpec {
+    JobSpec {
+        policy: JobPolicy {
+            resume: true,
+            ..JobPolicy::default()
+        },
+        ..spec
+    }
+}
+
+#[test]
+fn a_resumed_move_finishes_what_the_dead_run_copied() {
+    // Without the resume rule, the dead run's own copy is a conflict with
+    // itself, and a user who was never asked about anything is asked about
+    // every file the dead run had finished.
+    let (_src, dst_dir, tree) = half_moved();
+    let handle = spawn_job(resumed(move_spec(vec![tree.clone()], dst_dir.path()))).unwrap();
+    let (events, summary) = drain(&handle, never_conflict);
+
+    assert_eq!(summary.outcome, Outcome::Completed, "{:?}", summary.errors);
+    assert_eq!(conflict_count(&events), 0);
+    assert!(!tree.exists(), "both sources are gone, and their folder");
+    let moved = dst_dir.path().join("tree");
+    assert_eq!(std::fs::read(moved.join("a.txt")).unwrap(), b"landed");
+    assert_eq!(std::fs::read(moved.join("b.txt")).unwrap(), b"not yet");
+}
+
+#[test]
+fn a_resumed_move_still_asks_about_a_file_that_differs() {
+    let (_src, dst_dir, tree) = half_moved();
+    // Somebody else's a.txt: same name, different contents.
+    std::fs::write(dst_dir.path().join("tree/a.txt"), b"theirs!").unwrap();
+
+    let handle = spawn_job(resumed(move_spec(vec![tree.clone()], dst_dir.path()))).unwrap();
+    let (events, summary) = drain(&handle, || ConflictDecision::Apply {
+        choice: ConflictChoice::Skip,
+        apply_to_all: false,
+    });
+
+    assert_eq!(conflict_count(&events), 1, "that one is a real conflict");
+    assert_eq!(summary.files_skipped, 1);
+    assert_eq!(
+        std::fs::read(tree.join("a.txt")).unwrap(),
+        b"landed",
+        "kept"
+    );
+    assert_eq!(
+        std::fs::read(dst_dir.path().join("tree/a.txt")).unwrap(),
+        b"theirs!"
+    );
+}
+
 // ---- Name limits ----------------------------------------------------------
 
 #[test]

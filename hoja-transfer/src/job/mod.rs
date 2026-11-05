@@ -73,6 +73,14 @@ pub struct JobPolicy {
     pub conflict: Option<ConflictChoice>,
     /// Default false: errors queue, the job continues.
     pub abort_on_first_error: bool,
+    /// Finishing a job that an earlier run did not live to finish.
+    ///
+    /// A file at the destination with the source's length and mtime, to the
+    /// nanosecond, is then that run's own copy rather than a conflict. The
+    /// mtime is one the engine set from the source, so nothing else matches
+    /// it by chance. A move finishes by releasing the source; a copy has
+    /// nothing left to do. A symlink matches on its target.
+    pub resume: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -345,7 +353,7 @@ pub fn spawn_undo(label: String, records: Vec<Undone>) -> std::io::Result<JobHan
         dest_dir: PathBuf::new(),
         policy: JobPolicy {
             conflict: Some(ConflictChoice::Skip),
-            abort_on_first_error: false,
+            ..JobPolicy::default()
         },
         staging: None,
     };
@@ -937,6 +945,9 @@ impl Worker {
         dest: &Path,
         src_meta: &std::fs::Metadata,
     ) -> Placed {
+        if self.spec.policy.resume && own_copy(src, src_meta, dest) {
+            return Placed::Done(self.already_there(src, dest, src_meta));
+        }
         let (mut planned, mut replacing) = match self.resolve_dest(src, dest) {
             DestPlan::Proceed { path, replacing } => (path, replacing),
             DestPlan::Skip => return Placed::Done(self.skipped()),
@@ -1010,6 +1021,31 @@ impl Worker {
                 .fetch_add(src_meta.len(), Ordering::Relaxed);
         }
         Placed::Done(Step::Ok)
+    }
+
+    /// Account for a file that an earlier run of this job already put at
+    /// `dest`. See `JobPolicy::resume`.
+    fn already_there(&mut self, src: &Path, dest: &Path, src_meta: &std::fs::Metadata) -> Step {
+        let len = if src_meta.is_file() {
+            src_meta.len()
+        } else {
+            0
+        };
+        self.progress.bytes_done.fetch_add(len, Ordering::Relaxed);
+        if self.spec.op != Operation::Move {
+            return self.skipped();
+        }
+        // Finished, not skipped: a skip means the source stays, and its folder
+        // would then be kept for it.
+        //
+        // Undo puts it back where it came from, the same as a file this run
+        // moved itself.
+        let from = self.origin(src, true);
+        self.record_created(dest, None, from);
+        self.release_source(src, dest, len);
+        self.files_copied += 1;
+        self.progress.files_done.fetch_add(1, Ordering::Relaxed);
+        Step::Ok
     }
 
     fn transfer_symlink(
@@ -1719,6 +1755,25 @@ impl Worker {
             }
         }
     }
+}
+
+/// Whether `dest` is an earlier run's copy of `src`. See `JobPolicy::resume`.
+fn own_copy(src: &Path, src_meta: &std::fs::Metadata, dest: &Path) -> bool {
+    let Ok(dest_meta) = std::fs::symlink_metadata(dest) else {
+        return false;
+    };
+    if src_meta.is_file() && dest_meta.is_file() {
+        return src_meta.len() == dest_meta.len()
+            && (src_meta.mtime(), src_meta.mtime_nsec())
+                == (dest_meta.mtime(), dest_meta.mtime_nsec());
+    }
+    if src_meta.file_type().is_symlink() && dest_meta.file_type().is_symlink() {
+        return matches!(
+            (std::fs::read_link(src), std::fs::read_link(dest)),
+            (Ok(a), Ok(b)) if a == b
+        );
+    }
+    false
 }
 
 enum DestPlan {
