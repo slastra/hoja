@@ -592,6 +592,11 @@ impl Render for DragPreview {
             .bg(colors.elevated_surface_background)
             .text_sm()
             .text_color(colors.text)
+            // The drag view is drawn at the window's root, outside the
+            // workspace's tree, so it does not inherit the family from there.
+            .when_some(crate::theming::ui_font(cx), |el, family| {
+                el.font_family(family)
+            })
             .child(self.label.clone())
     }
 }
@@ -4616,6 +4621,7 @@ impl DirPane {
             background: colors.elevated_surface_background,
             foreground: colors.text,
             border: colors.border_selected,
+            font: crate::theming::ui_font(cx),
         };
 
         // `dragged` and `dragged_member` are never both `Some` for one row,

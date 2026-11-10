@@ -83,6 +83,11 @@ pub fn state_file() -> Option<PathBuf> {
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub theme: Option<String>,
+    /// Interface text, by family name as `fc-list : family` prints it.
+    pub font: Option<String>,
+    /// Figures: sizes, dates, and the transfer strip. Should be monospaced,
+    /// since lining digits up is the whole of its job.
+    pub mono_font: Option<String>,
     pub view: ViewDefaults,
 }
 
@@ -544,6 +549,16 @@ mod tests {
             ViewSettings::default(),
             "and falls back to the default"
         );
+    }
+
+    #[test]
+    fn fonts_are_named_beside_the_theme() {
+        let settings: Settings = serde_json_lenient::from_str(
+            r#"{"theme": "Tint", "font": "Inter", "mono_font": "JetBrains Mono"}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.font.as_deref(), Some("Inter"));
+        assert_eq!(settings.mono_font.as_deref(), Some("JetBrains Mono"));
     }
 
     #[test]

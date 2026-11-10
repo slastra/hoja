@@ -29,6 +29,8 @@ pub struct ChipSpec {
     pub background: Hsla,
     pub foreground: Hsla,
     pub border: Hsla,
+    /// The `font` setting, tried ahead of the built-in list.
+    pub font: Option<SharedString>,
 }
 
 /// Geometry shared by both renderers, so the two boxes are the same size.
@@ -323,7 +325,7 @@ fn svg(spec: &ChipSpec) -> String {
      stroke-linecap="round" stroke-linejoin="round">
     <path d="{glyph}"/>
   </g>
-  <text x="{text_x}" y="{baseline}" font-family="Inter, DejaVu Sans, Liberation Sans, sans-serif"
+  <text x="{text_x}" y="{baseline}" font-family="{family}Inter, DejaVu Sans, Liberation Sans, sans-serif"
         font-size="{FONT}" fill="{fg}">{label}</text>
 </svg>"##,
         inner_w = width - 1.5,
@@ -338,6 +340,13 @@ fn svg(spec: &ChipSpec) -> String {
         border_a = Rgba::from(spec.border).a,
         fg = hex(spec.foreground),
         label = escape(&spec.label),
+        // Quoted, since a family name can hold spaces and CSS says to quote
+        // one that does. `escape` covers a quote inside the name.
+        family = spec
+            .font
+            .as_ref()
+            .map(|name| format!("'{}', ", escape(name)))
+            .unwrap_or_default(),
     )
 }
 
@@ -443,6 +452,7 @@ mod tests {
                 background: gpui::black(),
                 foreground: gpui::white(),
                 border: gpui::white(),
+                font: None,
             };
             let chip = rasterise(&spec).expect("the chip renders");
             assert_eq!(

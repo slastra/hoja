@@ -127,6 +127,7 @@ fn main() {
         {
             eprintln!("[hoja] theme {name:?} not available: {err}");
         }
+        theming::apply_fonts(settings.font.as_deref(), settings.mono_font.as_deref(), cx);
         // Armed unconditionally: it re-applies whatever theme is current, so it
         // is useful even when the default one is in force.
         theming::watch_user_themes(cx);

@@ -117,7 +117,8 @@ updates, and archive browsing that feels like working with ordinary folders.
   using Git's own status information so Hoja always matches the command
   line.
 - **Themes.** Hoja reads Zed theme files from `~/.config/hoja/themes/` and
-  reloads them automatically. Rosé Pine themes are included.
+  reloads them automatically. Rosé Pine themes are included. The interface
+  and number fonts are settings too.
 - **Icons.** File icons follow the Zed icon system and inherit colours from
   the active theme.
 - **Settings.** Configure Hoja with `~/.config/hoja/settings.json`. Hoja
@@ -173,6 +174,13 @@ allowed, and Hoja applies a change as soon as you save.
 {
   // A theme in ~/.config/hoja/themes/, or a bundled Rosé Pine variant.
   "theme": "Rosé Pine Moon",
+
+  // Font families, as `fc-list : family` names them. "font" is the interface;
+  // "mono_font" sets sizes, dates, and transfer figures, so keep it monospaced.
+  // Leave either out for the default. A name that isn't installed is reported
+  // and ignored.
+  "font": "Inter",
+  "mono_font": "JetBrains Mono",
 
   // What a new pane shows.
   "view": {

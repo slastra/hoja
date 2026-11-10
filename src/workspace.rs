@@ -2060,6 +2060,9 @@ impl Workspace {
         {
             eprintln!("[hoja] theme {name:?} not available: {err}");
         }
+        // Unlike the theme, an absent key here does mean the default: removing
+        // `"font"` from the file should put the default back.
+        crate::theming::apply_fonts(settings.font.as_deref(), settings.mono_font.as_deref(), cx);
 
         // The file was just written, so it is the newest answer and wins where
         // it has one. Where it has none, as in a file that only sets a theme,
@@ -2887,6 +2890,10 @@ impl Render for Workspace {
             .size_full()
             .flex()
             .flex_col()
+            // Everything below inherits it, popovers included.
+            .when_some(crate::theming::ui_font(cx), |el, family| {
+                el.font_family(family)
+            })
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::split_left))
             .on_action(cx.listener(Self::split_right))

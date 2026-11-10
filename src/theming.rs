@@ -170,6 +170,71 @@ pub fn watch_user_themes(cx: &mut App) {
     .detach();
 }
 
+/// The two families hoja draws text in, resolved against what is installed.
+///
+/// Held as a global rather than recomputed per call: `numeric_font` is asked
+/// once per visible row, and the installed list costs a fontconfig walk.
+#[derive(Default)]
+struct Fonts {
+    /// `None` leaves gpui's own default in force, which on Linux is
+    /// IBM Plex Sans (or whatever fontconfig substitutes for it).
+    ui: Option<gpui::SharedString>,
+    mono: Option<gpui::SharedString>,
+}
+
+impl gpui::Global for Fonts {}
+
+/// Monospaced families tried in order when `mono_font` is unset or missing.
+const MONO_PREFERRED: [&str; 8] = [
+    "DejaVu Sans Mono",
+    "Liberation Mono",
+    "Noto Sans Mono",
+    "JetBrains Mono",
+    "Source Code Pro",
+    "Fira Code",
+    "Hack",
+    "Ubuntu Mono",
+];
+
+/// Resolve the `font` and `mono_font` settings and make them current.
+///
+/// gpui matches a family name exactly and a miss loads nothing at all, not a
+/// fallback, so a name is checked against the installed families before it is
+/// used. A miss says so and leaves the default: a typo should not blank the
+/// window. Matching ignores case, since "inter" is plainly meant as "Inter".
+pub fn apply_fonts(ui: Option<&str>, mono: Option<&str>, cx: &mut App) {
+    let installed = cx.text_system().all_font_names();
+    let find = |name: &str| {
+        installed
+            .iter()
+            .find(|have| have.eq_ignore_ascii_case(name))
+            .map(|have| gpui::SharedString::from(have.clone()))
+    };
+    let pick = |setting: &str, name: Option<&str>| {
+        let name = name?;
+        let found = find(name);
+        if found.is_none() {
+            eprintln!("[hoja] {setting} {name:?} is not installed; using the default");
+        }
+        found
+    };
+
+    let fonts = Fonts {
+        ui: pick("font", ui),
+        mono: pick("mono_font", mono).or_else(|| MONO_PREFERRED.iter().find_map(|name| find(name))),
+    };
+    cx.set_global(fonts);
+    cx.refresh_windows();
+}
+
+/// The family for interface text, or `None` for gpui's default.
+///
+/// Applied at the root of the window, so everything inherits it; only what
+/// draws outside that tree (the drag chip) asks for it directly.
+pub fn ui_font(cx: &App) -> Option<gpui::SharedString> {
+    cx.try_global::<Fonts>()?.ui.clone()
+}
+
 /// A monospaced family the system actually has, or `None` to leave numbers in
 /// the UI font with tabular figures.
 ///
@@ -178,29 +243,9 @@ pub fn watch_user_themes(cx: &mut App) {
 /// size in the footer below it are then the same shape, and a column of them
 /// lines up digit under digit.
 ///
-/// gpui matches a family name exactly and a miss loads nothing at all, so the
-/// name cannot simply be asserted: generic aliases like "monospace" are a
-/// fontconfig idea that never reaches the font database. The list is checked
-/// against what is installed and the first hit wins.
+/// `mono_font` in settings wins when it is installed; otherwise the first of
+/// `MONO_PREFERRED` that is. Generic aliases like "monospace" are a fontconfig
+/// idea that never reaches the font database, so there is no shortcut there.
 pub fn numeric_font(cx: &App) -> Option<gpui::SharedString> {
-    static CHOSEN: std::sync::OnceLock<Option<gpui::SharedString>> = std::sync::OnceLock::new();
-    CHOSEN
-        .get_or_init(|| {
-            const PREFERRED: [&str; 8] = [
-                "DejaVu Sans Mono",
-                "Liberation Mono",
-                "Noto Sans Mono",
-                "JetBrains Mono",
-                "Source Code Pro",
-                "Fira Code",
-                "Hack",
-                "Ubuntu Mono",
-            ];
-            let installed = cx.text_system().all_font_names();
-            PREFERRED
-                .iter()
-                .find(|name| installed.iter().any(|have| have == *name))
-                .map(|name| gpui::SharedString::from(*name))
-        })
-        .clone()
+    cx.try_global::<Fonts>()?.mono.clone()
 }
