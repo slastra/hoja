@@ -41,11 +41,9 @@ impl Icon {
 
         Self {
             source,
-            // The size a row gives an icon. Lucide draws on a 24 grid, so the
-            // chrome icons are scaled down to it: an effective 1.33 stroke
-            // against the 1.2 of Zed's file-type icons, which are drawn at 16
-            // and land on whole pixels. Slightly heavier, and the price of the
-            // chrome being one set rather than two.
+            // The size a row gives an icon. Every icon hoja draws is on Zed's
+            // 16 grid with a 1.2 stroke, the interface's and the file types'
+            // alike, so at 16 they land on whole pixels and weigh the same.
             size: px(16.),
             color,
         }

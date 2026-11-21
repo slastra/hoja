@@ -13,16 +13,20 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 What is what
 ------------
 
-The icons hoja's own interface uses are Lucide, taken from lucide-static
-1.26.0 and covered by the ISC licence above:
+The icons hoja's own interface uses are Zed's interface icons, which are
+Lucide's redrawn on a 16 pixel grid with a 1.2 stroke, and are covered by
+the ISC licence above. Copied unmodified from Zed's assets/icons:
 
-  arrow_left, arrow_right, arrow_up, check, chevron_down, chevron_up,
-  house, layout_grid, layout_list, magnifying_glass (Lucide's `search`),
-  menu, pause, play, warning (Lucide's `triangle-alert`)
+  arrow_left, arrow_right, arrow_up, check, chevron_down, chevron_right,
+  chevron_up, magnifying_glass, menu, warning, pause (Zed's
+  `debug_pause`), play (Zed's `play_outlined`)
 
-Two are renamed to the name hoja refers to them by, and the two layout
-icons spell Lucide's hyphen as an underscore, as the others do; the file contents are
-unmodified.
+Zed has no icon for home, for a list or for a grid. These three are
+Lucide's `house`, `layout-list` and `layout-grid`, from lucide-static
+1.26.0, scaled onto the same 16 pixel grid with the same 1.2 stroke, so they
+match the rest:
+
+  house, layout_list, layout_grid
 
 Everything else here is Zed's file-type icon set, reached through the
 `file_icons` crate rather than by name. Those are 16x16 and drawn on their
