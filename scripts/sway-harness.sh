@@ -126,12 +126,16 @@ rm -f "$HOJA_PROBE"
 # lives there, and the trash a delete moves files into is
 # `$XDG_DATA_HOME/Trash`, so without this a run would put the developer's own
 # files and a test's alike into one bin.
+#
+# The cache too: hover previews write into `$XDG_CACHE_HOME/thumbnails`, which
+# every file manager on the desktop shares.
 export XDG_STATE_HOME="$OUT/state" XDG_CONFIG_HOME="$OUT/config" XDG_DATA_HOME="$OUT/data"
+export XDG_CACHE_HOME="$OUT/cache"
 # HOJA_TEST_KEEP_STATE keeps whatever the last run left, which is how a test
 # gets to be a crash and a restart: run once against an out-dir and let the
 # harness kill the app, then run again against the same one.
 if [ -z "${HOJA_TEST_KEEP_STATE:-}" ]; then
-    rm -rf "$XDG_STATE_HOME" "$XDG_DATA_HOME"
+    rm -rf "$XDG_STATE_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
 fi
 rm -rf "$XDG_CONFIG_HOME"
 mkdir -p "$XDG_CONFIG_HOME/hoja" "$XDG_DATA_HOME"
@@ -223,6 +227,22 @@ at() {
     wlrctl pointer move -100000 -100000 >/dev/null 2>&1
     wlrctl pointer move "$((WX + $1))" "$((WY + $2))" >/dev/null 2>&1
     wlrctl pointer click left >/dev/null 2>&1
+}
+# shellcheck disable=SC2317
+# hover N: rest the pointer on listing row N, with no click. Parked in the
+# corner first, so a row the pointer already sits on is entered again.
+#
+# Then one more pixel, after a pause. gpui starts a tooltip's timer from a
+# motion event over the row, and the one motion that ends a jump across the
+# window sometimes starts nothing: about one hover in five showed no tooltip
+# until the pointer moved again. A hand on a mouse never sends one motion
+# alone, so the second one is what a person does anyway.
+hover() {
+    wlrctl pointer move 100000 100000 >/dev/null 2>&1
+    wlrctl pointer move -100000 -100000 >/dev/null 2>&1
+    wlrctl pointer move "$((WX + 150))" "$(row "$1")" >/dev/null 2>&1
+    sleep 0.1
+    wlrctl pointer move 1 0 >/dev/null 2>&1
 }
 # shellcheck disable=SC2317
 # dbl N: double-click listing row N. One move, two clicks: a reset between them

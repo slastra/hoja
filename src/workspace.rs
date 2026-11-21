@@ -2063,6 +2063,7 @@ impl Workspace {
         // Unlike the theme, an absent key here does mean the default: removing
         // `"font"` from the file should put the default back.
         crate::theming::apply_fonts(settings.font.as_deref(), settings.mono_font.as_deref(), cx);
+        crate::preview::set_enabled(settings.previews, cx);
 
         // The file was just written, so it is the newest answer and wins where
         // it has one. Where it has none, as in a file that only sets a theme,
@@ -2242,6 +2243,7 @@ impl Workspace {
             .or(self.open_prompt.is_some().then_some("open-prompt"));
         let notice = self.notice.as_ref().map(|n| n.text().to_string());
         window.on_next_frame(move |_, cx| {
+            let preview = crate::preview::probe(cx);
             // One reading for every pane, so two cannot disagree about how long
             // ago a file was written.
             let now = std::time::SystemTime::now();
@@ -2255,6 +2257,7 @@ impl Workspace {
                 notice,
                 interrupted,
                 undo_depth,
+                preview,
                 revision: 0, // `write` owns this
             });
         });

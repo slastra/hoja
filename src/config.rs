@@ -88,6 +88,9 @@ pub struct Settings {
     /// Figures: sizes, dates, and the transfer strip. Should be monospaced,
     /// since lining digits up is the whole of its job.
     pub mono_font: Option<String>,
+    /// A preview of an image, video, audio or text file when the pointer
+    /// rests on its row. On unless this says `false`.
+    pub previews: Option<bool>,
     pub view: ViewDefaults,
 }
 
@@ -559,6 +562,14 @@ mod tests {
         .unwrap();
         assert_eq!(settings.font.as_deref(), Some("Inter"));
         assert_eq!(settings.mono_font.as_deref(), Some("JetBrains Mono"));
+    }
+
+    #[test]
+    fn previews_can_be_turned_off() {
+        let settings: Settings = serde_json_lenient::from_str(r#"{"previews": false}"#).unwrap();
+        assert_eq!(settings.previews, Some(false));
+        let settings: Settings = serde_json_lenient::from_str("{}").unwrap();
+        assert_eq!(settings.previews, None);
     }
 
     #[test]

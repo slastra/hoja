@@ -271,6 +271,13 @@ fn subclasses() -> &'static HashMap<String, Vec<String>> {
     })
 }
 
+/// The file's MIME type, by name and by content, followed by its ancestors,
+/// nearest first. Reads the start of the file, so call it off the UI thread.
+pub fn mime_chain(path: &Path) -> Vec<String> {
+    let guess = mime_db().guess_mime_type().path(path).guess();
+    with_ancestors(guess.mime_type().to_string())
+}
+
 /// `mime` followed by its ancestors, nearest first. Breadth-first so the
 /// closest handlers sort above the generic `text/plain` ones, and cycle-safe
 /// because the database is not guaranteed acyclic.
@@ -363,7 +370,7 @@ fn mimeapps_files() -> Vec<PathBuf> {
     files
 }
 
-fn xdg_data_dirs() -> Vec<PathBuf> {
+pub fn xdg_data_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(home) = crate::config::data_home() {
         dirs.push(home);

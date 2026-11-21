@@ -94,6 +94,17 @@ backend, so it does not touch the session that the test runs in.
 scripts/sway-harness.sh "$(scripts/tests/setup-drag-external.sh)" scripts/tests/drag-external.sh
 ```
 
+`preview.sh` needs `setup-preview.sh`, which makes an image, a video and an
+audio file with ffmpeg, and also writes a text file and a binary file. The
+suite rests the pointer on each row and reads the preview's kind from the
+probe. It also checks that the pictures went into the thumbnail cache and that
+a second look comes from the cache. The harness points `XDG_CACHE_HOME` into
+the out-dir, so the test does not write to the cache that the desktop shares.
+
+```sh
+scripts/sway-harness.sh "$(scripts/tests/setup-preview.sh)" scripts/tests/preview.sh
+```
+
 The harness drives a drag with `scripts/vpointer`, a small tool that presses,
 moves and releases a virtual pointer. `wlrctl` cannot do this: its press and
 release are one call. The harness builds the tool into `target/vpointer` the

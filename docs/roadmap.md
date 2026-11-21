@@ -6,7 +6,8 @@ Planned and not complete:
 
 - **Writing to an archive.** Everything here reads; rename, delete and paste
   inside one are refusals rather than half-features.
-- **Tabs, previews and thumbnails.**
+- **Tabs, and a thumbnail view.** Hover previews are done. A view that shows
+  a thumbnail in place of each row is not.
 - **Query history in the pickers**, and modal geometry that persists.
 - **Explicit sync between two directories**, chunked so that repeating it moves
   only what changed.

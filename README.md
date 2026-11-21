@@ -43,6 +43,12 @@ updates, and archive browsing that feels like working with ordinary folders.
   while loading so files appear immediately, and archive folders report their
   recursive sizes instantly. Copy files out using the keyboard, context menu,
   or drag and drop. Archives are always read-only.
+- **Hover previews.** Rest the pointer on a file to see it without opening
+  it. An image or a video shows a picture, an audio file shows its tags and
+  length, and a text file shows its first lines. The pictures come from the
+  thumbnail cache that other file managers share, and from the thumbnailers
+  that the desktop installs. Hoja makes a picture only when the cache does
+  not have one. Archive members and folders show no preview.
 - **Live listings.** Hoja watches every directory it displays. If another
   program changes the contents, the pane refreshes without losing your
   selection. If the directory disappears, Hoja moves to the nearest existing
@@ -181,6 +187,9 @@ allowed, and Hoja applies a change as soon as you save.
   // and ignored.
   "font": "Inter",
   "mono_font": "JetBrains Mono",
+
+  // A preview when the pointer rests on a file. On by default.
+  "previews": true,
 
   // What a new pane shows.
   "view": {

@@ -4629,6 +4629,17 @@ impl DirPane {
         // owned copy of the label rather than fighting over the one variable.
         let member_drag_label = drag_label.clone();
         let member_chip_spec = chip_spec.clone();
+        // A file on the disk gets a hover preview. Not a folder, not a member
+        // of an archive, and not the row being renamed, where the pointer is
+        // likely resting on the field rather than asking about the file.
+        let preview = on_disk
+            .clone()
+            .filter(|_| !is_dir && rename_editor.is_none() && crate::preview::enabled(cx))
+            .map(|path| crate::preview::Subject {
+                path: Arc::from(path),
+                modified: entry.modified,
+                size: entry.size,
+            });
 
         let row = div()
             .id(ix)
@@ -4807,6 +4818,9 @@ impl DirPane {
                         label: member_drag_label.clone(),
                     })
                 })
+            })
+            .when_some(preview, |row, subject| {
+                row.tooltip(crate::preview::tooltip(subject))
             })
             .on_mouse_down(
                 MouseButton::Right,

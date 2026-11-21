@@ -124,6 +124,10 @@ pub struct Probe {
     /// How many things ctrl-z would undo, so a test can tell that a transfer
     /// reached the stack and that undoing it took it off again.
     pub undo_depth: usize,
+    /// The hover preview on screen, as `"<kind>: <name>"`, where the kind is
+    /// `image`, `video`, `audio`, `text` or `none`, or `loading` before the
+    /// work is done.
+    pub preview: Option<String>,
     /// Bumped on every write, so a reader can tell a fresh answer from the same
     /// one twice without comparing the whole object. Set by `write`, which is
     /// the only thing that knows whether a write happened; a caller filling it

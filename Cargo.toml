@@ -110,6 +110,18 @@ xdg-mime = "0.4"
 freedesktop-desktop-entry = { version = "0.8", default-features = false }
 unicode-segmentation = "1"
 
+# Hover previews (`src/preview.rs`). The first three are already in the graph:
+# `image` and `png` through gpui, `md-5` through zed's keyring crate. `image`
+# is needed directly because gpui does not re-export it and `RenderImage::new`
+# takes its `Frame`. gpui turns on the decoders it uses, and features unify,
+# so only `png` is named here. `png` is the same 0.18 that `image` uses, for
+# the thumbnail spec's text chunks, which `image` does not expose. `lofty`
+# reads audio tags and is the one new crate.
+image = { version = "0.25", default-features = false, features = ["png"] }
+png = "0.18"
+md-5 = "0.10"
+lofty = "0.25"
+
 # Mirrors one line of zed's own `[patch.crates-io]`, which a dependency's
 # patches do not reach. Since mid-2026 zed takes tree-sitter from git, and the
 # grammar crates that `settings` pulls in (through `migrator`) ask crates.io
