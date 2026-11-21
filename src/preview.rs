@@ -248,14 +248,13 @@ fn picture(path: &Path, facts: Arc<Facts>, size: Size) -> Preview {
         .aspect
         .and_then(|_| thumbnail::picture(path, &facts.mimes, size));
     let original = made.as_ref().and_then(|made| made.original);
-    let picture = made.and_then(|made| {
-        let (width, height) = (made.width, made.height);
-        let buffer = image::RgbaImage::from_raw(width, height, made.bgra)?;
-        Some(Picture {
-            image: Arc::new(RenderImage::new([image::Frame::new(buffer)])),
+    let picture = made.map(|made| {
+        let (width, height) = made.bgra.dimensions();
+        Picture {
+            image: Arc::new(RenderImage::new([image::Frame::new(made.bgra)])),
             width,
             height,
-        })
+        }
     });
     Preview {
         facts,
@@ -295,6 +294,27 @@ struct Loading {
 impl Global for Previews {}
 
 impl Previews {
+    /// Keep `preview`, and give back the pictures of what it pushed out: an
+    /// older preview of the same file at the same size, and the oldest ones
+    /// past `KEEP`. Their textures are the caller's to drop.
+    fn insert(&mut self, key: Key, preview: Arc<Preview>) -> Vec<Arc<RenderImage>> {
+        let mut gone = Vec::new();
+        if let Some(old) = self.ready.insert(key.clone(), preview) {
+            self.order.retain(|k| k != &key);
+            gone.push(old);
+        }
+        self.order.push_back(key);
+        while self.order.len() > KEEP {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            gone.extend(self.ready.remove(&oldest));
+        }
+        gone.iter()
+            .filter_map(|preview| Some(preview.picture.as_ref()?.image.clone()))
+            .collect()
+    }
+
     fn touch(&mut self, key: &Key) {
         if let Some(at) = self.order.iter().position(|k| k == key) {
             let key = self.order.remove(at).expect("position is in range");
@@ -323,28 +343,7 @@ fn finish(key: Key, preview: Arc<Preview>, cx: &mut App) {
         .remove(&key)
         .map(|loading| loading.waiting)
         .unwrap_or_default();
-    if let Some(old) = previews.ready.insert(key.clone(), preview.clone()) {
-        // The same file at the same size, made twice. Only the newer stays.
-        previews.order.retain(|k| k != &key);
-        if let Some(picture) = &old.picture {
-            let image = picture.image.clone();
-            cx.drop_image(image, None);
-        }
-    }
-    let previews = cx.default_global::<Previews>();
-    previews.order.push_back(key);
-    let mut evicted = Vec::new();
-    while previews.order.len() > KEEP {
-        let Some(oldest) = previews.order.pop_front() else {
-            break;
-        };
-        if let Some(gone) = previews.ready.remove(&oldest)
-            && let Some(picture) = &gone.picture
-        {
-            evicted.push(picture.image.clone());
-        }
-    }
-    for image in evicted {
+    for image in previews.insert(key, preview.clone()) {
         cx.drop_image(image, None);
     }
     for tooltip in waiting {
@@ -741,6 +740,53 @@ mod tests {
         );
         assert_eq!(Kind::of(&chain(&["application/zip"])), Kind::Other);
         assert_eq!(Kind::of(&[]), Kind::Other);
+    }
+
+    fn preview_of(n: u64) -> (Key, Arc<Preview>) {
+        let key = Key {
+            subject: Subject {
+                path: Path::new("/f").join(n.to_string()).into(),
+                modified: None,
+                size: Some(n),
+            },
+            size: Size::Large,
+        };
+        let facts = Facts {
+            kind: Kind::Text,
+            mimes: Vec::new(),
+            dimensions: None,
+            aspect: None,
+            duration: None,
+            lines: None,
+            tags: None,
+        };
+        let preview = Preview {
+            facts: Arc::new(facts),
+            picture: None,
+            original: None,
+        };
+        (key, Arc::new(preview))
+    }
+
+    #[test]
+    fn the_cache_keeps_the_newest() {
+        let mut previews = Previews::default();
+        for n in 0..KEEP as u64 + 2 {
+            let (key, preview) = preview_of(n);
+            previews.insert(key, preview);
+        }
+        assert_eq!(previews.ready.len(), KEEP);
+        assert_eq!(previews.order.len(), KEEP);
+        assert!(!previews.ready.contains_key(&preview_of(0).0));
+        assert!(!previews.ready.contains_key(&preview_of(1).0));
+        assert!(previews.ready.contains_key(&preview_of(2).0));
+
+        // The same file again replaces its entry rather than taking a second
+        // place, and becomes the newest.
+        let (key, preview) = preview_of(2);
+        previews.insert(key.clone(), preview);
+        assert_eq!(previews.order.len(), KEEP);
+        assert!(previews.order.back() == Some(&key));
     }
 
     #[test]

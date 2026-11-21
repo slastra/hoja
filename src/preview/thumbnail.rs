@@ -70,9 +70,10 @@ impl Size {
 
 /// A decoded thumbnail, in the BGRA order gpui's `RenderImage` takes.
 pub struct Picture {
-    pub width: u32,
-    pub height: u32,
-    pub bgra: Vec<u8>,
+    /// The pixels with their channels in BGRA order, which is what gpui's
+    /// `RenderImage` takes, in an `RgbaImage` because that is the buffer
+    /// type it takes them in.
+    pub bgra: image::RgbaImage,
     /// The original's size in pixels, when the thumbnail says so.
     pub original: Option<(u32, u32)>,
 }
@@ -119,10 +120,8 @@ pub fn picture(path: &Path, mimes: &[String], size: Size) -> Option<Picture> {
                 eprintln!("[hoja] thumbnail not cached: {err}");
             }
             Some(Picture {
-                width: rgba.width(),
-                height: rgba.height(),
                 original: None,
-                bgra: bgra_of(rgba.into_raw()),
+                bgra: to_bgra(rgba),
             })
         }
         Made::Failed => {
@@ -186,10 +185,8 @@ impl Decoded {
         let dimension = |key: &str| self.text.get(key)?.trim().parse::<u32>().ok();
         let original = dimension("Thumb::Image::Width").zip(dimension("Thumb::Image::Height"));
         Picture {
-            width: self.rgba.width(),
-            height: self.rgba.height(),
             original,
-            bgra: bgra_of(self.rgba.into_raw()),
+            bgra: to_bgra(self.rgba),
         }
     }
 }
@@ -263,9 +260,9 @@ fn decode(bytes: &[u8]) -> Option<Decoded> {
 
 /// RGBA to BGRA, in place. Straight alpha either way: gpui's own image
 /// decode hands the renderer straight alpha too.
-fn bgra_of(mut pixels: Vec<u8>) -> Vec<u8> {
-    for pixel in pixels.as_chunks_mut::<4>().0 {
-        pixel.swap(0, 2);
+fn to_bgra(mut pixels: image::RgbaImage) -> image::RgbaImage {
+    for pixel in pixels.pixels_mut() {
+        pixel.0.swap(0, 2);
     }
     pixels
 }
@@ -731,9 +728,9 @@ mod tests {
         assert!(!decoded.describes("file:///b.png", 1700000000));
 
         let picture = decoded.into_picture();
-        assert_eq!((picture.width, picture.height), (3, 2));
+        assert_eq!(picture.bgra.dimensions(), (3, 2));
         // Blue first: BGRA.
-        assert_eq!(&picture.bgra[..4], &[30, 20, 10, 255]);
+        assert_eq!(picture.bgra.get_pixel(0, 0).0, [30, 20, 10, 255]);
         // No temporary file left behind.
         assert_eq!(
             std::fs::read_dir(dir.path().join("large")).unwrap().count(),
