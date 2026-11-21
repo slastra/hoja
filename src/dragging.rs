@@ -61,7 +61,7 @@ static CARRYING: Mutex<Option<(Vec<PathBuf>, PathBuf)>> = Mutex::new(None);
 /// Safe to call on any platform: without Wayland handles this records that
 /// there is no source and everything falls back to gpui's own promotion.
 pub fn attach(window: &Window) {
-    sweep_drops();
+    DROPS.sweep();
     SOURCE.get_or_init(|| {
         use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
@@ -134,7 +134,7 @@ pub fn arm_extracting(spec: &ChipSpec, archive: PathBuf, inside: PathBuf, roots:
     // nearest thing to the truth there is until the members exist.
     let first = vec![file_uri(&archive)];
     let make = move || -> Vec<String> {
-        let Some(dest) = next_drop_dir() else {
+        let Some(dest) = DROPS.next_dir() else {
             return Vec::new();
         };
         let progress = crate::archive::Progress::default();
@@ -203,55 +203,13 @@ pub fn poll() -> Option<hoja_drag::DragEvent> {
     event
 }
 
-/// This process's directory for extracted drops, and the lock that says it is
-/// alive. Created on first use, held for the rest of the session.
-static DROP_DIR: OnceLock<Option<(PathBuf, std::fs::File)>> = OnceLock::new();
-static DROP_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Extracted drops, under `$XDG_CACHE_HOME/hoja/drag/<pid>/`. Kept for the
+/// session: `Finished` only means the target read the list of files, and it
+/// copies them afterwards.
+static DROPS: crate::scratch::Scratch = crate::scratch::Scratch::new(drop_root);
 
-/// `$XDG_CACHE_HOME/hoja/drag/`, shared by every hoja that has ever run.
 fn drop_root() -> Option<PathBuf> {
     Some(crate::config::cache_home()?.join("hoja").join("drag"))
-}
-
-/// A fresh, empty directory for one drop's files.
-fn next_drop_dir() -> Option<PathBuf> {
-    let (base, _lock) = DROP_DIR
-        .get_or_init(|| {
-            let dir = drop_root()?.join(std::process::id().to_string());
-            std::fs::create_dir_all(&dir).ok()?;
-            let lock = std::fs::File::create(dir.join("lock")).ok()?;
-            rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive).ok()?;
-            Some((dir, lock))
-        })
-        .as_ref()?;
-    let n = DROP_COUNT.fetch_add(1, Ordering::Relaxed);
-    let dir = base.join(n.to_string());
-    std::fs::create_dir_all(&dir).ok()?;
-    Some(dir)
-}
-
-/// Remove what earlier hojas extracted and never could clean up.
-///
-/// Ownership is the `flock`, not the pid, for the reason `journal.rs` gives: a
-/// pid can be recycled, but a lock is released the instant its holder dies,
-/// however it dies. A directory whose lock can be taken belongs to nobody.
-fn sweep_drops() {
-    let Some(root) = drop_root() else { return };
-    let Ok(entries) = std::fs::read_dir(&root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let dir = entry.path();
-        let Ok(lock) = std::fs::File::open(dir.join("lock")) else {
-            // No lock file at all: not one of ours, or one that never got as
-            // far as locking. Either way there is no owner to defer to.
-            let _ = std::fs::remove_dir_all(&dir);
-            continue;
-        };
-        if rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive).is_ok() {
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-    }
 }
 
 /// Draw the chip to premultiplied BGRA.

@@ -26,6 +26,7 @@ mod place_finder;
 mod places;
 mod preview;
 mod probe;
+mod scratch;
 #[allow(dead_code)] // not wired into a pane yet; see the module header
 mod scrollbar;
 mod search;
@@ -289,6 +290,8 @@ fn main() {
         // before the first right-click asks for them.
         cx.background_spawn(async { opener::warm_caches() })
             .detach();
+        // What a hoja killed in the middle of making a thumbnail left behind.
+        cx.background_spawn(async { preview::sweep() }).detach();
 
         let window_size = state
             .window

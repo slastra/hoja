@@ -71,6 +71,12 @@ pub fn tooltip(subject: Subject) -> impl Fn(&mut Window, &mut App) -> AnyView + 
     move |window, cx| PreviewTooltip::open(subject.clone(), window.scale_factor(), cx).into()
 }
 
+/// Remove the working files of thumbnailers that hojas no longer running
+/// started. Blocks on the file system: call it off the UI thread.
+pub fn sweep() {
+    thumbnail::sweep();
+}
+
 /// Whether rows get a preview, from the `previews` setting.
 pub fn enabled(cx: &App) -> bool {
     cx.try_global::<Enabled>().is_none_or(|on| on.0)

@@ -112,7 +112,7 @@ pub fn picture(path: &Path, mimes: &[String], size: Size) -> Option<Picture> {
         size: std::fs::metadata(path).ok().map(|m| m.len()),
         mime: mimes.first().map(String::as_str),
     };
-    match make(path, mimes, size, &root, &info) {
+    match make(path, mimes, size, &info) {
         Made::Picture(rgba) => {
             // A cache that cannot be written still leaves the picture to show.
             if let Err(err) = store(&cached, &rgba, &info) {
@@ -340,6 +340,8 @@ fn store(dest: &Path, rgba: &image::RgbaImage, info: &Info) -> std::io::Result<(
     }
 }
 
+/// The temporary name for `store`'s write-then-rename, which the spec puts
+/// in the same directory. It lives for the length of one write.
 fn temp_in(dir: &Path) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -355,9 +357,9 @@ enum Made {
     Nothing,
 }
 
-fn make(path: &Path, mimes: &[String], size: Size, root: &Path, info: &Info) -> Made {
+fn make(path: &Path, mimes: &[String], size: Size, info: &Info) -> Made {
     if let Some(thumbnailer) = mimes.iter().find_map(|mime| thumbnailers().get(mime)) {
-        return run(thumbnailer, path, size, root, info);
+        return run(thumbnailer, path, size, info);
     }
     if mimes.first().is_some_and(|mime| mime.starts_with("image/")) {
         return match image::open(path) {
@@ -381,17 +383,24 @@ fn fit(decoded: image::DynamicImage, size: Size) -> image::RgbaImage {
     }
 }
 
-fn run(thumbnailer: &Thumbnailer, path: &Path, size: Size, root: &Path, info: &Info) -> Made {
-    let dir = root.join(size.dir());
-    if std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&dir)
-        .is_err()
-    {
+/// Where a thumbnailer writes, under `$XDG_CACHE_HOME/hoja/thumbnail/<pid>/`.
+/// Not the shared cache: a thumbnailer can run for seconds, and a hoja killed
+/// meanwhile would leave its file among every file manager's thumbnails,
+/// where nothing would ever remove it. Here the next hoja sweeps it.
+static WORK: crate::scratch::Scratch = crate::scratch::Scratch::new(work_root);
+
+pub fn sweep() {
+    WORK.sweep();
+}
+
+fn work_root() -> Option<PathBuf> {
+    Some(crate::config::cache_home()?.join("hoja").join("thumbnail"))
+}
+
+fn run(thumbnailer: &Thumbnailer, path: &Path, size: Size, info: &Info) -> Made {
+    let Some(out) = WORK.next_path(".png") else {
         return Made::Nothing;
-    }
-    let out = temp_in(&dir);
+    };
     let argv = expand(
         &thumbnailer.exec,
         &Codes {
