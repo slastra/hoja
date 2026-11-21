@@ -4906,11 +4906,20 @@ impl DirPane {
             .items_center()
             .cursor_pointer()
             .text_sm()
-            // The lead row, where ctrl-arrow has moved to and what ctrl-space
-            // acts on, without an outline in the accent colour: a quiet fill
-            // when it is not selected, and the selection fill when it is, as
-            // Zed's project panel marks its entries.
-            .when(is_lead && !selected, |this| this.bg(colors.element_hover))
+            // The lead row, the one clicked or moved to, where ctrl-arrow goes
+            // from and what ctrl-space acts on, outlined in the accent colour
+            // while this pane has the keys, as Zed outlines the active entry
+            // of a focused panel. Every row carries the border, transparent
+            // on the rest: `uniform_list` measures one row, so the geometry
+            // cannot differ between them.
+            .border_1()
+            .border_color(if is_lead && self.active {
+                // The colour Zed's project panel outlines its active entry
+                // in. Some themes make `border_focused` a dark surface tone.
+                colors.panel_focused_border
+            } else {
+                gpui::transparent_black()
+            })
             .when(selected, |this| {
                 // Held at half strength in the pane that is not taking keys, so
                 // two panes with selections cannot be confused for each other.

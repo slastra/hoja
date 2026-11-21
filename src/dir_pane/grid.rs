@@ -546,12 +546,17 @@ impl DirPane {
             .overflow_hidden()
             .rounded_md()
             .border_1()
-            .border_color(colors.border_variant)
+            // The lead card is outlined as the lead row is, in the accent
+            // colour while this pane has the keys.
+            .border_color(if is_lead && self.active {
+                // The colour Zed's project panel outlines its active entry
+                // in. Some themes make `border_focused` a dark surface tone.
+                colors.panel_focused_border
+            } else {
+                colors.border_variant
+            })
             .bg(colors.elevated_surface_background)
             .cursor_pointer()
-            // The lead card is marked as a row is: a quiet fill when it is not
-            // selected, no outline in the accent colour.
-            .when(is_lead && !selected, |el| el.bg(hover))
             .when(selected, |el| el.bg(fill))
             .when(!selected, |el| el.hover(move |style| style.bg(hover)))
             .when_some(picture, |el, (key, aspect)| {
