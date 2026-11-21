@@ -26,12 +26,14 @@
 mod audio;
 mod text;
 mod thumbnail;
+mod video;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
+use gpui::AnimationExt as _;
 use gpui::{
     AnyView, App, AppContext as _, Context, Entity, EntityId, FontWeight, Global, IntoElement,
     ParentElement as _, Render, RenderImage, SharedString, Styled as _, WeakEntity, Window, div,
@@ -43,8 +45,11 @@ use self::thumbnail::Size;
 
 /// Previews kept, and so pictures kept in the atlas.
 const KEEP: usize = 48;
-/// The long side of a picture, in logical pixels.
+/// The width of an image's or a video's picture, in logical pixels.
 const PICTURE: f32 = 256.;
+/// The tallest a picture is drawn. A taller one is drawn narrower, so a
+/// portrait phone video does not run off a laptop screen.
+const TALLEST: f32 = 360.;
 /// The long side of an audio file's picture, beside its tags.
 const COVER: f32 = 96.;
 /// The widest a tooltip grows, which is where a long name truncates.
@@ -73,8 +78,8 @@ pub fn set_enabled(on: Option<bool>, cx: &mut App) {
     cx.set_global(Enabled(on.unwrap_or(true)));
 }
 
-/// The open preview, for the probe: its kind and the file's name, or
-/// `loading` before the kind is known.
+/// The open preview, for the probe: its kind and the file's name, with
+/// `loading` in front until the picture is done.
 pub fn probe(cx: &App) -> Option<String> {
     let open = cx.try_global::<Previews>()?.open.as_ref()?;
     Some(open.1.clone())
@@ -131,33 +136,112 @@ struct Picture {
     height: u32,
 }
 
-struct Preview {
+/// What is quick to learn about a file: everything but its picture. Reading
+/// it costs a header or the first 8 KiB, so it arrives well before a
+/// thumbnailer has finished, and the tooltip shows it while it waits.
+struct Facts {
     kind: Kind,
-    picture: Option<Picture>,
-    /// Of the original, in pixels.
+    mimes: Vec<String>,
+    /// Of the original as a viewer shows it, in pixels.
     dimensions: Option<(u32, u32)>,
+    /// Width over height of the picture to come, so its place can be kept
+    /// at the right shape. `None` for a file that will have no picture.
+    aspect: Option<f32>,
+    /// Of a video. An audio file's is in its tags.
+    duration: Option<Duration>,
     lines: Option<Vec<String>>,
     tags: Option<audio::Tags>,
 }
 
-/// The blocking half: what kind of file it is, then what it shows.
-fn classify(path: &Path) -> (Kind, Vec<String>) {
-    let mimes = crate::opener::mime_chain(path);
-    (Kind::of(&mimes), mimes)
+/// The facts and the picture, once the picture is done or has failed.
+struct Preview {
+    facts: Arc<Facts>,
+    picture: Option<Picture>,
+    /// The original's size as the thumbnail records it. For a format whose
+    /// header `image` cannot read, this is the only place it is known.
+    original: Option<(u32, u32)>,
 }
 
-fn build(path: &Path, kind: Kind, mimes: &[String], size: Size) -> Preview {
-    let picture = matches!(kind, Kind::Image | Kind::Video | Kind::Audio)
-        .then(|| thumbnail::picture(path, mimes, size))
-        .flatten();
-    let dimensions = picture.as_ref().and_then(|p| p.original).or_else(|| {
-        (kind == Kind::Image)
-            .then(|| image::image_dimensions(path).ok())
-            .flatten()
-    });
-    let picture = picture.and_then(|p| {
-        let (width, height) = (p.width, p.height);
-        let buffer = image::RgbaImage::from_raw(width, height, p.bgra)?;
+/// The quick half, off the UI thread.
+fn facts(path: &Path) -> Facts {
+    let mimes = crate::opener::mime_chain(path);
+    let kind = Kind::of(&mimes);
+    let mut facts = Facts {
+        kind,
+        mimes,
+        dimensions: None,
+        aspect: None,
+        duration: None,
+        lines: None,
+        tags: None,
+    };
+    match kind {
+        Kind::Image => {
+            facts.dimensions = image_size(path);
+            // A format `image` cannot read still gets a picture from its
+            // thumbnailer. Its shape is a guess until then.
+            facts.aspect = Some(
+                facts
+                    .dimensions
+                    .map_or(4. / 3., |(w, h)| w as f32 / h.max(1) as f32),
+            );
+        }
+        Kind::Video => {
+            let video = video::read(path);
+            facts.dimensions = video.map(|v| (v.width, v.height));
+            facts.duration = video.and_then(|v| v.duration);
+            facts.aspect = Some(video.map_or(16. / 9., |v| v.aspect));
+        }
+        Kind::Audio => {
+            facts.tags = audio::read(path);
+            // Room for a cover only when the file has one to show.
+            facts.aspect = facts
+                .tags
+                .as_ref()
+                .is_some_and(|tags| tags.has_cover)
+                .then_some(1.);
+        }
+        Kind::Text => facts.lines = text::excerpt(path),
+        Kind::Other => {}
+    }
+    facts
+}
+
+/// The size from the header alone, turned as the photo's EXIF says, which is
+/// how the thumbnailer will draw it.
+fn image_size(path: &Path) -> Option<(u32, u32)> {
+    use image::ImageDecoder as _;
+    use image::metadata::Orientation;
+    let mut decoder = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_decoder()
+        .ok()?;
+    let (width, height) = decoder.dimensions();
+    let turned = matches!(
+        decoder.orientation(),
+        Ok(Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH)
+    );
+    Some(if turned {
+        (height, width)
+    } else {
+        (width, height)
+    })
+}
+
+/// The slow half: the picture, which may run a thumbnailer.
+fn picture(path: &Path, facts: Arc<Facts>, size: Size) -> Preview {
+    let made = facts
+        .aspect
+        .and_then(|_| thumbnail::picture(path, &facts.mimes, size));
+    let original = made.as_ref().and_then(|made| made.original);
+    let picture = made.and_then(|made| {
+        let (width, height) = (made.width, made.height);
+        let buffer = image::RgbaImage::from_raw(width, height, made.bgra)?;
         Some(Picture {
             image: Arc::new(RenderImage::new([image::Frame::new(buffer)])),
             width,
@@ -165,11 +249,9 @@ fn build(path: &Path, kind: Kind, mimes: &[String], size: Size) -> Preview {
         })
     });
     Preview {
-        kind,
+        facts,
         picture,
-        dimensions,
-        lines: (kind == Kind::Text).then(|| text::excerpt(path)).flatten(),
-        tags: (kind == Kind::Audio).then(|| audio::read(path)).flatten(),
+        original,
     }
 }
 
@@ -188,10 +270,17 @@ struct Previews {
     /// Oldest first.
     order: VecDeque<Key>,
     /// Work under way, and the tooltips waiting on it. One piece of work per
-    /// file however many times it is hovered meanwhile.
-    loading: HashMap<Key, Vec<WeakEntity<PreviewTooltip>>>,
+    /// file however many times it is hovered meanwhile. The facts, once
+    /// they are in, so a tooltip that opens later still shows them.
+    loading: HashMap<Key, Loading>,
     /// The tooltip on screen, by entity, with what the probe says about it.
     open: Option<(EntityId, String)>,
+}
+
+#[derive(Default)]
+struct Loading {
+    facts: Option<Arc<Facts>>,
+    waiting: Vec<WeakEntity<PreviewTooltip>>,
 }
 
 impl Global for Previews {}
@@ -205,10 +294,26 @@ impl Previews {
     }
 }
 
+/// Hand the facts to the tooltips waiting on them.
+fn learned(key: &Key, facts: Arc<Facts>, cx: &mut App) {
+    let Some(loading) = cx.default_global::<Previews>().loading.get_mut(key) else {
+        return;
+    };
+    loading.facts = Some(facts.clone());
+    let waiting = loading.waiting.clone();
+    for tooltip in waiting {
+        let _ = tooltip.update(cx, |tooltip, cx| tooltip.learn(facts.clone(), cx));
+    }
+}
+
 /// Put a finished preview in the cache, and drop what falls out of it.
 fn finish(key: Key, preview: Arc<Preview>, cx: &mut App) {
     let previews = cx.default_global::<Previews>();
-    let waiting = previews.loading.remove(&key).unwrap_or_default();
+    let waiting = previews
+        .loading
+        .remove(&key)
+        .map(|loading| loading.waiting)
+        .unwrap_or_default();
     if let Some(old) = previews.ready.insert(key.clone(), preview.clone()) {
         // The same file at the same size, made twice. Only the newer stays.
         previews.order.retain(|k| k != &key);
@@ -247,7 +352,8 @@ struct PreviewTooltip {
     /// The window's scale when the tooltip opened, which sets the size of the
     /// picture asked for and the size it is drawn at.
     scale: f32,
-    kind: Option<Kind>,
+    facts: Option<Arc<Facts>>,
+    /// Set when the picture is done, or known not to come.
     preview: Option<Arc<Preview>>,
 }
 
@@ -264,21 +370,22 @@ impl PreviewTooltip {
             .unwrap_or_default()
             .into();
 
-        let cached = cx.default_global::<Previews>().ready.get(&key).cloned();
+        let previews = cx.default_global::<Previews>();
+        let cached = previews.ready.get(&key).cloned();
+        let known = cached
+            .as_ref()
+            .map(|preview| preview.facts.clone())
+            .or_else(|| previews.loading.get(&key)?.facts.clone());
         let tooltip = cx.new(|_| PreviewTooltip {
             name: name.clone(),
             size: subject.size,
             scale,
-            kind: cached.as_ref().map(|p| p.kind),
+            facts: known,
             preview: cached.clone(),
         });
         let id = tooltip.entity_id();
-        let label = match &cached {
-            Some(preview) => format!("{}: {name}", preview.kind.name()),
-            None => format!("loading: {name}"),
-        };
-        let previews = cx.default_global::<Previews>();
-        previews.open = Some((id, label));
+        let label = tooltip.read(cx).label();
+        cx.default_global::<Previews>().open = Some((id, label));
         // Cleared when this tooltip goes, and only if a newer one has not
         // taken its place.
         //
@@ -303,41 +410,32 @@ impl PreviewTooltip {
         }
 
         let previews = cx.default_global::<Previews>();
-        if let Some(waiting) = previews.loading.get_mut(&key) {
-            waiting.push(tooltip.downgrade());
+        if let Some(loading) = previews.loading.get_mut(&key) {
+            loading.waiting.push(tooltip.downgrade());
             return tooltip;
         }
-        previews
-            .loading
-            .insert(key.clone(), vec![tooltip.downgrade()]);
+        previews.loading.insert(
+            key.clone(),
+            Loading {
+                facts: None,
+                waiting: vec![tooltip.downgrade()],
+            },
+        );
 
         cx.spawn(async move |cx| {
             let path = key.subject.path.clone();
-            let (kind, mimes) = cx
+            let facts = cx
                 .background_spawn({
                     let path = path.clone();
-                    async move { classify(&path) }
+                    async move { Arc::new(facts(&path)) }
                 })
                 .await;
-            // The kind first, so a file with nothing to show draws nothing
-            // rather than a box that waits and then vanishes.
-            cx.update(|cx| {
-                let waiting = cx
-                    .default_global::<Previews>()
-                    .loading
-                    .get(&key)
-                    .cloned()
-                    .unwrap_or_default();
-                for tooltip in waiting {
-                    let _ = tooltip.update(cx, |tooltip, cx| {
-                        tooltip.kind = Some(kind);
-                        cx.notify();
-                    });
-                }
-            });
+            // The facts first, so the tooltip shows what it can, and keeps a
+            // place of the right shape for the picture, while that is made.
+            cx.update(|cx| learned(&key, facts.clone(), cx));
             let size = key.size;
             let preview = cx
-                .background_spawn(async move { build(&path, kind, &mimes, size) })
+                .background_spawn(async move { picture(&path, facts, size) })
                 .await;
             cx.update(|cx| finish(key, Arc::new(preview), cx));
         })
@@ -345,103 +443,189 @@ impl PreviewTooltip {
         tooltip
     }
 
-    fn show(&mut self, preview: Arc<Preview>, cx: &mut Context<Self>) {
+    /// What the probe says: the kind and the name, with `loading` in front
+    /// until the work is done.
+    fn label(&self) -> String {
+        match (&self.preview, &self.facts) {
+            (Some(preview), _) => format!("{}: {}", preview.facts.kind.name(), self.name),
+            (None, Some(facts)) => format!("loading {}: {}", facts.kind.name(), self.name),
+            (None, None) => format!("loading: {}", self.name),
+        }
+    }
+
+    fn relabel(&self, cx: &mut Context<Self>) {
         let id = cx.entity_id();
+        let label = self.label();
         if let Some(open) = cx.default_global::<Previews>().open.as_mut()
             && open.0 == id
         {
-            open.1 = format!("{}: {}", preview.kind.name(), self.name);
+            open.1 = label;
         }
-        self.kind = Some(preview.kind);
-        self.preview = Some(preview);
+    }
+
+    fn learn(&mut self, facts: Arc<Facts>, cx: &mut Context<Self>) {
+        self.facts = Some(facts);
+        self.relabel(cx);
         cx.notify();
     }
 
-    /// The line under the body: dimensions or duration, then the size.
-    fn facts(&self) -> String {
-        let mut facts = Vec::new();
-        if let Some(preview) = &self.preview {
-            if let Some((w, h)) = preview.dimensions {
-                facts.push(format!("{w} × {h}"));
+    fn show(&mut self, preview: Arc<Preview>, cx: &mut Context<Self>) {
+        self.facts = Some(preview.facts.clone());
+        self.preview = Some(preview);
+        self.relabel(cx);
+        cx.notify();
+    }
+
+    /// The line under the body: dimensions, length and rates, then the size.
+    fn facts_line(&self) -> String {
+        let mut line = Vec::new();
+        if let Some(facts) = &self.facts {
+            let original = self.preview.as_ref().and_then(|p| p.original);
+            if let Some((w, h)) = facts.dimensions.or(original) {
+                line.push(format!("{w} × {h}"));
             }
-            if let Some(tags) = &preview.tags {
+            if let Some(duration) = facts.duration {
+                line.push(audio::clock(duration));
+            }
+            if let Some(tags) = &facts.tags {
                 if let Some(duration) = tags.duration {
-                    facts.push(audio::clock(duration));
+                    line.push(audio::clock(duration));
                 }
                 if let Some(rate) = tags.bitrate {
-                    facts.push(format!("{rate} kbit/s"));
+                    line.push(format!("{rate} kbit/s"));
                 }
                 if let Some(rate) = tags.sample_rate {
-                    facts.push(format!("{:.1} kHz", rate as f32 / 1000.));
+                    line.push(format!("{:.1} kHz", rate as f32 / 1000.));
                 }
             }
         }
         if let Some(size) = self.size {
-            facts.push(crate::fs::format_size(size));
+            line.push(crate::fs::format_size(size));
         }
-        facts.join(" · ")
+        line.join(" · ")
     }
 
-    /// The picture's size on screen: its pixels at the window's scale, held
-    /// inside `limit` on its long side.
-    fn drawn(&self, picture: &Picture, limit: f32) -> (f32, f32) {
+    /// An audio file's picture on screen: its pixels at the window's scale,
+    /// held inside `COVER` on its long side.
+    fn cover(&self, picture: &Picture) -> (f32, f32) {
         let scale = self.scale.max(1.);
         let (w, h) = (picture.width as f32 / scale, picture.height as f32 / scale);
-        let fit = (limit / w.max(h)).min(1.);
+        let fit = (COVER / w.max(h)).min(1.);
         (w * fit, h * fit)
     }
+}
+
+/// Where a picture of this shape goes in the card: the full width, unless it
+/// is so tall that the height has to give, and then narrower and centred.
+fn frame(aspect: f32) -> (f32, f32) {
+    let aspect = if aspect.is_finite() && aspect > 0. {
+        aspect
+    } else {
+        1.
+    };
+    let height = PICTURE / aspect;
+    if height <= TALLEST {
+        (PICTURE, height)
+    } else {
+        (TALLEST * aspect, TALLEST)
+    }
+}
+
+/// A box that breathes where the picture will be, at the picture's size.
+/// The same pulse the Size column uses while it counts.
+fn placeholder(width: f32, height: f32, color: gpui::Hsla) -> gpui::AnyElement {
+    div()
+        .w(px(width))
+        .h(px(height))
+        .bg(color)
+        .with_animation(
+            "preview-placeholder",
+            gpui::Animation::new(Duration::from_millis(1400))
+                .repeat()
+                .with_easing(gpui::pulsating_between(0.35, 0.8)),
+            |el, delta| el.opacity(delta),
+        )
+        .into_any_element()
 }
 
 impl Render for PreviewTooltip {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Until the kind is known, and for a file with nothing to show, an
         // empty element: gpui draws a tooltip at whatever size its view takes.
-        let Some(kind) = self.kind.filter(|kind| *kind != Kind::Other) else {
+        let Some(facts) = self.facts.clone().filter(|f| f.kind != Kind::Other) else {
             return div().into_any_element();
         };
+        let kind = facts.kind;
         let colors = cx.theme().colors();
         let muted = colors.text_muted;
+        let hold = colors.element_hover;
         let mono = crate::theming::numeric_font(cx);
-        let preview = self.preview.clone();
+        // `None` while the picture is being made, then `Some` of what came.
+        let picture: Option<Option<&Picture>> = self
+            .preview
+            .as_ref()
+            .map(|preview| preview.picture.as_ref());
 
         let name = div()
             .truncate()
             .font_weight(FontWeight::MEDIUM)
             .child(self.name.clone());
 
-        let body = match (kind, preview.as_deref()) {
-            (_, None) => div().text_color(muted).child("…").into_any_element(),
-            (Kind::Image | Kind::Video, Some(preview)) => match &preview.picture {
-                // Edge to edge: the card is as wide as the picture and the
-                // picture has no padding round it. A small original is drawn
-                // larger to fill the width.
-                Some(picture) => img(picture.image.clone())
-                    .w_full()
-                    .h(px(
-                        PICTURE * picture.height as f32 / picture.width.max(1) as f32
-                    ))
-                    .into_any_element(),
-                None => div()
+        // An image or a video fills the card's width with its picture, or with
+        // the place kept for it, so the card has a fixed width and only the
+        // lines of text are padded.
+        let full_bleed =
+            matches!(kind, Kind::Image | Kind::Video) && !matches!(picture, Some(None));
+
+        let body = match kind {
+            Kind::Image | Kind::Video => match picture {
+                Some(Some(picture)) => {
+                    let (w, h) = frame(picture.width as f32 / picture.height.max(1) as f32);
+                    div()
+                        .w_full()
+                        .flex()
+                        .justify_center()
+                        .bg(hold)
+                        .child(img(picture.image.clone()).w(px(w)).h(px(h)))
+                        .into_any_element()
+                }
+                Some(None) => div()
                     .text_color(muted)
                     .child("No picture")
                     .into_any_element(),
+                None => {
+                    let (_, h) = frame(facts.aspect.unwrap_or(16. / 9.));
+                    placeholder(PICTURE, h, hold)
+                }
             },
-            (Kind::Audio, Some(preview)) => {
-                let tags = preview.tags.clone().unwrap_or_default();
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .when_some(preview.picture.as_ref(), |row, picture| {
-                        let (w, h) = self.drawn(picture, COVER);
-                        row.child(
+            Kind::Audio => {
+                let tags = facts.tags.clone().unwrap_or_default();
+                let cover = match picture {
+                    Some(Some(picture)) => {
+                        let (w, h) = self.cover(picture);
+                        Some(
                             img(picture.image.clone())
                                 .flex_none()
                                 .w(px(w))
                                 .h(px(h))
-                                .rounded_sm(),
+                                .rounded_sm()
+                                .into_any_element(),
                         )
-                    })
+                    }
+                    Some(None) => None,
+                    None => facts.aspect.map(|_| {
+                        div()
+                            .flex_none()
+                            .rounded_sm()
+                            .child(placeholder(COVER, COVER, hold))
+                            .into_any_element()
+                    }),
+                };
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .children(cover)
                     .child(
                         div()
                             .flex()
@@ -459,7 +643,7 @@ impl Render for PreviewTooltip {
                     )
                     .into_any_element()
             }
-            (Kind::Text, Some(preview)) => match &preview.lines {
+            Kind::Text => match &facts.lines {
                 Some(lines) if !lines.is_empty() => div()
                     .flex()
                     .flex_col()
@@ -479,14 +663,10 @@ impl Render for PreviewTooltip {
                     .into_any_element(),
                 None => div().text_color(muted).child("Not text").into_any_element(),
             },
-            (Kind::Other, _) => unreachable!("filtered above"),
+            Kind::Other => unreachable!("filtered above"),
         };
 
-        let facts = self.facts();
-        // An image or a video with a picture fills the card's width, so the
-        // card has a fixed width and only the lines of text are padded.
-        let full_bleed = matches!(kind, Kind::Image | Kind::Video)
-            && preview.as_ref().is_some_and(|p| p.picture.is_some());
+        let line = self.facts_line();
         let padded = |el: gpui::Div| if full_bleed { el.px_2() } else { el };
 
         // The padding keeps the box clear of the pointer: gpui puts a
@@ -515,8 +695,8 @@ impl Render for PreviewTooltip {
                     })
                     .child(padded(name))
                     .child(body)
-                    .when(!facts.is_empty(), |el| {
-                        el.child(padded(div().text_xs().text_color(muted).child(facts)))
+                    .when(!line.is_empty(), |el| {
+                        el.child(padded(div().text_xs().text_color(muted).child(line)))
                     }),
             )
             .into_any_element()
@@ -562,10 +742,11 @@ mod tests {
             )
             .unwrap();
         std::fs::write(&png, bytes).unwrap();
-        assert_eq!(classify(&png).0, Kind::Image);
+        assert_eq!(facts(&png).kind, Kind::Image);
+        assert_eq!(facts(&png).dimensions, Some((2, 2)));
 
         let source = dir.path().join("main.rs");
         std::fs::write(&source, "fn main() {}\n").unwrap();
-        assert_eq!(classify(&source).0, Kind::Text);
+        assert_eq!(facts(&source).kind, Kind::Text);
     }
 }

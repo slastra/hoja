@@ -15,6 +15,9 @@ pub struct Tags {
     pub bitrate: Option<u32>,
     /// Hz.
     pub sample_rate: Option<u32>,
+    /// The file carries a picture, which is what the thumbnailer shows. Known
+    /// before the picture is made, so the tooltip can keep room for it.
+    pub has_cover: bool,
 }
 
 /// `None` when lofty does not know the format or cannot parse the file.
@@ -43,6 +46,7 @@ pub fn read(path: &Path) -> Option<Tags> {
         tags.artist = clean(tag.artist());
         tags.album = clean(tag.album());
     }
+    tags.has_cover = file.tags().iter().any(|tag| !tag.pictures().is_empty());
     Some(tags)
 }
 

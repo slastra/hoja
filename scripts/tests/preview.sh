@@ -7,7 +7,21 @@
 # The harness points XDG_CACHE_HOME into the out-dir, so the thumbnails made
 # here never reach the shared cache.
 
-wait_for 'p[0]["row_count"] == 5'
+wait_for 'p[0]["row_count"] == 6'
+
+# A thumbnailer for MP4 that takes two seconds, so the place kept for the
+# picture is on screen long enough to see. It goes in the harness's private
+# XDG_DATA_HOME, which comes before /usr/share, so it wins for its types. Hoja
+# reads the thumbnailers at its first picture, which is after this.
+mkdir -p "$XDG_DATA_HOME/thumbnailers"
+cat > "$OUT/slow-thumbnailer" <<'SH'
+#!/bin/sh
+sleep 2
+exec gst-video-thumbnailer --input-uri "$1" --output "$2" --size "$3"
+SH
+chmod +x "$OUT/slow-thumbnailer"
+printf '[Thumbnailer Entry]\nExec=%s %%u %%o %%s\nMimeType=video/mp4;\n' "$OUT/slow-thumbnailer" \
+    > "$XDG_DATA_HOME/thumbnailers/slow.thumbnailer"
 
 # One row at a time. The probe names the kind once the work is done.
 look() {
@@ -22,6 +36,16 @@ look photo.png image
 look clip.mp4 video
 look tone.ogg audio
 look notes.rs text
+
+# While the picture is made, the facts are shown and a place of the right
+# shape is kept for it. The shots show the two are the same shape.
+hover "$(named portrait.mp4)"
+wait_for "d['preview'] == 'loading video: portrait.mp4'" 5
+expect "d['preview'] == 'loading video: portrait.mp4'" "the facts show before the picture"
+shot preview-portrait-loading
+wait_for "d['preview'] == 'video: portrait.mp4'" 20
+expect "d['preview'] == 'video: portrait.mp4'" "then the picture takes the place kept for it"
+shot preview-portrait
 
 # A picture is in the cache now, under the spec's name, for the image and the
 # video at least. Audio without embedded art may have none.

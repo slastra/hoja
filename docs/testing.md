@@ -98,7 +98,10 @@ scripts/sway-harness.sh "$(scripts/tests/setup-drag-external.sh)" scripts/tests/
 audio file with ffmpeg, and also writes a text file and a binary file. The
 suite rests the pointer on each row and reads the preview's kind from the
 probe. It also checks that the pictures went into the thumbnail cache and that
-a second look comes from the cache. The harness points `XDG_CACHE_HOME` into
+a second look comes from the cache. For MP4, the suite installs a thumbnailer
+that waits two seconds, so that it can see the place that is kept for the
+picture. The fixture includes a video turned a quarter, to show that the place
+has the shape of the turned picture. The harness points `XDG_CACHE_HOME` into
 the out-dir, so the test does not write to the cache that the desktop shares.
 
 ```sh
