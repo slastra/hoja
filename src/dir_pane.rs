@@ -4479,10 +4479,6 @@ impl DirPane {
         // acts on. It is usually also selected, so it needs its own mark.
         let is_lead = self.cursor_ix == Some(ix);
         let is_dir = entry.is_dir;
-        // Dropping onto this row and dragging it away both end in a real file
-        // operation, so both hang off this rather than off the key. `None`
-        // means the row is a member of an archive, and neither is offered.
-        let on_disk = entry.on_disk().map(Path::to_path_buf);
 
         let colors = cx.theme().colors();
         // Deliberately one content colour throughout: names, secondary columns, and
@@ -4614,6 +4610,90 @@ impl DirPane {
         // own name.
         let label = entry.relative.clone().unwrap_or_else(|| entry.name.clone());
 
+        let row = div()
+            .id(ix)
+            // Uniform row height is what lets `uniform_list` virtualize.
+            .h(px(ROW_HEIGHT))
+            // `uniform_list` hands each row `Definite(list_width)` as *available* space,
+            // but a flex root with `width: auto` sizes to its content, so without
+            // `w_full` the Name cell's `flex_1` has nothing to expand into and the
+            // columns drift out of alignment with the header.
+            .w_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .cursor_pointer()
+            .text_sm()
+            // Every row carries the border, and only the lead one colours it:
+            // uniform_list virtualizes on a single measured row height, so the
+            // geometry cannot differ between rows.
+            .border_1()
+            .border_color(if is_lead {
+                colors.border_focused
+            } else {
+                gpui::transparent_black()
+            })
+            .when(selected, |this| {
+                // Held at half strength in the pane that is not taking keys, so
+                // two panes with selections cannot be confused for each other.
+                // Alpha rather than a different colour: it stays the selection
+                // colour of whatever theme is loaded, only quieter.
+                let mut fill = colors.element_selected;
+                if !self.active {
+                    fill.a *= INACTIVE_SELECTION_ALPHA;
+                }
+                this.bg(fill)
+            })
+            .when(!selected, |this| {
+                this.hover(|style| style.bg(colors.element_hover))
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(NAME_MIN_WIDTH))
+                    .px_2()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1p5()
+                    .text_color(name_color)
+                    .children(icon_path.map(|path| Icon::from_path(path, content)))
+                    .child(match rename_editor {
+                        Some(editor) => editor.into_any_element(),
+                        None => div().truncate().child(label).into_any_element(),
+                    }),
+            );
+
+        let row = cells
+            .into_iter()
+            .fold(row, |row, spec| row.child(spacer()).child(cell(spec)));
+        self.interactive(row, ix, true, cx)
+    }
+
+    /// What an entry does under the pointer, the same in every layout: a
+    /// click selects, a double-click opens, a right-click opens the menu, a
+    /// drag carries it (or the selection) away, and a folder on the disk takes
+    /// drops. Applied to whatever element stands for entry `ix`, a row or a
+    /// card, after that element is drawn.
+    ///
+    /// `hover_preview` adds the preview tooltip for a file on the disk.
+    fn interactive(
+        &self,
+        row: gpui::Stateful<gpui::Div>,
+        ix: usize,
+        hover_preview: bool,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let entry = &self.entries[ix];
+        let selected = self.selected.contains(ix);
+        let is_dir = entry.is_dir;
+        // Dropping onto this entry and dragging it away both end in a real
+        // file operation, so both hang off this rather than off the key.
+        // `None` means a member of an archive, and neither is offered.
+        let on_disk = entry.on_disk().map(Path::to_path_buf);
+        let renaming = self.renaming.as_ref().is_some_and(|r| r.ix == ix);
+        let colors = cx.theme().colors();
+
         // Dragging a selected row takes the whole selection; dragging an
         // unselected one takes only itself, without disturbing the selection.
         //
@@ -4691,70 +4771,14 @@ impl DirPane {
         // likely resting on the field rather than asking about the file.
         let preview = on_disk
             .clone()
-            .filter(|_| !is_dir && rename_editor.is_none() && crate::preview::enabled(cx))
+            .filter(|_| hover_preview && !is_dir && !renaming && crate::preview::enabled(cx))
             .map(|path| crate::preview::Subject {
                 path: Arc::from(path),
                 modified: entry.modified,
                 size: entry.size,
             });
 
-        let row = div()
-            .id(ix)
-            // Uniform row height is what lets `uniform_list` virtualize.
-            .h(px(ROW_HEIGHT))
-            // `uniform_list` hands each row `Definite(list_width)` as *available* space,
-            // but a flex root with `width: auto` sizes to its content, so without
-            // `w_full` the Name cell's `flex_1` has nothing to expand into and the
-            // columns drift out of alignment with the header.
-            .w_full()
-            .flex()
-            .flex_row()
-            .items_center()
-            .cursor_pointer()
-            .text_sm()
-            // Every row carries the border, and only the lead one colours it:
-            // uniform_list virtualizes on a single measured row height, so the
-            // geometry cannot differ between rows.
-            .border_1()
-            .border_color(if is_lead {
-                colors.border_focused
-            } else {
-                gpui::transparent_black()
-            })
-            .when(selected, |this| {
-                // Held at half strength in the pane that is not taking keys, so
-                // two panes with selections cannot be confused for each other.
-                // Alpha rather than a different colour: it stays the selection
-                // colour of whatever theme is loaded, only quieter.
-                let mut fill = colors.element_selected;
-                if !self.active {
-                    fill.a *= INACTIVE_SELECTION_ALPHA;
-                }
-                this.bg(fill)
-            })
-            .when(!selected, |this| {
-                this.hover(|style| style.bg(colors.element_hover))
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(NAME_MIN_WIDTH))
-                    .px_2()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1p5()
-                    .text_color(name_color)
-                    .children(icon_path.map(|path| Icon::from_path(path, content)))
-                    .child(match rename_editor {
-                        Some(editor) => editor.into_any_element(),
-                        None => div().truncate().child(label).into_any_element(),
-                    }),
-            );
-
-        cells
-            .into_iter()
-            .fold(row, |row, spec| row.child(spacer()).child(cell(spec)))
+        row
             // A folder is a place to drop things only when it is a folder on
             // the disk. There is nowhere to put a file inside an archive.
             .when_some(on_disk.clone().filter(|_| is_dir), |row, target| {
