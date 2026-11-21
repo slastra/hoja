@@ -537,7 +537,7 @@ impl PreviewTooltip {
 }
 
 /// Where a picture of this shape goes in the card: the full width, unless it
-/// is so tall that the height has to give, and then narrower and centred.
+/// is so tall that the height has to give, and then narrower and centered.
 fn frame(aspect: f32) -> (f32, f32) {
     let aspect = if aspect.is_finite() && aspect > 0. {
         aspect
@@ -574,6 +574,137 @@ fn placeholder(
         .into_any_element()
 }
 
+/// Where a tooltip's picture is.
+enum Shown<'a> {
+    /// Being made. Its place is kept.
+    Waiting,
+    /// Will not come: no thumbnailer, or one that failed.
+    Missing,
+    Ready(&'a Picture),
+}
+
+impl PreviewTooltip {
+    fn shown(&self) -> Shown<'_> {
+        match &self.preview {
+            None => Shown::Waiting,
+            Some(preview) => preview
+                .picture
+                .as_ref()
+                .map_or(Shown::Missing, Shown::Ready),
+        }
+    }
+
+    /// An image's or a video's picture, the full width of the card, or the
+    /// place kept for it.
+    fn picture_body(&self, facts: &Facts, colors: &theme::ThemeColors) -> gpui::AnyElement {
+        let hold = colors.element_hover;
+        match self.shown() {
+            Shown::Ready(picture) => {
+                let (w, h) = frame(picture.width as f32 / picture.height.max(1) as f32);
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .bg(hold)
+                    .rounded_t(px(INNER_RADIUS))
+                    .child(
+                        img(picture.image.clone())
+                            .w(px(w))
+                            .h(px(h))
+                            // Only a picture of the full width reaches the
+                            // card's corners.
+                            .when(w >= PICTURE, |img| img.rounded_t(px(INNER_RADIUS))),
+                    )
+                    .into_any_element()
+            }
+            Shown::Missing => note("No picture", colors),
+            Shown::Waiting => {
+                let (_, h) = frame(facts.aspect.unwrap_or(16. / 9.));
+                placeholder(PICTURE, h, hold, |el| el.rounded_t(px(INNER_RADIUS)))
+            }
+        }
+    }
+
+    /// An audio file's tags, with its cover beside them when it has one.
+    fn audio_body(&self, facts: &Facts, colors: &theme::ThemeColors) -> gpui::AnyElement {
+        let tags = facts.tags.clone().unwrap_or_default();
+        let cover = match self.shown() {
+            Shown::Ready(picture) => {
+                let (w, h) = self.cover(picture);
+                Some(
+                    img(picture.image.clone())
+                        .flex_none()
+                        .w(px(w))
+                        .h(px(h))
+                        .rounded_sm()
+                        .into_any_element(),
+                )
+            }
+            Shown::Missing => None,
+            // `aspect` is set only for a file that has a cover to show.
+            Shown::Waiting => facts.aspect.map(|_| {
+                placeholder(COVER, COVER, colors.element_hover, |el| {
+                    el.flex_none().rounded_sm()
+                })
+            }),
+        };
+        div()
+            .flex()
+            .flex_row()
+            .gap_2()
+            .children(cover)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_w_0()
+                    .when_some(tags.title, |col, title| {
+                        col.child(div().truncate().child(title))
+                    })
+                    .when_some(tags.artist, |col, artist| {
+                        col.child(div().truncate().child(artist))
+                    })
+                    .when_some(tags.album, |col, album| {
+                        col.child(div().truncate().text_color(colors.text_muted).child(album))
+                    }),
+            )
+            .into_any_element()
+    }
+}
+
+/// A text file's first lines, in the mono font.
+fn text_body(
+    facts: &Facts,
+    mono: Option<SharedString>,
+    colors: &theme::ThemeColors,
+) -> gpui::AnyElement {
+    match &facts.lines {
+        Some(lines) if !lines.is_empty() => div()
+            .flex()
+            .flex_col()
+            .text_xs()
+            .when_some(mono, |el, family| el.font_family(family))
+            .children(lines.iter().map(|line| {
+                // An empty line would collapse to no height.
+                let line = if line.is_empty() { " " } else { line.as_str() };
+                div()
+                    .whitespace_nowrap()
+                    .child(SharedString::from(line.to_string()))
+            }))
+            .into_any_element(),
+        Some(_) => note("Empty file", colors),
+        None => note("Not text", colors),
+    }
+}
+
+/// A short muted line in place of a body.
+fn note(text: &'static str, colors: &theme::ThemeColors) -> gpui::AnyElement {
+    div()
+        .text_color(colors.text_muted)
+        .child(text)
+        .into_any_element()
+}
+
 impl Render for PreviewTooltip {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Until the kind is known, and for a file with nothing to show, an
@@ -581,118 +712,22 @@ impl Render for PreviewTooltip {
         let Some(facts) = self.facts.clone().filter(|f| f.kind != Kind::Other) else {
             return div().into_any_element();
         };
-        let kind = facts.kind;
-        let colors = cx.theme().colors();
-        let muted = colors.text_muted;
-        let hold = colors.element_hover;
         let mono = crate::theming::numeric_font(cx);
-        // `None` while the picture is being made, then `Some` of what came.
-        let picture: Option<Option<&Picture>> = self
-            .preview
-            .as_ref()
-            .map(|preview| preview.picture.as_ref());
+        let ui = crate::theming::ui_font(cx);
+        let colors = cx.theme().colors();
 
-        // An image or a video fills the card's width with its picture, or with
-        // the place kept for it, so the card has a fixed width and only the
-        // lines of text are padded.
-        let full_bleed =
-            matches!(kind, Kind::Image | Kind::Video) && !matches!(picture, Some(None));
-
-        let body = match kind {
-            Kind::Image | Kind::Video => match picture {
-                Some(Some(picture)) => {
-                    let (w, h) = frame(picture.width as f32 / picture.height.max(1) as f32);
-                    div()
-                        .w_full()
-                        .flex()
-                        .justify_center()
-                        .bg(hold)
-                        .rounded_t(px(INNER_RADIUS))
-                        .child(
-                            img(picture.image.clone())
-                                .w(px(w))
-                                .h(px(h))
-                                // Only a picture of the full width reaches
-                                // the card's corners.
-                                .when(w >= PICTURE, |img| img.rounded_t(px(INNER_RADIUS))),
-                        )
-                        .into_any_element()
-                }
-                Some(None) => div()
-                    .text_color(muted)
-                    .child("No picture")
-                    .into_any_element(),
-                None => {
-                    let (_, h) = frame(facts.aspect.unwrap_or(16. / 9.));
-                    placeholder(PICTURE, h, hold, |el| el.rounded_t(px(INNER_RADIUS)))
-                }
-            },
-            Kind::Audio => {
-                let tags = facts.tags.clone().unwrap_or_default();
-                let cover = match picture {
-                    Some(Some(picture)) => {
-                        let (w, h) = self.cover(picture);
-                        Some(
-                            img(picture.image.clone())
-                                .flex_none()
-                                .w(px(w))
-                                .h(px(h))
-                                .rounded_sm()
-                                .into_any_element(),
-                        )
-                    }
-                    Some(None) => None,
-                    None => facts
-                        .aspect
-                        .map(|_| placeholder(COVER, COVER, hold, |el| el.flex_none().rounded_sm())),
-                };
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .children(cover)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .min_w_0()
-                            .when_some(tags.title, |col, title| {
-                                col.child(div().truncate().child(title))
-                            })
-                            .when_some(tags.artist, |col, artist| {
-                                col.child(div().truncate().child(artist))
-                            })
-                            .when_some(tags.album, |col, album| {
-                                col.child(div().truncate().text_color(muted).child(album))
-                            }),
-                    )
-                    .into_any_element()
-            }
-            Kind::Text => match &facts.lines {
-                Some(lines) if !lines.is_empty() => div()
-                    .flex()
-                    .flex_col()
-                    .text_xs()
-                    .when_some(mono, |el, family| el.font_family(family))
-                    .children(lines.iter().map(|line| {
-                        // An empty line would collapse to no height.
-                        let line = if line.is_empty() { " " } else { line.as_str() };
-                        div()
-                            .whitespace_nowrap()
-                            .child(SharedString::from(line.to_string()))
-                    }))
-                    .into_any_element(),
-                Some(_) => div()
-                    .text_color(muted)
-                    .child("Empty file")
-                    .into_any_element(),
-                None => div().text_color(muted).child("Not text").into_any_element(),
-            },
+        let body = match facts.kind {
+            Kind::Image | Kind::Video => self.picture_body(&facts, colors),
+            Kind::Audio => self.audio_body(&facts, colors),
+            Kind::Text => text_body(&facts, mono, colors),
             Kind::Other => unreachable!("filtered above"),
         };
-
+        // An image or a video fills the card's width with its picture, or
+        // with the place kept for it. The card then has a fixed width, and
+        // only the facts line under the picture is padded.
+        let full_bleed = matches!(facts.kind, Kind::Image | Kind::Video)
+            && !matches!(self.shown(), Shown::Missing);
         let line = self.facts_line();
-        let padded = |el: gpui::Div| if full_bleed { el.px_2() } else { el };
 
         // The padding keeps the box clear of the pointer: gpui puts a
         // tooltip one pixel from it.
@@ -717,12 +752,16 @@ impl Render for PreviewTooltip {
                     .text_color(colors.text)
                     // Drawn at the window's root, outside the workspace's
                     // tree, so the family is not inherited from there.
-                    .when_some(crate::theming::ui_font(cx), |el, family| {
-                        el.font_family(family)
-                    })
+                    .when_some(ui, |el, family| el.font_family(family))
                     .child(body)
                     .when(!line.is_empty(), |el| {
-                        el.child(padded(div().text_xs().text_color(muted).child(line)))
+                        el.child(
+                            div()
+                                .when(full_bleed, |el| el.px_2())
+                                .text_xs()
+                                .text_color(colors.text_muted)
+                                .child(line),
+                        )
                     }),
             )
             .into_any_element()
