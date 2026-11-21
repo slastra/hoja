@@ -2014,33 +2014,19 @@ impl Workspace {
             return;
         }
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        let mut watcher = match notify::recommended_watcher(move |res| {
-            let _ = tx.send(res);
-        }) {
-            Ok(watcher) => watcher,
-            Err(err) => {
-                eprintln!("[hoja] settings watcher unavailable: {err}");
-                return;
-            }
-        };
-        // The directory, not the file: an editor that writes by rename would
-        // otherwise leave the watch pointing at a deleted inode.
-        use notify::Watcher as _;
-        if watcher
-            .watch(&dir, notify::RecursiveMode::NonRecursive)
-            .is_err()
-        {
+        // The directory, not the file: see `DirWatch`.
+        let Some(watch) = config::DirWatch::new(&dir, "settings") else {
             return;
-        }
-
+        };
         self.settings_task = Some(cx.spawn(async move |this, cx| {
-            let _watcher = watcher;
             loop {
-                cx.background_executor().timer(config::SAVE_DEBOUNCE).await;
-                if !config::drain_changes(&rx) {
-                    continue;
-                }
+                watch
+                    .changed(
+                        cx.background_executor(),
+                        config::SAVE_DEBOUNCE,
+                        Duration::ZERO,
+                    )
+                    .await;
                 if this
                     .update(cx, |this, cx| {
                         this.apply_settings(config::Settings::load(), cx)

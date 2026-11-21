@@ -2704,43 +2704,18 @@ impl DirPane {
             None => anchor.to_path_buf(),
         };
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        let mut watcher = match notify::recommended_watcher(move |res| {
-            let _ = tx.send(res);
-        }) {
-            Ok(watcher) => watcher,
-            Err(err) => {
-                eprintln!("[hoja] directory watcher unavailable: {err}");
-                return;
-            }
-        };
-
-        use notify::Watcher as _;
-        if let Err(err) = watcher.watch(&dir, notify::RecursiveMode::NonRecursive) {
-            // An unreadable or vanished directory is not worth a message: the
-            // listing itself already reports that.
-            let _ = err;
+        let Some(watch) = crate::config::DirWatch::new(&dir, "directory") else {
             return;
-        }
-
+        };
         let task = cx.spawn(async move |this, cx| {
-            // Keep the watcher alive for the lifetime of this task.
-            let _watcher = watcher;
             loop {
-                // Poll rather than blocking on `recv`, so the receiver stays
-                // owned by this task instead of moving into a new future each
-                // iteration.
-                cx.background_executor().timer(WATCH_INTERVAL).await;
-
-                if !crate::config::drain_changes(&rx) {
-                    continue;
-                }
-
-                // A copy or an extract emits one event per file. Coalesce the
-                // burst so a long operation re-lists a few times rather than
-                // thousands, which matters when the directory is large.
-                cx.background_executor().timer(WATCH_INTERVAL).await;
-                crate::config::drain_changes(&rx);
+                // A copy or an extract emits one event per file. The settle
+                // coalesces the burst, so a long operation re-lists a few
+                // times rather than thousands, which matters when the
+                // directory is large.
+                watch
+                    .changed(cx.background_executor(), WATCH_INTERVAL, WATCH_INTERVAL)
+                    .await;
 
                 // The arranged contents are remembered per archive, so
                 // forgetting them is what makes the re-list read the file again
@@ -2810,31 +2785,17 @@ impl DirPane {
         if self.git_watch.as_ref().map(|(dir, _)| dir) == Some(&git_dir) {
             return;
         }
-        let (tx, rx) = std::sync::mpsc::channel();
-        let Ok(mut watcher) = notify::recommended_watcher(move |res| {
-            let _ = tx.send(res);
-        }) else {
-            return;
-        };
-        use notify::Watcher as _;
         // Not recursive: the index, HEAD and the files beside them are what a
         // status depends on, and `objects/` under it churns on every write.
-        if watcher
-            .watch(&git_dir, notify::RecursiveMode::NonRecursive)
-            .is_err()
-        {
+        let Some(watch) = crate::config::DirWatch::new(&git_dir, "git") else {
             return;
-        }
+        };
         let task = cx.spawn(async move |this, cx| {
-            let _watcher = watcher;
             loop {
-                cx.background_executor().timer(WATCH_INTERVAL).await;
-                if !crate::config::drain_changes(&rx) {
-                    continue;
-                }
                 // A commit writes several files in a row. Ask once.
-                cx.background_executor().timer(WATCH_INTERVAL).await;
-                crate::config::drain_changes(&rx);
+                watch
+                    .changed(cx.background_executor(), WATCH_INTERVAL, WATCH_INTERVAL)
+                    .await;
                 if this.update(cx, |this, cx| this.reload_git(cx)).is_err() {
                     break;
                 }

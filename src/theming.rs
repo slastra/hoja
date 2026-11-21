@@ -120,44 +120,20 @@ pub fn watch_user_themes(cx: &mut App) {
         return;
     }
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    let mut watcher = match notify::recommended_watcher(move |res| {
-        let _ = tx.send(res);
-    }) {
-        Ok(w) => w,
-        Err(err) => {
-            eprintln!("[hoja] theme watcher unavailable: {err}");
-            return;
-        }
-    };
-
-    use notify::Watcher as _;
-    if let Err(err) = watcher.watch(&dir, notify::RecursiveMode::NonRecursive) {
-        eprintln!("[hoja] cannot watch {}: {err}", dir.display());
+    let Some(watch) = crate::config::DirWatch::new(&dir, "theme") else {
         return;
-    }
-
+    };
     cx.spawn(async move |cx| {
-        // Keep the watcher alive for the lifetime of this task.
-        let _watcher = watcher;
         loop {
-            // Poll rather than blocking on `recv`, so the receiver stays owned by this
-            // task instead of being moved into a new future on every iteration.
-            cx.background_executor()
-                .timer(Duration::from_millis(250))
+            // The settle coalesces the burst of events an editor emits when
+            // saving.
+            watch
+                .changed(
+                    cx.background_executor(),
+                    Duration::from_millis(250),
+                    Duration::from_millis(100),
+                )
                 .await;
-
-            if !crate::config::drain_changes(&rx) {
-                continue;
-            }
-
-            // Coalesce the burst of events an editor emits when saving, then drain
-            // whatever arrived during the wait.
-            cx.background_executor()
-                .timer(Duration::from_millis(100))
-                .await;
-            crate::config::drain_changes(&rx);
-
             cx.update(|cx| {
                 load_user_themes(cx);
                 // Read now, not when the watcher was armed.

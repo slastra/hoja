@@ -591,6 +591,71 @@ pub fn is_content_change(event: &notify::Event) -> bool {
     )
 }
 
+/// A watch on one directory, not recursive, for a task that waits on it.
+///
+/// Every watcher in hoja is the same shape, and four of them were written out
+/// by hand: the listing, the repository's git directory, the themes directory
+/// and the settings file's. This is that shape once.
+///
+/// The directory rather than a file, always: an editor that saves by writing
+/// a new file and renaming it over the old one leaves a watch on the file
+/// pointing at a deleted inode.
+pub struct DirWatch {
+    _watcher: notify::RecommendedWatcher,
+    rx: std::sync::mpsc::Receiver<notify::Result<notify::Event>>,
+}
+
+impl DirWatch {
+    /// Watch `dir`, or `None` when it cannot be watched. A watcher that
+    /// cannot be made at all is reported, as `what`; a directory that cannot
+    /// be watched is not, since whatever reads it reports that already.
+    pub fn new(dir: &Path, what: &str) -> Option<Self> {
+        use notify::Watcher as _;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = match notify::recommended_watcher(move |res| {
+            let _ = tx.send(res);
+        }) {
+            Ok(watcher) => watcher,
+            Err(err) => {
+                eprintln!("[hoja] {what} watcher unavailable: {err}");
+                return None;
+            }
+        };
+        watcher
+            .watch(dir, notify::RecursiveMode::NonRecursive)
+            .ok()?;
+        Some(Self {
+            _watcher: watcher,
+            rx,
+        })
+    }
+
+    /// Wait until something in the directory changes, checking every `poll`,
+    /// then a further `settle` for the rest of a burst, and return once it is
+    /// quiet. Reads are not changes: see `is_content_change`.
+    ///
+    /// Polled rather than blocking on the channel, so the receiver stays
+    /// owned by the task that waits rather than moving into a new future each
+    /// time round.
+    pub async fn changed(
+        &self,
+        executor: &gpui::BackgroundExecutor,
+        poll: Duration,
+        settle: Duration,
+    ) {
+        loop {
+            executor.timer(poll).await;
+            if drain_changes(&self.rx) {
+                break;
+            }
+        }
+        if !settle.is_zero() {
+            executor.timer(settle).await;
+            drain_changes(&self.rx);
+        }
+    }
+}
+
 /// Drain a watcher channel, reporting whether any real change arrived.
 pub fn drain_changes(rx: &std::sync::mpsc::Receiver<notify::Result<notify::Event>>) -> bool {
     let mut changed = false;
