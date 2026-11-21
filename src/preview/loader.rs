@@ -25,8 +25,9 @@ use std::sync::Arc;
 
 use gpui::{App, AppContext as _, EntityId, Global, RenderImage};
 
+use super::Subject;
+use super::facts::{Facts, Preview};
 use super::thumbnail::Size;
-use super::{Facts, Preview, Subject};
 
 /// Facts jobs at once. Each is a header read, a MIME sniff, and for a PDF a
 /// `pdfinfo` run of tens of milliseconds.
@@ -147,7 +148,7 @@ impl Loader {
     /// the shape memory. The outer `None` is "not known yet".
     fn shape(&self, key: &Key) -> Option<Option<f32>> {
         match self.known(key) {
-            Known::Done(preview) => Some(super::settled_shape(&preview)),
+            Known::Done(preview) => Some(super::facts::settled_shape(&preview)),
             Known::Facts(facts) => Some(facts.aspect),
             Known::Nothing => self.shapes.get(key).copied(),
         }
@@ -389,7 +390,7 @@ fn pump(cx: &mut App) {
         cx.spawn(async move |cx| {
             let path = key.subject.path.clone();
             let facts = cx
-                .background_spawn(async move { Arc::new(super::facts(&path)) })
+                .background_spawn(async move { Arc::new(super::facts::read(&path)) })
                 .await;
             cx.update(|cx| learned(key, facts, cx));
         })
@@ -403,7 +404,7 @@ fn pump(cx: &mut App) {
         cx.spawn(async move |cx| {
             let (path, size) = (key.subject.path.clone(), key.size);
             let preview = cx
-                .background_spawn(async move { super::picture(&path, facts, size) })
+                .background_spawn(async move { super::facts::picture(&path, facts, size) })
                 .await;
             cx.update(|cx| made(key, Arc::new(preview), cx));
         })
@@ -439,7 +440,7 @@ fn learned(key: Key, facts: Arc<Facts>, cx: &mut App) {
 fn made(key: Key, preview: Arc<Preview>, cx: &mut App) {
     let loader = cx.default_global::<Loader>();
     loader.running_pictures.remove(&key);
-    loader.remember_shape(&key, super::settled_shape(&preview));
+    loader.remember_shape(&key, super::facts::settled_shape(&preview));
     loader.log(&key);
     let watchers = loader.watchers(&key);
     let dropped = loader.keep_ready(key, preview);
@@ -461,7 +462,7 @@ fn settle(dropped: Vec<Arc<RenderImage>>, watchers: Vec<EntityId>, cx: &mut App)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::preview::Kind;
+    use crate::preview::facts::Kind;
     use std::path::Path;
 
     fn key(n: u64) -> Key {
