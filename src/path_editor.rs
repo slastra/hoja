@@ -701,14 +701,14 @@ impl Focusable for PathEditor {
 /// How the field draws itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Chrome {
-    /// Its own background and border. The address bar and the search field sit
-    /// on the toolbar among buttons and icons, and have to read as somewhere
-    /// you can type.
+    /// Inline, as Zed edits inline: in the place of the text it edits, the
+    /// address bar's path or a row's name, with that text's padding and no
+    /// border or background of its own. The caret and the selection say it is
+    /// being edited, as in Zed's project panel when it renames.
     Field,
-    /// Neither. Inside a picker the field *is* the modal's first row: it has
-    /// the whole width, a rule under it, and nothing beside it to be confused
-    /// with. A second surface inset into the first only says the same thing
-    /// twice, in a slightly different colour.
+    /// Not even the padding. Inside a picker the field *is* the modal's first
+    /// row: it has the whole width, a rule under it, and nothing beside it to
+    /// be confused with.
     Bare,
 }
 
@@ -717,12 +717,7 @@ impl EventEmitter<DismissEvent> for PathEditor {}
 
 impl Render for PathEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = cx.theme().colors();
-        let border = if self.error {
-            cx.theme().status().error
-        } else {
-            colors.border_selected
-        };
+        let error = cx.theme().status().error;
 
         div()
             .key_context(self.context.as_ref())
@@ -757,18 +752,14 @@ impl Render for PathEditor {
             .flex_1()
             .h(px(22.))
             .map(|el| match self.chrome {
-                Chrome::Field => el
-                    .px_1()
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(border)
-                    .bg(colors.editor_background),
-                // The error border still shows: it is the only thing that
-                // reports a path that did not resolve, and losing it would make
-                // the field silently do nothing.
-                Chrome::Bare if self.error => el.border_1().border_color(border),
+                Chrome::Field => el.px_1().rounded_sm(),
                 Chrome::Bare => el,
             })
+            // An error is the one border either draws, as Zed colours a rename
+            // that will not do: it is the only thing that reports a path that
+            // did not resolve, and without it the field would silently do
+            // nothing.
+            .when(self.error, |el| el.border_1().border_color(error))
             .overflow_hidden()
             .child(PathElement {
                 editor: cx.entity(),
