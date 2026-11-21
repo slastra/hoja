@@ -25,8 +25,29 @@ default-folder-viewer='list-view'
 start-with-sidebar=false
 start-with-status-bar=false
 KEY
+# The private bus activates nothing. With the standard service dirs, nemo's
+# first drag auto-started a second xdg-document-portal on it, and that one
+# fusermounts what it takes for a stale $XDG_RUNTIME_DIR/doc: the session's
+# live document portal lost its mount and exited (2026-11-04), and the mount
+# went with the test's copy when the bus ended.
+cat > "$OUT/nemo-bus.conf" <<'BUS'
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <keep_umask/>
+  <listen>unix:tmpdir=/tmp</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+BUS
 GSETTINGS_BACKEND=keyfile GDK_BACKEND=wayland NO_AT_BRIDGE=1 \
-    dbus-run-session -- nemo --no-desktop "$NEMO_DIR" >"$OUT/nemo.log" 2>&1 &
+    dbus-run-session --config-file="$OUT/nemo-bus.conf" -- \
+    nemo --no-desktop "$NEMO_DIR" >"$OUT/nemo.log" 2>&1 &
 
 # rect APP_ID: "x y w h" of that window, once it is mapped.
 rect() {
