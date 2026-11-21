@@ -732,23 +732,24 @@ impl Render for PathEditor {
             // where the text it stands in for starts, and there is no border
             // or background. The caret and the selection say it is being
             // edited. The caller gives it the padding of what it replaces.
-            //
-            // The border is always there, clear unless there is an error, and
-            // the margin takes its width back, so an error outlines the field
-            // without moving its text. As Zed colours a rename that will not
-            // do, it is the only thing that reports a path that did not
-            // resolve.
-            .mx(px(-1.))
-            .border_1()
-            .rounded_sm()
-            .border_color(if self.error {
-                error
-            } else {
-                gpui::transparent_black()
-            })
+            .relative()
             .overflow_hidden()
             .child(PathElement {
                 editor: cx.entity(),
+            })
+            // An error outlines the field, as Zed colours a rename that will
+            // not do: it is the only thing that reports a path that did not
+            // resolve. Drawn over the field rather than as its border, so it
+            // takes no room and the text does not move when it comes or goes.
+            .when(self.error, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(error),
+                )
             })
     }
 }

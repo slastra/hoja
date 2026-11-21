@@ -66,6 +66,17 @@ impl DirPane {
                 })
         };
 
+        // The rules either side of the path, the toolbar's full height, so
+        // they meet the rule under it.
+        let rule = || {
+            div()
+                .flex_none()
+                .self_stretch()
+                .w(px(1.))
+                .mx_1()
+                .bg(colors.border)
+        };
+
         div()
             .flex_none()
             .h(px(28.))
@@ -108,6 +119,7 @@ impl DirPane {
                 Box::new(GoHome),
                 cx,
             ))
+            .child(rule())
             .child(match self.path_editor.clone() {
                 // The label's padding, so the path does not move when it
                 // becomes editable.
@@ -131,6 +143,7 @@ impl DirPane {
                     .child(self.dir.to_string())
                     .into_any_element(),
             })
+            .child(rule())
             .child(
                 div()
                     .id("hoja-search")
