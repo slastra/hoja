@@ -13,10 +13,10 @@ use std::{iter, mem};
 
 use anyhow::Result;
 use gpui::{
-    Along, AnyElement, App, Axis, BorderStyle, Bounds, CursorStyle, Display, Element, ElementId,
-    Entity, FlexDirection, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId,
-    IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Size,
-    Style, StyleRefinement, Window, px, relative, size,
+    Along, AnyElement, App, Axis, Bounds, CursorStyle, Display, Element, ElementId, Entity,
+    FlexDirection, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Size, Style,
+    StyleRefinement, Window, px, relative, size,
 };
 use parking_lot::Mutex;
 use smallvec::SmallVec;
@@ -31,8 +31,6 @@ const DIVIDER_SIZE: f32 = 1.0;
 
 const HORIZONTAL_MIN_SIZE: f32 = 80.;
 const VERTICAL_MIN_SIZE: f32 = 100.;
-
-const ACTIVE_PANE_BORDER_SIZE: f32 = 1.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SplitDirection {
@@ -464,21 +462,12 @@ impl PaneAxis {
         window: &mut Window,
         cx: &mut App,
     ) -> MemberRenderResult {
-        let mut active_pane_ix = None;
         let mut contains_active_pane = false;
-        let mut is_leaf_pane = Vec::with_capacity(self.members.len());
         let mut rendered_children = Vec::with_capacity(self.members.len());
 
         for (ix, member) in self.members.iter().enumerate() {
-            is_leaf_pane.push(matches!(member, Member::Pane(_)));
-
             let result = member.render((basis + ix) * 10, active_pane, window, cx);
-            if result.contains_active_pane {
-                contains_active_pane = true;
-                if matches!(member, Member::Pane(_)) {
-                    active_pane_ix = Some(ix);
-                }
-            }
+            contains_active_pane |= result.contains_active_pane;
             rendered_children.push(result.element);
         }
 
@@ -488,8 +477,6 @@ impl PaneAxis {
             self.flexes.clone(),
             self.bounding_boxes.clone(),
         )
-        .with_is_leaf_pane_mask(is_leaf_pane)
-        .with_active_pane(active_pane_ix)
         .children(rendered_children)
         .into_any_element();
 
@@ -523,8 +510,6 @@ fn pane_axis(
         flexes,
         bounding_boxes,
         children: SmallVec::new(),
-        active_pane_ix: None,
-        is_leaf_pane_mask: Vec::new(),
     }
 }
 
@@ -534,8 +519,6 @@ pub struct PaneAxisElement {
     flexes: Arc<Mutex<Vec<f32>>>,
     bounding_boxes: Arc<Mutex<Vec<Option<Bounds<Pixels>>>>>,
     children: SmallVec<[AnyElement; 2]>,
-    active_pane_ix: Option<usize>,
-    is_leaf_pane_mask: Vec<bool>,
 }
 
 pub struct PaneAxisLayout {
@@ -547,7 +530,6 @@ struct PaneAxisChildLayout {
     bounds: Bounds<Pixels>,
     element: AnyElement,
     handle: Option<PaneAxisHandleLayout>,
-    is_leaf_pane: bool,
 }
 
 struct PaneAxisHandleLayout {
@@ -556,16 +538,6 @@ struct PaneAxisHandleLayout {
 }
 
 impl PaneAxisElement {
-    fn with_active_pane(mut self, active_pane_ix: Option<usize>) -> Self {
-        self.active_pane_ix = active_pane_ix;
-        self
-    }
-
-    fn with_is_leaf_pane_mask(mut self, mask: Vec<bool>) -> Self {
-        self.is_leaf_pane_mask = mask;
-        self
-    }
-
     /// Drag-to-resize. Walks a list of "flex successors" from the dragged divider,
     /// draining a bucket of pixel change and clamping each pane to its minimum, moving
     /// flex between neighbours so the sum invariant holds.
@@ -774,7 +746,6 @@ impl Element for PaneAxisElement {
                 bounds: child_bounds,
                 element: child,
                 handle: None,
-                is_leaf_pane: self.is_leaf_pane_mask.get(ix).copied().unwrap_or(true),
             });
         }
         drop(bounding_boxes);
@@ -804,29 +775,6 @@ impl Element for PaneAxisElement {
         }
 
         for (ix, child) in layout.children.iter_mut().enumerate() {
-            // Inset by 1px horizontally so the overlay does not cover the divider.
-            let overlay_bounds = Bounds {
-                origin: child
-                    .bounds
-                    .origin
-                    .apply_along(Axis::Horizontal, |val| val + px(1.)),
-                size: child
-                    .bounds
-                    .size
-                    .apply_along(Axis::Horizontal, |val| val - px(1.)),
-            };
-
-            if child.is_leaf_pane && self.active_pane_ix == Some(ix) {
-                window.paint_quad(gpui::quad(
-                    overlay_bounds,
-                    0.,
-                    gpui::transparent_black(),
-                    ACTIVE_PANE_BORDER_SIZE,
-                    cx.theme().colors().border_selected,
-                    BorderStyle::Solid,
-                ));
-            }
-
             let Some(handle) = child.handle.as_mut() else {
                 continue;
             };
