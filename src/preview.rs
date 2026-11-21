@@ -35,7 +35,7 @@ use std::time::{Duration, SystemTime};
 
 use gpui::AnimationExt as _;
 use gpui::{
-    AnyView, App, AppContext as _, Context, Entity, EntityId, FontWeight, Global, IntoElement,
+    AnyView, App, AppContext as _, Context, Entity, EntityId, Global, IntoElement,
     ParentElement as _, Render, RenderImage, SharedString, Styled as _, WeakEntity, Window, div,
     img, prelude::FluentBuilder as _, px,
 };
@@ -52,8 +52,11 @@ const PICTURE: f32 = 256.;
 const TALLEST: f32 = 360.;
 /// The long side of an audio file's picture, beside its tags.
 const COVER: f32 = 96.;
-/// The widest a tooltip grows, which is where a long name truncates.
+/// The widest a tooltip grows, for a text file's long lines.
 const MAX_WIDTH: f32 = 640.;
+/// The card's corner radius (`rounded_md`) inside its one-pixel border. A
+/// picture at the top of the card takes these corners.
+const INNER_RADIUS: f32 = 5.;
 
 /// The file a row shows, as the row knows it when it is drawn.
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -533,8 +536,13 @@ fn frame(aspect: f32) -> (f32, f32) {
 
 /// A box that breathes where the picture will be, at the picture's size.
 /// The same pulse the Size column uses while it counts.
-fn placeholder(width: f32, height: f32, color: gpui::Hsla) -> gpui::AnyElement {
-    div()
+fn placeholder(
+    width: f32,
+    height: f32,
+    color: gpui::Hsla,
+    corners: impl FnOnce(gpui::Div) -> gpui::Div,
+) -> gpui::AnyElement {
+    corners(div())
         .w(px(width))
         .h(px(height))
         .bg(color)
@@ -566,11 +574,6 @@ impl Render for PreviewTooltip {
             .as_ref()
             .map(|preview| preview.picture.as_ref());
 
-        let name = div()
-            .truncate()
-            .font_weight(FontWeight::MEDIUM)
-            .child(self.name.clone());
-
         // An image or a video fills the card's width with its picture, or with
         // the place kept for it, so the card has a fixed width and only the
         // lines of text are padded.
@@ -586,7 +589,15 @@ impl Render for PreviewTooltip {
                         .flex()
                         .justify_center()
                         .bg(hold)
-                        .child(img(picture.image.clone()).w(px(w)).h(px(h)))
+                        .rounded_t(px(INNER_RADIUS))
+                        .child(
+                            img(picture.image.clone())
+                                .w(px(w))
+                                .h(px(h))
+                                // Only a picture of the full width reaches
+                                // the card's corners.
+                                .when(w >= PICTURE, |img| img.rounded_t(px(INNER_RADIUS))),
+                        )
                         .into_any_element()
                 }
                 Some(None) => div()
@@ -595,7 +606,7 @@ impl Render for PreviewTooltip {
                     .into_any_element(),
                 None => {
                     let (_, h) = frame(facts.aspect.unwrap_or(16. / 9.));
-                    placeholder(PICTURE, h, hold)
+                    placeholder(PICTURE, h, hold, |el| el.rounded_t(px(INNER_RADIUS)))
                 }
             },
             Kind::Audio => {
@@ -613,13 +624,9 @@ impl Render for PreviewTooltip {
                         )
                     }
                     Some(None) => None,
-                    None => facts.aspect.map(|_| {
-                        div()
-                            .flex_none()
-                            .rounded_sm()
-                            .child(placeholder(COVER, COVER, hold))
-                            .into_any_element()
-                    }),
+                    None => facts
+                        .aspect
+                        .map(|_| placeholder(COVER, COVER, hold, |el| el.flex_none().rounded_sm())),
                 };
                 div()
                     .flex()
@@ -676,7 +683,9 @@ impl Render for PreviewTooltip {
             .pt_2p5()
             .child(
                 div()
-                    .when(full_bleed, |el| el.w(px(PICTURE + 2.)).py_2())
+                    // The picture is the top of the card, so there is no
+                    // padding above it.
+                    .when(full_bleed, |el| el.w(px(PICTURE + 2.)).pb_2())
                     .when(!full_bleed, |el| el.max_w(px(MAX_WIDTH)).p_2())
                     .flex()
                     .flex_col()
@@ -693,7 +702,6 @@ impl Render for PreviewTooltip {
                     .when_some(crate::theming::ui_font(cx), |el, family| {
                         el.font_family(family)
                     })
-                    .child(padded(name))
                     .child(body)
                     .when(!line.is_empty(), |el| {
                         el.child(padded(div().text_xs().text_color(muted).child(line)))
