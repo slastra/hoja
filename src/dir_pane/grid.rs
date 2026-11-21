@@ -98,6 +98,102 @@ struct Inputs {
     previews: bool,
 }
 
+impl GridState {
+    /// A new listing's keys. Everything worked out from the old ones starts
+    /// over, and with nothing yet on screen there is nothing to hold still.
+    fn reset_keys(&mut self, keys: Vec<Option<Key>>, listing: u64) {
+        self.guesses = keys
+            .iter()
+            .map(|key| key.as_ref().and_then(preview::guessed_aspect))
+            .collect();
+        self.index_of = keys
+            .iter()
+            .enumerate()
+            .filter_map(|(ix, key)| Some((key.clone()?, ix)))
+            .collect();
+        self.sweep = Some(Arc::new(keys.iter().flatten().cloned().collect()));
+        self.settled = vec![None; keys.len()];
+        self.keys = keys;
+        self.keys_for = Some(listing);
+        self.seq = None;
+        self.held.clear();
+        self.aspects.clear();
+        self.anchor = None;
+    }
+
+    /// The cards whose shapes may have changed: the ones the change log
+    /// names since this grid last read it, or every card when it has not read
+    /// it yet or the log no longer reaches back that far. `log` is that
+    /// reading; `log_end` is where the log ends, taken before looking, so a
+    /// change made while looking is not lost.
+    fn changed_cards(&mut self, log: Option<(Vec<Key>, u64)>, log_end: u64) -> Vec<usize> {
+        match log {
+            Some((keys, end)) => {
+                self.seq = Some(end);
+                keys.iter()
+                    .filter_map(|key| self.index_of.get(key).copied())
+                    .collect()
+            }
+            None => {
+                self.seq = Some(log_end);
+                (0..self.keys.len()).collect()
+            }
+        }
+    }
+
+    /// Record the settled shapes of `cards`, from `settled`.
+    fn settle(&mut self, cards: &[usize], settled: impl Fn(&Key) -> Option<Option<f32>>) {
+        for &ix in cards {
+            self.settled[ix] = match &self.keys[ix] {
+                Some(key) => settled(key),
+                None => Some(None),
+            };
+        }
+    }
+
+    /// The shapes to lay the cards out with.
+    ///
+    /// With `old`, only what the cache learned has changed since that
+    /// layout, and the cards above the view, those whose bottom is above
+    /// `top` in it, keep the shapes they had while any of them is still a
+    /// guess. Each shape that settles above the view moves every card under
+    /// it in its column, and with the shapes arriving one at a time from the
+    /// sweep, that was a second or more of jitter after a jump down a large
+    /// folder. Held, they land in one layout once the last is known.
+    ///
+    /// Without `old`, a first layout or one for a new width, zoom or set of
+    /// card details, every card takes the best shape known.
+    fn aspects(
+        &mut self,
+        old: Option<&Masonry>,
+        top: f32,
+        changed: Vec<usize>,
+    ) -> Vec<Option<f32>> {
+        let count = self.keys.len();
+        let fresh = |ix: usize| self.settled[ix].unwrap_or(self.guesses[ix]);
+        let Some(old) = old.filter(|_| self.aspects.len() == count) else {
+            self.held.clear();
+            return (0..count).map(fresh).collect();
+        };
+        let mut aspects = self.aspects.clone();
+        let above = |ix: usize| old.rect(ix).is_some_and(|(_, y, _, h)| y + h <= top);
+        let unsettled_above =
+            (0..count).any(|ix| self.keys[ix].is_some() && self.settled[ix].is_none() && above(ix));
+        let mut update = std::mem::take(&mut self.held);
+        update.extend(changed);
+        update.sort_unstable();
+        update.dedup();
+        for ix in update {
+            if unsettled_above && above(ix) {
+                self.held.push(ix);
+            } else {
+                aspects[ix] = self.settled[ix].unwrap_or(self.guesses[ix]);
+            }
+        }
+        aspects
+    }
+}
+
 impl DirPane {
     pub(super) fn render_grid(
         &self,
@@ -267,117 +363,31 @@ impl DirPane {
                 .made_from
                 .is_some_and(|m| m.scale != scale || m.previews != previews)
         {
-            state.keys = self
-                .entries
-                .iter()
-                .map(|entry| {
-                    let path = entry.on_disk().filter(|_| previews && !entry.is_dir)?;
-                    Some(preview::key(
-                        preview::Subject {
-                            path: Arc::<Path>::from(path),
-                            modified: entry.modified,
-                            size: entry.size,
-                        },
-                        scale,
-                    ))
-                })
-                .collect();
-            state.keys_for = Some(self.listing_moved);
-            state.sweep = Some(Arc::new(state.keys.iter().flatten().cloned().collect()));
-            state.guesses = state
-                .keys
-                .iter()
-                .map(|key| key.as_ref().and_then(preview::guessed_aspect))
-                .collect();
-            state.index_of = state
-                .keys
-                .iter()
-                .enumerate()
-                .filter_map(|(ix, key)| Some((key.clone()?, ix)))
-                .collect();
-            state.settled = vec![None; state.keys.len()];
-            state.seq = None;
-            state.held.clear();
-            state.aspects.clear();
-            // A new listing has nothing on screen to hold still.
-            state.anchor = None;
+            state.reset_keys(self.grid_keys(scale, previews), self.listing_moved);
         }
         if state.made_from == Some(inputs) && state.layout.is_some() {
             return;
         }
 
-        let details = inputs.details as f32;
-        let count = self.entries.len();
+        let log = state.seq.and_then(|seq| preview::changes_since(seq, cx));
+        let changed = state.changed_cards(log, preview::log_end(cx));
+        state.settle(&changed, |key| preview::settled_aspect(key, cx));
 
-        // Bring the settled shapes up to date: the cards the change log
-        // names, or every card on a first look or a log that has moved on
-        // past where this grid read to.
-        let changed: Vec<usize> = match state.seq.and_then(|seq| preview::changes_since(seq, cx)) {
-            Some((keys, end)) => {
-                state.seq = Some(end);
-                keys.iter()
-                    .filter_map(|key| state.index_of.get(key).copied())
-                    .collect()
-            }
-            None => {
-                // Read before looking, so a change while looking is not lost.
-                state.seq = Some(preview::log_end(cx));
-                (0..count).collect()
-            }
-        };
-        for &ix in &changed {
-            state.settled[ix] = match &state.keys[ix] {
-                Some(key) => preview::settled_aspect(key, cx),
-                None => Some(None),
-            };
-        }
-
-        let state = &mut *state;
-        let fresh = |ix: usize| state.settled[ix].unwrap_or(state.guesses[ix]);
+        // Only what the cache learned changed, so the cards above the view
+        // can be held: see `GridState::aspects`.
         let only_learned = state.made_from.is_some_and(|made| {
             made == (Inputs {
                 log: made.log,
                 ..inputs
             })
         });
-        let mut aspects: Vec<Option<f32>>;
-        match state
-            .layout
-            .as_ref()
-            .filter(|_| only_learned && state.aspects.len() == count)
-        {
-            // Only what the cache learned changed: hold the cards above the
-            // view at the shapes they had, while any of them is still a
-            // guess. Each shape that settles above the view moves every card
-            // under it in its column, and with the shapes arriving one at a
-            // time from the sweep, that was a second or more of jitter after
-            // a jump down a large folder. Held, they land in one layout once
-            // the last is known.
-            Some(old) => {
-                aspects = state.aspects.clone();
-                let top = self.grid_offset();
-                let above = |ix: usize| old.rect(ix).is_some_and(|(_, y, _, h)| y + h <= top);
-                let unsettled_above = (0..count)
-                    .any(|ix| state.keys[ix].is_some() && state.settled[ix].is_none() && above(ix));
-                let mut update = std::mem::take(&mut state.held);
-                update.extend(changed);
-                update.sort_unstable();
-                update.dedup();
-                for ix in update {
-                    if unsettled_above && above(ix) {
-                        state.held.push(ix);
-                    } else {
-                        aspects[ix] = fresh(ix);
-                    }
-                }
-            }
-            // A first layout, or one for a new width, zoom or set of card
-            // details: every card at the best shape known.
-            None => {
-                aspects = (0..count).map(fresh).collect();
-                state.held.clear();
-            }
-        }
+        let old = state.layout.take();
+        let aspects = state.aspects(
+            old.as_ref().filter(|_| only_learned),
+            self.grid_offset(),
+            changed,
+        );
+        let details = inputs.details as f32;
         let target = self.view.card_width as f32;
         let layout = Masonry::new(width, target, self.entries.len(), |ix, card| {
             let picture = aspects[ix].map_or(0., |aspect| (card - BORDER) / aspect);
@@ -397,6 +407,25 @@ impl DirPane {
         state.layout = Some(layout);
         state.made_from = Some(inputs);
         state.aspects = aspects;
+    }
+
+    /// Each entry's preview key, or `None` for one with no picture to ask
+    /// for: a folder, an archive member, or any entry with previews off.
+    fn grid_keys(&self, scale: f32, previews: bool) -> Vec<Option<Key>> {
+        self.entries
+            .iter()
+            .map(|entry| {
+                let path = entry.on_disk().filter(|_| previews && !entry.is_dir)?;
+                Some(preview::key(
+                    preview::Subject {
+                        path: Arc::<Path>::from(path),
+                        modified: entry.modified,
+                        size: entry.size,
+                    },
+                    scale,
+                ))
+            })
+            .collect()
     }
 
     /// How far down the grid is scrolled, in positive pixels.
@@ -636,6 +665,96 @@ mod tests {
     fn layout() -> Masonry {
         // Three columns of cards 100 tall, bands every 108 from 8.
         Masonry::new(332., 100., 30, |_, _| 100.)
+    }
+
+    /// Six image cards in three columns, all at the 4:3 guess for a png.
+    fn six_guessed() -> GridState {
+        let mut state = GridState::default();
+        let keys = (0..6)
+            .map(|n| {
+                Some(preview::key(
+                    preview::Subject {
+                        path: Arc::from(Path::new(&format!("/g/{n}.png"))),
+                        modified: None,
+                        size: Some(n),
+                    },
+                    1.,
+                ))
+            })
+            .collect();
+        state.reset_keys(keys, 1);
+        state.aspects = state.aspects(None, 0., Vec::new());
+        state
+    }
+
+    fn laid_out(state: &GridState) -> Masonry {
+        let aspects = state.aspects.clone();
+        Masonry::new(332., 100., 6, |ix, card| {
+            aspects[ix].map_or(30., |a| card / a)
+        })
+    }
+
+    fn settle(state: &mut GridState, cards: &[usize], aspect: f32) {
+        let keys: Vec<Key> = cards
+            .iter()
+            .map(|&ix| state.keys[ix].clone().unwrap())
+            .collect();
+        state.settle(cards, |key| keys.contains(key).then_some(Some(aspect)));
+    }
+
+    #[test]
+    fn shapes_above_the_view_wait_for_the_last_guess_above_it() {
+        let mut state = six_guessed();
+        let guess = state.aspects[0];
+        // The first band, cards 0 to 2, ends at 8 + 75: a view from 100 has
+        // all three above it.
+        let old = laid_out(&state);
+        let top = 100.;
+
+        // Card 1 settles while 0 and 2 are still guesses: it is held.
+        settle(&mut state, &[1], 1.);
+        let aspects = state.aspects(Some(&old), top, vec![1]);
+        assert_eq!(aspects[1], guess, "held at the shape it had");
+        assert_eq!(state.held, [1]);
+        state.aspects = aspects;
+
+        // A card in view settles meanwhile: it is not held.
+        settle(&mut state, &[4], 0.5);
+        let aspects = state.aspects(Some(&old), top, vec![4]);
+        assert_eq!(aspects[4], Some(0.5));
+        assert_eq!(aspects[1], guess, "and the one above is still held");
+        state.aspects = aspects;
+
+        // The last guesses above settle: everything held lands at once.
+        settle(&mut state, &[0, 2], 2.);
+        let aspects = state.aspects(Some(&old), top, vec![0, 2]);
+        assert_eq!(aspects[..3], [Some(2.), Some(1.), Some(2.)]);
+        assert!(state.held.is_empty());
+    }
+
+    #[test]
+    fn nothing_is_held_at_the_top_or_on_a_fresh_layout() {
+        let mut state = six_guessed();
+        let old = laid_out(&state);
+        // At the top nothing is above the view.
+        settle(&mut state, &[1], 1.);
+        let aspects = state.aspects(Some(&old), 0., vec![1]);
+        assert_eq!(aspects[1], Some(1.));
+        // Without an old layout, every card takes its best known shape.
+        settle(&mut state, &[0], 2.);
+        let aspects = state.aspects(None, 500., Vec::new());
+        assert_eq!(aspects[0], Some(2.));
+        assert!(state.held.is_empty());
+    }
+
+    #[test]
+    fn a_log_that_no_longer_reaches_back_means_every_card() {
+        let mut state = six_guessed();
+        assert_eq!(state.changed_cards(None, 42), (0..6).collect::<Vec<_>>());
+        assert_eq!(state.seq, Some(42));
+        let key = state.keys[3].clone().unwrap();
+        assert_eq!(state.changed_cards(Some((vec![key], 43)), 43), [3]);
+        assert_eq!(state.seq, Some(43));
     }
 
     #[test]
