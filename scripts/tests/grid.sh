@@ -52,8 +52,11 @@ expect 'p[0]["top_row"] == 0' "home scrolls back to the top"
 rcard 5
 wait_for 'p[0]["menu_open"]'
 expect 'p[0]["selected"] == [5]' "a right-click selects the card and opens the menu"
+# A file's menu is built again when its applications arrive. Escape before
+# then can land between the two menus, so wait, as context-menu.sh does.
+wait_for '"Open With" in p[0]["menu_items"]' 30
 key -k Escape
-wait_for 'not p[0]["menu_open"]'
+wait_for 'not p[0]["menu_open"]' 20
 
 ALBUMS=$(named albums)
 dcard "$ALBUMS"
@@ -67,3 +70,47 @@ expect "p[0]['cursor'] == $ALBUMS" "back returns to the folder that was opened"
 key -M ctrl -k 1 -m ctrl
 wait_for 'p[0]["layout"] == "list"'
 expect 'p[0]["cards"] == [] and p[0]["grid_columns"] == 0' "ctrl-1 returns to the list"
+
+# --- the toolbar -------------------------------------------------------------
+# The pair of layout buttons, left of the menu button: grid at WW - 37, list
+# at WW - 57, both in the middle of the 28px toolbar.
+at $((WW - 37)) 14
+wait_for 'p[0]["layout"] == "grid"'
+expect 'p[0]["layout"] == "grid"' "the grid button shows the grid"
+at $((WW - 57)) 14
+wait_for 'p[0]["layout"] == "list"'
+expect 'p[0]["layout"] == "list"' "and the list button the list"
+at $((WW - 37)) 14
+wait_for 'p[0]["layout"] == "grid"'
+
+# --- the view menu -----------------------------------------------------------
+at $((WW - 16)) 14
+wait_for 'p[0]["menu_open"]' 20
+expect 'p[0]["menu_items"][:2] == ["List", "Grid"]' "the view menu offers both layouts first"
+expect '"Card Details" in p[0]["menu_items"] and "Columns" not in p[0]["menu_items"]' \
+    "and in the grid, Card Details where Columns was"
+# List, Grid, Show Hidden Files, Folders First, then Card Details.
+key -k Down
+key -k Down
+key -k Down
+key -k Down
+key -k Down
+key -k Right
+wait_for 'p[0]["submenu_open"]' 20
+NOTES=$(named notes)
+BEFORE=$(probe "next(c[4] for c in p[0]['cards'] if c[0] == $NOTES)")
+# Size is the first row and is on. Two Downs reach Modified.
+key -k Down
+key -k Down
+key -k Return
+wait_for 'p[0]["card_details"] == ["size", "modified"]' 20
+expect 'p[0]["card_details"] == ["size", "modified"]' "a toggle in Card Details adds a line to the cards"
+wait_for "next(c[4] for c in p[0]['cards'] if c[0] == $NOTES) > $BEFORE"
+expect 'p[0]["columns"] == ["Size", "Kind", "Modified"]' "and leaves the list's columns as they were"
+key -k Escape
+key -k Escape
+wait_for 'not p[0]["menu_open"]'
+shot grid-details
+
+# Long enough for the state file to be written, for the restart check.
+sleep 1.5

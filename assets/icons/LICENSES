@@ -17,10 +17,11 @@ The icons hoja's own interface uses are Lucide, taken from lucide-static
 1.26.0 and covered by the ISC licence above:
 
   arrow_left, arrow_right, arrow_up, check, chevron_down, chevron_up,
-  house, magnifying_glass (Lucide's `search`), menu, pause, play,
-  warning (Lucide's `triangle-alert`)
+  house, layout_grid, layout_list, magnifying_glass (Lucide's `search`),
+  menu, pause, play, warning (Lucide's `triangle-alert`)
 
-Two are renamed to the name hoja refers to them by; the file contents are
+Two are renamed to the name hoja refers to them by, and the two layout
+icons spell Lucide's hyphen as an underscore, as the others do; the file contents are
 unmodified.
 
 Everything else here is Zed's file-type icon set, reached through the

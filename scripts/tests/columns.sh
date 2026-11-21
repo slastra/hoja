@@ -115,6 +115,10 @@ echo "  ok   clicking a header still sorts by it"
 # rows are rebuilt rather than the menu simply being left alone.
 at $((WW - 16)) 14
 wait_for 'p[0]["menu_open"]' 20
+# List, Grid, Show Hidden Files, Folders First, then Columns: the Downs skip
+# the separators between them.
+key -k Down
+key -k Down
 key -k Down
 key -k Down
 key -k Down

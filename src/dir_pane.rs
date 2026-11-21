@@ -1466,6 +1466,7 @@ impl DirPane {
                 fs::Layout::List => 0,
                 fs::Layout::Grid => self.grid_columns(),
             },
+            card_details: self.view.card_details.names(),
             cards: match self.view.layout {
                 fs::Layout::List => Vec::new(),
                 fs::Layout::Grid => self.grid_cards(cx),
@@ -1578,8 +1579,13 @@ impl DirPane {
     /// the listing is currently sorted by can be hidden, and the order stays
     /// as it was, which is what was asked for even once the chevron saying so
     /// has gone.
+    /// Turn a detail on or off in the set the layout in force draws: a column
+    /// of the list, or a line on each card of the grid.
     fn toggle_column(&mut self, column: Column, cx: &mut Context<Self>) {
-        self.view.columns.toggle(column);
+        match self.view.layout {
+            fs::Layout::List => self.view.columns.toggle(column),
+            fs::Layout::Grid => self.view.card_details.toggle(column),
+        }
         // The menu this came from is still up, so its check marks are now out
         // of date. Only the view menu can reach here, the Columns list being
         // the only place a column is toggled, so the rows it is handed back are
@@ -1923,7 +1929,25 @@ impl DirPane {
             }
         };
 
+        // The details the layout in force draws: the list's columns, or what
+        // each card shows. One submenu edits whichever it is.
+        let (shown, details_label) = match self.view.layout {
+            fs::Layout::List => (self.view.columns, "Columns"),
+            fs::Layout::Grid => (self.view.card_details, "Card Details"),
+        };
+
         let mut items = vec![
+            MenuItem::toggle(
+                "List",
+                self.view.layout == fs::Layout::List,
+                dispatch(Box::new(ListView)),
+            ),
+            MenuItem::toggle(
+                "Grid",
+                self.view.layout == fs::Layout::Grid,
+                dispatch(Box::new(GridView)),
+            ),
+            MenuItem::Separator,
             MenuItem::toggle(
                 "Show Hidden Files",
                 self.view.show_hidden,
@@ -1936,15 +1960,11 @@ impl DirPane {
             ),
             MenuItem::Separator,
             MenuItem::submenu(
-                "Columns",
+                details_label,
                 Column::ALL
                     .into_iter()
                     .map(|column| {
-                        MenuItem::toggle(
-                            column.label(),
-                            self.view.columns.get(column),
-                            toggle_column(column),
-                        )
+                        MenuItem::toggle(column.label(), shown.get(column), toggle_column(column))
                     })
                     .collect(),
             ),
@@ -1989,7 +2009,7 @@ impl DirPane {
             // change the order, and the chevron goes with the column, so
             // without this second case nothing on screen names the order the
             // rows are actually in.
-            if self.view.columns.get(column) || self.view.sort.key == column.sort_key() {
+            if shown.get(column) || self.view.sort.key == column.sort_key() {
                 items.push(MenuItem::toggle(
                     format!("Sort by {}", column.label()),
                     self.view.sort.key == column.sort_key(),
@@ -4333,6 +4353,49 @@ impl DirPane {
                             } else {
                                 this.start_search(&StartSearch, window, cx);
                             }
+                        }),
+                    ),
+            )
+            // The two layouts, as a pair of buttons that light the one in
+            // force, the way most file managers offer them.
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(colors.border_variant)
+                    .children(
+                        [
+                            (
+                                "layout-list",
+                                "icons/file_icons/layout_list.svg",
+                                fs::Layout::List,
+                            ),
+                            (
+                                "layout-grid",
+                                "icons/file_icons/layout_grid.svg",
+                                fs::Layout::Grid,
+                            ),
+                        ]
+                        .into_iter()
+                        .map(|(id, icon, layout)| {
+                            let on = self.view.layout == layout;
+                            div()
+                                .id(id)
+                                .size(px(20.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .when(on, |el| el.bg(colors.element_selected))
+                                .when(!on, |el| el.hover(|s| s.bg(hover_bg)))
+                                .child(Icon::from_path(icon, content))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    window.focus(&this.focus_handle, cx);
+                                    this.set_layout(layout, cx);
+                                }))
                         }),
                     ),
             )

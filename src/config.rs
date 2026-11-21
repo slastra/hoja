@@ -654,6 +654,20 @@ mod tests {
     }
 
     #[test]
+    fn the_readme_example_is_a_settings_file() {
+        // The example a person copies from. Parsed as hoja parses the real
+        // file, so a key that is misspelt or has gone, or a missing comma,
+        // fails here rather than in somebody's settings.
+        let readme = include_str!("../README.md");
+        let start = readme.find("```jsonc").expect("an example") + "```jsonc".len();
+        let end = start + readme[start..].find("```").expect("closed");
+        let settings: Settings = serde_json_lenient::from_str(&readme[start..end]).unwrap();
+        let view = initial_view(&settings, &State::default(), Winner::Settings);
+        assert_eq!(view.layout, crate::fs::Layout::List);
+        assert_eq!(view.card_details.names(), ["size", "modified"]);
+    }
+
+    #[test]
     fn layout_and_card_details_are_read() {
         let settings: Settings = serde_json_lenient::from_str(
             r#"{"view": {"layout": "grid", "card_details": {"modified": true}}}"#,

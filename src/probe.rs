@@ -66,6 +66,9 @@ pub struct PaneProbe {
     pub layout: &'static str,
     /// Columns of cards in the grid, 0 in the list.
     pub grid_columns: usize,
+    /// What a card shows under its name, by setting name, whichever layout
+    /// is in force.
+    pub card_details: Vec<String>,
     /// The cards in view, as `[index, x, y, width, height, picture]` in
     /// window pixels, so a test can point at a card by its index rather than
     /// work out where it is. `picture` is 1 once the card's picture is drawn.

@@ -51,6 +51,13 @@ updates, and archive browsing that feels like working with ordinary folders.
   makes a picture only when the cache does not have one. While it does, the
   preview keeps a place of the correct shape for the picture. Archive members
   and folders show no preview.
+- **List or grid.** A pane shows its entries as a list with columns, or as a
+  grid of cards. Switch with the two buttons in the toolbar, with `ctrl-1`
+  and `ctrl-2`, or in the view menu. In the grid, an image, a video or a PDF
+  shows its picture at the shape of the picture, and other files show their
+  name. The cards keep the sort order from left to right across each band, so
+  the arrow keys move as they read. In the grid, the view menu's Columns list
+  becomes Card Details, and sets which details a card shows under its name.
 - **Live listings.** Hoja watches every directory it displays. If another
   program changes the contents, the pane refreshes without losing your
   selection. If the directory disappears, Hoja moves to the nearest existing
@@ -195,16 +202,23 @@ allowed, and Hoja applies a change as soon as you save.
 
   // What a new pane shows.
   "view": {
+    // "list" or "grid".
+    "layout": "list",
+
     "sort": { "key": "name", "direction": "ascending" },
     "show_hidden": false,
     "folders_first": true,
 
     // Only the columns you name change. The others keep their usual state.
-    "columns": { "permissions": true }
+    "columns": { "permissions": true },
 
     // Or give a list, which sets the order as well as the set. A list shows
     // the columns it names and hides every other one.
     // "columns": ["permissions", "size", "modified"]
+
+    // What a card shows under its name in the grid, in the same two shapes.
+    // A map changes the card default, which is the size alone.
+    "card_details": { "modified": true }
   }
 }
 ```

@@ -116,10 +116,16 @@ arrows move by card and by band, that End and Home scroll, that a right-click
 and a double-click work on a card, and that Back keeps the grid. The probe
 gives each card in view as `[index, x, y, width, height, picture]`, and the
 harness helpers `card`, `dcard` and `rcard` click a card by its index. Run it
-nested, because it types.
+nested, because it types. It also uses the toolbar's layout buttons and the
+view menu's Card Details list. `grid-restore.sh` is its second half: a
+restart against the state the first half left, which must still be a grid
+with the same card details.
 
 ```sh
-scripts/sway-harness.sh "$(scripts/tests/setup-grid.sh)" scripts/tests/grid.sh
+FIX=$(scripts/tests/setup-grid.sh)
+OUT=$(mktemp -d)
+scripts/sway-harness.sh "$FIX" scripts/tests/grid.sh "$OUT"
+HOJA_TEST_KEEP_STATE=1 scripts/sway-harness.sh "$FIX" scripts/tests/grid-restore.sh "$OUT"
 ```
 
 The harness drives a drag with `scripts/vpointer`, a small tool that presses,
