@@ -1501,16 +1501,10 @@ impl DirPane {
                 .entries
                 .iter()
                 .take(crate::probe::MAX_ROWS)
-                .map(|entry| match self.git.get(&entry.name) {
-                    Some(GitStatus::Added) => "added",
-                    Some(GitStatus::Modified) => "modified",
-                    Some(GitStatus::Deleted) => "deleted",
-                    Some(GitStatus::Renamed) => "renamed",
-                    Some(GitStatus::Conflict) => "conflict",
-                    Some(GitStatus::Ignored) => "ignored",
-                    Some(GitStatus::Unmodified) | None => "",
+                .map(|entry| {
+                    let status = self.git.get(&entry.name).copied();
+                    status.map_or("", GitStatus::name).to_string()
                 })
-                .map(String::from)
                 .collect(),
             columns: self
                 .view

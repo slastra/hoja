@@ -35,6 +35,19 @@ pub enum GitStatus {
 }
 
 impl GitStatus {
+    /// The status in a word, as the probe reports it: empty for unmodified.
+    pub fn name(self) -> &'static str {
+        match self {
+            GitStatus::Unmodified => "",
+            GitStatus::Ignored => "ignored",
+            GitStatus::Added => "added",
+            GitStatus::Renamed => "renamed",
+            GitStatus::Modified => "modified",
+            GitStatus::Deleted => "deleted",
+            GitStatus::Conflict => "conflict",
+        }
+    }
+
     /// Porcelain v2 uses two columns, staged then unstaged, with `.` for "no
     /// change". The more serious of the two wins, which is what makes a file
     /// that is staged *and* then edited read as modified.
