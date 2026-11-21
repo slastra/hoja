@@ -13,12 +13,13 @@
 
 use fuzzy_nucleo::{Case, LengthPenalty, StringMatch, StringMatchCandidate, match_strings};
 use gpui::{
-    AnyElement, App, Div, Entity, HighlightStyle, Pixels, SharedString, StyledText, TextStyle,
-    UniformListScrollHandle, Window, actions, div, prelude::*, px,
+    AnyElement, App, BoxShadow, Div, Entity, HighlightStyle, Pixels, SharedString, StyledText,
+    TextStyle, UniformList, UniformListScrollHandle, Window, actions, div, hsla, prelude::*, px,
 };
 use theme::ActiveTheme;
 
 use crate::path_editor::PathEditor;
+use crate::scrollbar::{ScrollSource, ScrollbarState, scrollbar};
 
 // Owned here, not by one of the two pickers: which keys move a picker's
 // selection is picker business, and having the finder reach into the palette
@@ -33,6 +34,12 @@ pub const KEY_CONTEXT: &str = "picker";
 /// the bottom of the window.
 const MAX_VISIBLE_ROWS: f32 = 10.;
 
+/// Space above and below the rows, as Zed's picker has (`py_1`).
+const LIST_PADDING: f32 = 4.;
+
+/// The modal's width: Zed's command palette is 38 rems.
+const WIDTH: f32 = 608.;
+
 /// The query field, the matches, and where the highlight sits.
 pub struct PickerState {
     pub query: Entity<PathEditor>,
@@ -40,6 +47,7 @@ pub struct PickerState {
     pub matches: Vec<StringMatch>,
     pub selected: usize,
     pub scroll: UniformListScrollHandle,
+    pub scrollbar: ScrollbarState,
 }
 
 impl PickerState {
@@ -50,6 +58,7 @@ impl PickerState {
             matches: Vec::new(),
             selected: 0,
             scroll: UniformListScrollHandle::new(),
+            scrollbar: ScrollbarState::default(),
         }
     }
 
@@ -104,14 +113,72 @@ impl PickerState {
 /// definite height on a parent tells it nothing. A list with no height of its
 /// own therefore draws no rows at all while the parent still reserves the
 /// space, which reads as an empty modal rather than as a layout mistake.
-pub fn list_height(state: &PickerState, row_height: f32) -> Pixels {
-    px(row_height * (state.matches.len() as f32).min(MAX_VISIBLE_ROWS))
+fn list_height(state: &PickerState, row_height: f32) -> Pixels {
+    px(row_height * (state.matches.len() as f32).min(MAX_VISIBLE_ROWS) + 2. * LIST_PADDING)
 }
 
-/// The modal: query field on top, rows or an empty message below.
+/// The rows, sized, padded and given a scrollbar laid over them, as Zed's
+/// picker has one. `owner` is the picker entity, and `bar` finds its
+/// `PickerState::scrollbar`.
+pub fn results<T: 'static>(
+    state: &PickerState,
+    list: UniformList,
+    row_height: f32,
+    owner: Entity<T>,
+    bar: fn(&mut T) -> &mut ScrollbarState,
+) -> AnyElement {
+    let overflows = state.matches.len() as f32 > MAX_VISIBLE_ROWS;
+    div()
+        .relative()
+        .flex()
+        .flex_col()
+        .child(
+            list.track_scroll(&state.scroll)
+                .h(list_height(state, row_height))
+                .py(px(LIST_PADDING))
+                // Room for the bar while there is anything to scroll. Zed's
+                // lies over the rows and fades a second after the scroll;
+                // hoja's stays, as in the listing, so it must not cover the
+                // key bindings at the rows' right.
+                .when(overflows, |list| list.pr(px(crate::scrollbar::WIDTH))),
+        )
+        .child(scrollbar(
+            ScrollSource::Rows {
+                handle: state.scroll.clone(),
+                rows: state.matches.len(),
+                row_height,
+            },
+            owner,
+            bar,
+        ))
+        .into_any_element()
+}
+
+/// Zed's modal elevation (`elevation_3`): its surface, the variant border,
+/// and the layered shadow it gives a modal.
+fn modal_shadow(cx: &App) -> Vec<BoxShadow> {
+    let light = cx.theme().appearance == theme::Appearance::Light;
+    let black = |alpha: f32| hsla(0., 0., 0., alpha);
+    vec![
+        BoxShadow::new(px(0.), px(2.), black(if light { 0.06 } else { 0.12 })).blur_radius(px(3.)),
+        BoxShadow::new(px(0.), px(3.), black(if light { 0.06 } else { 0.08 })).blur_radius(px(6.)),
+        BoxShadow::new(px(0.), px(6.), black(0.04)).blur_radius(px(12.)),
+        BoxShadow::new(px(0.), px(1.), black(if light { 0.04 } else { 0.12 })),
+    ]
+}
+
+/// The modal, laid out as Zed's picker is: the query on a 36 pixel row with a
+/// rule under it, then the rows, or a muted line when nothing matches, then
+/// the footer when there is one.
 ///
-/// The list arrives already sized, via `list_height`: see why there.
-pub fn shell(state: &PickerState, empty_message: &'static str, list: AnyElement, cx: &App) -> Div {
+/// The list arrives from `results`, already sized: see `list_height`.
+pub fn shell(
+    state: &PickerState,
+    empty_message: &'static str,
+    list: AnyElement,
+    footer: Option<AnyElement>,
+    cx: &App,
+) -> Div {
     let colors = cx.theme().colors();
     let count = state.matches.len();
 
@@ -119,44 +186,64 @@ pub fn shell(state: &PickerState, empty_message: &'static str, list: AnyElement,
         .occlude()
         .flex()
         .flex_col()
-        .w(px(544.))
+        .w(px(WIDTH))
         .rounded_lg()
         .border_1()
-        .border_color(colors.border)
+        .border_color(colors.border_variant)
         .bg(colors.elevated_surface_background)
-        .shadow_lg()
+        .shadow(modal_shadow(cx))
         .child(
             div()
                 .flex_none()
-                .px_3()
-                .py_2()
+                .h_9()
+                .px(px(10.))
+                .flex()
+                .items_center()
                 .border_b_1()
-                .border_color(colors.border)
+                .border_color(colors.border_variant)
                 .text_sm()
                 .child(state.query.clone()),
         )
         .when(count == 0, |el| {
-            // Keeps the modal from collapsing and jumping when nothing matches.
+            // Keeps the modal from collapsing and jumping when nothing
+            // matches. Placed as a row's text is, as Zed places it.
             el.child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .text_sm()
-                    .text_color(colors.text_muted)
-                    .child(empty_message),
+                div().py_2().px_1().child(
+                    div()
+                        .px(px(6.))
+                        .py_1()
+                        .text_sm()
+                        .text_color(colors.text_muted)
+                        .child(empty_message),
+                ),
             )
         })
         .when(count > 0, |el| el.child(list))
+        .children(footer.map(|footer| {
+            div()
+                .flex_none()
+                .p_1p5()
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap_1()
+                .border_t_1()
+                .border_color(colors.border_variant)
+                .child(footer)
+        }))
 }
 
-/// A row's chrome. The caller fills in what the row says.
+/// A row, as Zed's inset list item: rounded, set in from the modal's sides,
+/// filled while selected, and lit under the pointer without moving the
+/// selection. The caller fills in what it says, then hands it to `inset`.
 pub fn row(ix: usize, row_height: f32, selected: bool, cx: &App) -> gpui::Stateful<Div> {
     let colors = cx.theme().colors();
     div()
         .id(ix)
         .h(px(row_height))
         .w_full()
-        .px_3()
+        .px(px(6.))
+        .rounded_sm()
         .flex()
         .flex_row()
         .items_center()
@@ -164,7 +251,63 @@ pub fn row(ix: usize, row_height: f32, selected: bool, cx: &App) -> gpui::Statef
         .cursor_pointer()
         .text_sm()
         .text_color(colors.text)
-        .when(selected, |row| row.bg(colors.element_selected))
+        .when(selected, |row| row.bg(colors.ghost_element_selected))
+        .when(!selected, |row| {
+            row.hover(|style| style.bg(colors.ghost_element_hover))
+        })
+        .active(|style| style.bg(colors.ghost_element_active))
+}
+
+/// A finished `row`, set in from the modal's sides.
+pub fn inset(row: gpui::Stateful<Div>) -> AnyElement {
+    div().w_full().px_1().child(row).into_any_element()
+}
+
+/// A key binding as Zed writes one on Linux: muted text, modifiers first,
+/// each word capitalised, joined by hyphens. `Ctrl-Shift-P`, not keycaps.
+pub fn key_text(keystroke: &gpui::KeybindingKeystroke) -> String {
+    let modifiers = keystroke.modifiers();
+    let mut text = String::new();
+    for (on, name) in [
+        (modifiers.function, "Fn"),
+        (modifiers.control, "Ctrl"),
+        (modifiers.platform, "Super"),
+        (modifiers.alt, "Alt"),
+        (modifiers.shift, "Shift"),
+    ] {
+        if on {
+            text.push_str(name);
+            text.push('-');
+        }
+    }
+    text.push_str(&key_name(keystroke.key()));
+    text
+}
+
+fn key_name(key: &str) -> String {
+    match key {
+        "pageup" => "PageUp".into(),
+        "pagedown" => "PageDown".into(),
+        key => {
+            let mut chars = key.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(chars).collect()
+            })
+        }
+    }
+}
+
+/// The key bindings of one action, in a row: each chord as `key_text`.
+pub fn key_binding(chords: &[String], cx: &App) -> Div {
+    let muted = cx.theme().colors().text_muted;
+    div()
+        .flex_none()
+        .flex()
+        .flex_row()
+        .gap_1()
+        .text_sm()
+        .text_color(muted)
+        .children(chords.iter().map(|chord| div().child(chord.clone())))
 }
 
 /// Match `query` against `candidates`, or pass everything through in order when
@@ -239,4 +382,24 @@ pub fn highlighted_label(
         .collect();
 
     StyledText::new(text).with_default_highlights(&style, highlights)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(keys: &'static str) -> String {
+        let keystroke = gpui::Keystroke::parse(keys).unwrap();
+        key_text(&gpui::KeybindingKeystroke::from_keystroke(keystroke))
+    }
+
+    #[test]
+    fn keys_are_written_as_zed_writes_them_on_linux() {
+        assert_eq!(text("ctrl-shift-p"), "Ctrl-Shift-P");
+        assert_eq!(text("f2"), "F2");
+        assert_eq!(text("alt-left"), "Alt-Left");
+        assert_eq!(text("ctrl-pagedown"), "Ctrl-PageDown");
+        assert_eq!(text("super-escape"), "Super-Escape");
+        assert_eq!(text("ctrl-1"), "Ctrl-1");
+    }
 }

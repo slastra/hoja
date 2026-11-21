@@ -203,13 +203,8 @@ impl PlaceFinder {
             return div().into_any_element();
         };
 
-        picker::row(ix, ROW_HEIGHT, ix == self.picker.selected, cx)
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                if *hovered && this.picker.selected != ix {
-                    this.picker.selected = ix;
-                    cx.notify();
-                }
-            }))
+        // The pointer lights a row but does not select it, as in Zed.
+        let row = picker::row(ix, ROW_HEIGHT, ix == self.picker.selected, cx)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.picker.selected = ix;
                 this.confirm(window, cx);
@@ -243,8 +238,8 @@ impl PlaceFinder {
                         .text_color(colors.text_muted)
                         .child("ctrl-e eject"),
                 )
-            })
-            .into_any_element()
+            });
+        picker::inset(row)
     }
 }
 
@@ -267,12 +262,16 @@ impl Render for PlaceFinder {
                     .map(|ix| this.render_row(ix, window, cx))
                     .collect::<Vec<_>>()
             }),
-        )
-        .track_scroll(&self.picker.scroll)
-        .h(picker::list_height(&self.picker, ROW_HEIGHT))
-        .into_any_element();
+        );
+        let list = picker::results(
+            &self.picker,
+            list,
+            ROW_HEIGHT,
+            cx.entity(),
+            |this: &mut Self| &mut this.picker.scrollbar,
+        );
 
-        picker::shell(&self.picker, "No matching places", list, cx)
+        picker::shell(&self.picker, "No matching places", list, None, cx)
             .track_focus(&self.focus_handle)
             .key_context(picker::KEY_CONTEXT)
             .on_action(cx.listener(Self::select_next))

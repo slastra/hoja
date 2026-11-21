@@ -33,7 +33,9 @@ use crate::picker::{self, PickerState, SelectNext, SelectPrevious, highlighted_l
 
 actions!(palette, [Toggle]);
 
-const ROW_HEIGHT: f32 = 28.;
+/// Zed's sparse list item: a 14 pixel label on its line height, `py_px`
+/// around it, and `py_1` around that.
+const ROW_HEIGHT: f32 = 32.;
 
 /// Namespaces whose actions exist to be bound to a key, not read from a list.
 /// A picker's own navigation cannot be usefully "run" from a modal that closes
@@ -82,7 +84,8 @@ struct Command {
     /// The action's registered name, used as the history key.
     id: String,
     action: Box<dyn Action>,
-    /// Rendered as keycaps; empty when the action has no binding.
+    /// The binding's chords, written as `picker::key_text` writes them; empty
+    /// when the action has no binding.
     keystrokes: Vec<String>,
 }
 
@@ -197,8 +200,9 @@ impl CommandPalette {
     ///   dispatches into the palette's own path where nothing handles it.
     pub fn new(previous_focus: FocusHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
-        let query = cx
-            .new(|cx| PathEditor::new(String::new(), window, cx).with_placeholder("Run a command"));
+        let query = cx.new(|cx| {
+            PathEditor::new(String::new(), window, cx).with_placeholder("Execute a command...")
+        });
 
         // The query field carries the AddressBar context *inside* the palette's
         // own, and the deeper context wins, so enter and escape reach the
@@ -310,17 +314,7 @@ fn available_commands(origin: &FocusHandle, window: &mut Window, cx: &mut App) -
         .map(|action| {
             let keystrokes = window
                 .highest_precedence_binding_for_action_in(action.as_ref(), origin)
-                .map(|binding| {
-                    binding
-                        .keystrokes()
-                        .iter()
-                        // As gpui itself labels a key for people, which is what
-                        // `Display` did before it took the OS as an argument.
-                        .map(|keystroke| {
-                            keystroke.display(gpui::OperatingSystem::Linux).to_string()
-                        })
-                        .collect()
-                })
+                .map(|binding| binding.keystrokes().iter().map(picker::key_text).collect())
                 .unwrap_or_default();
             Command {
                 name: humanize_action_name(action.name()),
@@ -380,12 +374,17 @@ impl Render for CommandPalette {
                     .map(|ix| this.render_row(ix, window, cx))
                     .collect::<Vec<_>>()
             }),
-        )
-        .track_scroll(&self.picker.scroll)
-        .h(picker::list_height(&self.picker, ROW_HEIGHT))
-        .into_any_element();
+        );
+        let list = picker::results(
+            &self.picker,
+            list,
+            ROW_HEIGHT,
+            cx.entity(),
+            |this: &mut Self| &mut this.picker.scrollbar,
+        );
+        let footer = self.render_footer(cx);
 
-        picker::shell(&self.picker, "No matching commands", list, cx)
+        picker::shell(&self.picker, "No matching commands", list, footer, cx)
             .track_focus(&self.focus_handle)
             .key_context(picker::KEY_CONTEXT)
             .on_action(cx.listener(Self::select_next))
@@ -394,8 +393,35 @@ impl Render for CommandPalette {
 }
 
 impl CommandPalette {
-    fn render_row(&self, ix: usize, window: &Window, cx: &Context<Self>) -> gpui::AnyElement {
+    /// Zed's footer, less its keybinding editor, which hoja does not have:
+    /// Run, with the key that does the same. Only while there is something to
+    /// run.
+    fn render_footer(&self, cx: &Context<Self>) -> Option<gpui::AnyElement> {
+        self.picker.matches.get(self.picker.selected)?;
         let colors = cx.theme().colors();
+        Some(
+            div()
+                .id("run-command")
+                .h(gpui::px(22.))
+                .px_1p5()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1p5()
+                .rounded_sm()
+                .cursor_pointer()
+                .text_sm()
+                .text_color(colors.text)
+                .hover(|style| style.bg(colors.ghost_element_hover))
+                .active(|style| style.bg(colors.ghost_element_active))
+                .on_click(cx.listener(|this, _, window, cx| this.confirm(window, cx)))
+                .child("Run")
+                .child(picker::key_binding(&["Enter".to_string()], cx).text_xs())
+                .into_any_element(),
+        )
+    }
+
+    fn render_row(&self, ix: usize, window: &Window, cx: &Context<Self>) -> gpui::AnyElement {
         let Some(matched) = self.picker.matches.get(ix) else {
             return div().into_any_element();
         };
@@ -403,43 +429,22 @@ impl CommandPalette {
             return div().into_any_element();
         };
 
-        let keycaps: Vec<_> = command
-            .keystrokes
-            .iter()
-            .map(|key| {
-                div()
-                    .px_1()
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(colors.border)
-                    .bg(colors.element_background)
-                    .text_xs()
-                    .text_color(colors.text_muted)
-                    .child(key.clone())
-            })
-            .collect();
-
-        picker::row(ix, ROW_HEIGHT, ix == self.picker.selected, cx)
-            // Hovering selects, which is a large part of why Zed's palette
-            // feels responsive rather than modal.
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                if *hovered && this.picker.selected != ix {
-                    this.picker.selected = ix;
-                    cx.notify();
-                }
-            }))
+        // The pointer lights a row but does not select it, as in Zed: the
+        // selection is the keyboard's, and a click runs what it is on.
+        let row = picker::row(ix, ROW_HEIGHT, ix == self.picker.selected, cx)
+            .justify_between()
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.picker.selected = ix;
                 this.confirm(window, cx);
             }))
-            .child(div().flex_1().truncate().child(highlighted_label(
+            .child(div().flex_1().min_w_0().truncate().child(highlighted_label(
                 command.name.clone(),
                 matched,
                 window,
                 cx,
             )))
-            .children(keycaps)
-            .into_any_element()
+            .child(picker::key_binding(&command.keystrokes, cx));
+        picker::inset(row)
     }
 }
 

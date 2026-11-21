@@ -138,6 +138,15 @@ which only the watch on the git directory can see.
 scripts/sway-harness.sh "$(scripts/tests/setup-git.sh)" scripts/tests/git.sh
 ```
 
+`palette.sh` uses the git fixture for its five rows. It runs "pane: reverse
+sort" from the command palette twice, once with the footer's Run button and
+once by clicking the row, and checks the row order flips each time. It finds
+Run in a screenshot.
+
+```sh
+scripts/sway-harness.sh "$(scripts/tests/setup-git.sh)" scripts/tests/palette.sh
+```
+
 `grid-big.sh` needs `setup-grid-big.sh`, which writes 1500 small images in
 seven shapes with plain Python, more than the preview cache keeps. The suite
 pages down the grid and reads the probe every 50ms for 2.5s after each page,
