@@ -323,6 +323,47 @@ impl Previews {
     }
 }
 
+/// Join the work on `key` if it is under way, and start it if not.
+fn wait_for(key: Key, tooltip: &Entity<PreviewTooltip>, cx: &mut App) {
+    let previews = cx.default_global::<Previews>();
+    if let Some(loading) = previews.loading.get_mut(&key) {
+        loading.waiting.push(tooltip.downgrade());
+        return;
+    }
+    previews.loading.insert(
+        key.clone(),
+        Loading {
+            facts: None,
+            waiting: vec![tooltip.downgrade()],
+        },
+    );
+    start(key, cx);
+}
+
+/// The work for one file: the facts, then the picture, both off the UI
+/// thread. Not tied to any tooltip, so it finishes and is cached even when
+/// the pointer has moved on.
+fn start(key: Key, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let path = key.subject.path.clone();
+        let facts = cx
+            .background_spawn({
+                let path = path.clone();
+                async move { Arc::new(facts(&path)) }
+            })
+            .await;
+        // The facts first, so the tooltip shows what it can, and keeps a
+        // place of the right shape for the picture, while that is made.
+        cx.update(|cx| learned(&key, facts.clone(), cx));
+        let size = key.size;
+        let preview = cx
+            .background_spawn(async move { picture(&path, facts, size) })
+            .await;
+        cx.update(|cx| finish(key, Arc::new(preview), cx));
+    })
+    .detach();
+}
+
 /// Hand the facts to the tooltips waiting on them.
 fn learned(key: &Key, facts: Arc<Facts>, cx: &mut App) {
     let Some(loading) = cx.default_global::<Previews>().loading.get_mut(key) else {
@@ -371,26 +412,36 @@ impl PreviewTooltip {
             subject: subject.clone(),
             size: Size::for_scale(scale),
         };
-        let name: SharedString = subject
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
-            .into();
-
         let previews = cx.default_global::<Previews>();
         let cached = previews.ready.get(&key).cloned();
+        // A file whose work is under way may have its facts in already.
         let known = cached
             .as_ref()
             .map(|preview| preview.facts.clone())
             .or_else(|| previews.loading.get(&key)?.facts.clone());
         let tooltip = cx.new(|_| PreviewTooltip {
-            name: name.clone(),
+            name: subject
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+                .into(),
             size: subject.size,
             scale,
             facts: known,
             preview: cached.clone(),
         });
+        Self::track_for_probe(&tooltip, cx);
+        if cached.is_some() {
+            cx.default_global::<Previews>().touch(&key);
+        } else {
+            wait_for(key, &tooltip, cx);
+        }
+        tooltip
+    }
+
+    /// Name this tooltip in the probe while it is on screen.
+    fn track_for_probe(tooltip: &Entity<Self>, cx: &mut App) {
         let id = tooltip.entity_id();
         let label = tooltip.read(cx).label();
         cx.default_global::<Previews>().open = Some((id, label));
@@ -401,7 +452,7 @@ impl PreviewTooltip {
         // the probe for that frame is already written by then, still naming
         // this tooltip. Nothing else asks for a frame, so ask for one, only
         // when a test is reading.
-        let release = cx.observe_release(&tooltip, move |_, cx| {
+        cx.observe_release(tooltip, move |_, cx| {
             let previews = cx.default_global::<Previews>();
             if previews.open.as_ref().is_some_and(|(open, _)| *open == id) {
                 previews.open = None;
@@ -409,46 +460,8 @@ impl PreviewTooltip {
                     cx.refresh_windows();
                 }
             }
-        });
-        release.detach();
-
-        if cached.is_some() {
-            cx.default_global::<Previews>().touch(&key);
-            return tooltip;
-        }
-
-        let previews = cx.default_global::<Previews>();
-        if let Some(loading) = previews.loading.get_mut(&key) {
-            loading.waiting.push(tooltip.downgrade());
-            return tooltip;
-        }
-        previews.loading.insert(
-            key.clone(),
-            Loading {
-                facts: None,
-                waiting: vec![tooltip.downgrade()],
-            },
-        );
-
-        cx.spawn(async move |cx| {
-            let path = key.subject.path.clone();
-            let facts = cx
-                .background_spawn({
-                    let path = path.clone();
-                    async move { Arc::new(facts(&path)) }
-                })
-                .await;
-            // The facts first, so the tooltip shows what it can, and keeps a
-            // place of the right shape for the picture, while that is made.
-            cx.update(|cx| learned(&key, facts.clone(), cx));
-            let size = key.size;
-            let preview = cx
-                .background_spawn(async move { picture(&path, facts, size) })
-                .await;
-            cx.update(|cx| finish(key, Arc::new(preview), cx));
         })
         .detach();
-        tooltip
     }
 
     /// What the probe says: the kind and the name, with `loading` in front
