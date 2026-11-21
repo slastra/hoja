@@ -426,7 +426,7 @@ fn run(thumbnailer: &Thumbnailer, path: &Path, size: Size, info: &Info) -> Made 
 }
 
 /// `true` when the child exited with success inside `limit`. Killed if not.
-fn wait(mut child: std::process::Child, limit: Duration) -> bool {
+pub(super) fn wait(mut child: std::process::Child, limit: Duration) -> bool {
     let start = Instant::now();
     loop {
         match child.try_wait() {

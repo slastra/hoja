@@ -1,9 +1,9 @@
 //! Previews in a tooltip: the file under the pointer, without opening it.
 //!
-//! Four kinds of file get one: an image, a video, an audio file and a text
-//! file. The picture for the first three comes from the freedesktop thumbnail
-//! cache (see `thumbnail`), the tags of an audio file from `lofty`, and a text
-//! file shows its first lines. Every other file, every folder and every member
+//! Five kinds of file get one: an image, a video, an audio file, a PDF and a
+//! text file. The picture for the first four comes from the freedesktop
+//! thumbnail cache (see `thumbnail`), the tags of an audio file from `lofty`,
+//! a PDF's page count from `pdfinfo`, and a text file shows its first lines. Every other file, every folder and every member
 //! of an archive shows no tooltip.
 //!
 //! # Lifecycle
@@ -24,6 +24,7 @@
 //! the texture of the one it lets go.
 
 mod audio;
+mod pdf;
 mod text;
 mod thumbnail;
 mod video;
@@ -105,6 +106,8 @@ enum Kind {
     Image,
     Video,
     Audio,
+    /// A PDF. Its picture is the first page.
+    Document,
     Text,
     /// Nothing to show. The tooltip draws nothing at all.
     Other,
@@ -121,6 +124,8 @@ impl Kind {
             Kind::Video
         } else if mime.starts_with("audio/") {
             Kind::Audio
+        } else if mimes.iter().any(|m| m == "application/pdf") {
+            Kind::Document
         } else if mimes.iter().any(|m| m == "text/plain") {
             Kind::Text
         } else {
@@ -133,6 +138,7 @@ impl Kind {
             Kind::Image => "image",
             Kind::Video => "video",
             Kind::Audio => "audio",
+            Kind::Document => "document",
             Kind::Text => "text",
             Kind::Other => "none",
         }
@@ -158,6 +164,8 @@ struct Facts {
     aspect: Option<f32>,
     /// Of a video. An audio file's is in its tags.
     duration: Option<Duration>,
+    /// Of a PDF, when `pdfinfo` could say.
+    pages: Option<u32>,
     lines: Option<Vec<String>>,
     tags: Option<audio::Tags>,
 }
@@ -181,6 +189,7 @@ fn facts(path: &Path) -> Facts {
         dimensions: None,
         aspect: None,
         duration: None,
+        pages: None,
         lines: None,
         tags: None,
     };
@@ -209,6 +218,12 @@ fn facts(path: &Path) -> Facts {
                 .as_ref()
                 .is_some_and(|tags| tags.has_cover)
                 .then_some(1.);
+        }
+        Kind::Document => {
+            let pdf = pdf::read(path);
+            facts.pages = pdf.map(|pdf| pdf.pages);
+            // A portrait Letter page when the first page cannot be measured.
+            facts.aspect = Some(pdf.and_then(|pdf| pdf.aspect).unwrap_or(8.5 / 11.));
         }
         Kind::Text => facts.lines = text::excerpt(path),
         Kind::Other => {}
@@ -508,6 +523,11 @@ impl PreviewTooltip {
             if let Some(duration) = facts.duration {
                 line.push(audio::clock(duration));
             }
+            match facts.pages {
+                Some(1) => line.push("1 page".into()),
+                Some(pages) => line.push(format!("{pages} pages")),
+                None => {}
+            }
             if let Some(tags) = &facts.tags {
                 if let Some(duration) = tags.duration {
                     line.push(audio::clock(duration));
@@ -594,8 +614,8 @@ impl PreviewTooltip {
         }
     }
 
-    /// An image's or a video's picture, the full width of the card, or the
-    /// place kept for it.
+    /// The picture of an image, a video or a PDF's first page, the full width
+    /// of the card, or the place kept for it.
     fn picture_body(&self, facts: &Facts, colors: &theme::ThemeColors) -> gpui::AnyElement {
         let hold = colors.element_hover;
         match self.shown() {
@@ -717,7 +737,7 @@ impl Render for PreviewTooltip {
         let colors = cx.theme().colors();
 
         let body = match facts.kind {
-            Kind::Image | Kind::Video => self.picture_body(&facts, colors),
+            Kind::Image | Kind::Video | Kind::Document => self.picture_body(&facts, colors),
             Kind::Audio => self.audio_body(&facts, colors),
             Kind::Text => text_body(&facts, mono, colors),
             Kind::Other => unreachable!("filtered above"),
@@ -725,7 +745,7 @@ impl Render for PreviewTooltip {
         // An image or a video fills the card's width with its picture, or
         // with the place kept for it. The card then has a fixed width, and
         // only the facts line under the picture is padded.
-        let full_bleed = matches!(facts.kind, Kind::Image | Kind::Video)
+        let full_bleed = matches!(facts.kind, Kind::Image | Kind::Video | Kind::Document)
             && !matches!(self.shown(), Shown::Missing);
         let line = self.facts_line();
 
@@ -790,6 +810,7 @@ mod tests {
             ])),
             Kind::Text
         );
+        assert_eq!(Kind::of(&chain(&["application/pdf"])), Kind::Document);
         assert_eq!(Kind::of(&chain(&["application/zip"])), Kind::Other);
         assert_eq!(Kind::of(&[]), Kind::Other);
     }
@@ -809,6 +830,7 @@ mod tests {
             dimensions: None,
             aspect: None,
             duration: None,
+            pages: None,
             lines: None,
             tags: None,
         };

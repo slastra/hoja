@@ -7,7 +7,7 @@
 # The harness points XDG_CACHE_HOME into the out-dir, so the thumbnails made
 # here never reach the shared cache.
 
-wait_for 'p[0]["row_count"] == 6'
+wait_for 'p[0]["row_count"] == 7'
 
 # A thumbnailer for MP4 that takes two seconds, so the place kept for the
 # picture is on screen long enough to see. It goes in the harness's private
@@ -36,6 +36,7 @@ look photo.png image
 look clip.mp4 video
 look tone.ogg audio
 look notes.rs text
+look report.pdf document
 
 # While the picture is made, the facts are shown and a place of the right
 # shape is kept for it. The shots show the two are the same shape.

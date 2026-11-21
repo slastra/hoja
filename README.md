@@ -45,8 +45,8 @@ updates, and archive browsing that feels like working with ordinary folders.
   or drag and drop. Archives are always read-only.
 - **Hover previews.** Rest the pointer on a file to see it without opening
   it. An image or a video shows a picture, its size and, for a video, its
-  length. An audio file shows its tags and length, and a text file shows its
-  first lines. The pictures come from the thumbnail cache that other file
+  length. A PDF shows its first page and its page count. An audio file shows
+  its tags and length, and a text file shows its first lines. The pictures come from the thumbnail cache that other file
   managers share, and from the thumbnailers that the desktop installs. Hoja
   makes a picture only when the cache does not have one. While it does, the
   preview keeps a place of the correct shape for the picture. Archive members
