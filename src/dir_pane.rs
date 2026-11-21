@@ -497,6 +497,23 @@ fn zoom_step(width: u16, bigger: bool) -> u16 {
     }
 }
 
+/// The footer line on screen: its parts with a thin vertical rule between
+/// them, as Zed's status bar separates its items, where the text has " · ".
+///
+/// The line itself keeps the dots, because the probe reads it and a test
+/// asserts on what a person reads. Split on the separator here rather than
+/// built twice, so the two cannot disagree about what the parts are.
+fn footer_segments(line: &str, rule: gpui::Hsla) -> impl IntoElement + use<> {
+    let mut row = div().flex().flex_row().items_center().gap_2().min_w_0();
+    for (ix, part) in line.split(" · ").enumerate() {
+        if ix > 0 {
+            row = row.child(div().flex_none().w(px(1.)).h(px(12.)).bg(rule));
+        }
+        row = row.child(div().truncate().child(part.to_string()));
+    }
+    row
+}
+
 /// The bar a folder's size shows while it is counted, in a row or on a card.
 fn counting_bar(color: gpui::Hsla, id: gpui::ElementId) -> impl IntoElement + use<> {
     div()
@@ -4701,7 +4718,10 @@ impl DirPane {
             .items_center()
             .flex_none()
             .h(px(HEADER_HEIGHT))
-            .bg(colors.elevated_surface_background)
+            // No surface of its own: the pane's background, set off from the
+            // toolbar and the rows by a rule above and below, as Zed sets off
+            // a panel's header.
+            .border_t_1()
             .border_b_1()
             .border_color(colors.border)
             .text_xs()
@@ -4883,15 +4903,11 @@ impl DirPane {
             .items_center()
             .cursor_pointer()
             .text_sm()
-            // Every row carries the border, and only the lead one colours it:
-            // uniform_list virtualizes on a single measured row height, so the
-            // geometry cannot differ between rows.
-            .border_1()
-            .border_color(if is_lead {
-                colors.border_focused
-            } else {
-                gpui::transparent_black()
-            })
+            // The lead row, where ctrl-arrow has moved to and what ctrl-space
+            // acts on, without an outline in the accent colour: a quiet fill
+            // when it is not selected, and the selection fill when it is, as
+            // Zed's project panel marks its entries.
+            .when(is_lead && !selected, |this| this.bg(colors.element_hover))
             .when(selected, |this| {
                 // Held at half strength in the pane that is not taking keys, so
                 // two panes with selections cannot be confused for each other.
@@ -5268,12 +5284,10 @@ impl DirPane {
             .when_some(crate::theming::numeric_font(cx), |el, family| {
                 el.font_family(family)
             })
-            .child(div().truncate().child(
-                // A search is the pane's loudest running work, and while one
-                // is on the rows are not this directory's, so nothing the
-                // footer would otherwise say about them is true.
-                self.footer_line(),
-            ))
+            // A search is the pane's loudest running work, and while one is on
+            // the rows are not this directory's, so nothing the footer would
+            // otherwise say about them is true.
+            .child(footer_segments(&self.footer_line(), colors.border))
     }
 
     fn render_body(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
