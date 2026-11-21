@@ -412,14 +412,15 @@ impl Render for PreviewTooltip {
         let body = match (kind, preview.as_deref()) {
             (_, None) => div().text_color(muted).child("…").into_any_element(),
             (Kind::Image | Kind::Video, Some(preview)) => match &preview.picture {
-                Some(picture) => {
-                    let (w, h) = self.drawn(picture, PICTURE);
-                    img(picture.image.clone())
-                        .w(px(w))
-                        .h(px(h))
-                        .rounded_sm()
-                        .into_any_element()
-                }
+                // Edge to edge: the card is as wide as the picture and the
+                // picture has no padding round it. A small original is drawn
+                // larger to fill the width.
+                Some(picture) => img(picture.image.clone())
+                    .w_full()
+                    .h(px(
+                        PICTURE * picture.height as f32 / picture.width.max(1) as f32
+                    ))
+                    .into_any_element(),
                 None => div()
                     .text_color(muted)
                     .child("No picture")
@@ -482,6 +483,11 @@ impl Render for PreviewTooltip {
         };
 
         let facts = self.facts();
+        // An image or a video with a picture fills the card's width, so the
+        // card has a fixed width and only the lines of text are padded.
+        let full_bleed = matches!(kind, Kind::Image | Kind::Video)
+            && preview.as_ref().is_some_and(|p| p.picture.is_some());
+        let padded = |el: gpui::Div| if full_bleed { el.px_2() } else { el };
 
         // The padding keeps the box clear of the pointer: gpui puts a
         // tooltip one pixel from it.
@@ -490,11 +496,11 @@ impl Render for PreviewTooltip {
             .pt_2p5()
             .child(
                 div()
-                    .max_w(px(MAX_WIDTH))
+                    .when(full_bleed, |el| el.w(px(PICTURE + 2.)).py_2())
+                    .when(!full_bleed, |el| el.max_w(px(MAX_WIDTH)).p_2())
                     .flex()
                     .flex_col()
                     .gap_1p5()
-                    .p_2()
                     .rounded_md()
                     .border_1()
                     .border_color(colors.border)
@@ -507,10 +513,10 @@ impl Render for PreviewTooltip {
                     .when_some(crate::theming::ui_font(cx), |el, family| {
                         el.font_family(family)
                     })
-                    .child(name)
+                    .child(padded(name))
                     .child(body)
                     .when(!facts.is_empty(), |el| {
-                        el.child(div().text_xs().text_color(muted).child(facts))
+                        el.child(padded(div().text_xs().text_color(muted).child(facts)))
                     }),
             )
             .into_any_element()

@@ -232,17 +232,21 @@ at() {
 # hover N: rest the pointer on listing row N, with no click. Parked in the
 # corner first, so a row the pointer already sits on is entered again.
 #
-# Then one more pixel, after a pause. gpui starts a tooltip's timer from a
-# motion event over the row, and the one motion that ends a jump across the
-# window sometimes starts nothing: about one hover in five showed no tooltip
-# until the pointer moved again. A hand on a mouse never sends one motion
-# alone, so the second one is what a person does anyway.
+# Then a small drift for a third of a second, as a resting hand makes. gpui
+# starts a tooltip's timer only from a motion event that hit-tests over the
+# row, and the hit test is of the last painted frame. The one motion that
+# ends a jump sometimes lands before the frame catches up, most often just
+# after a click repainted the selection: with one motion, about one hover in
+# five showed no tooltip, and with one nudge after it, one in fifteen after a
+# click. A real mouse never sends a motion alone, so it never sees this.
 hover() {
     wlrctl pointer move 100000 100000 >/dev/null 2>&1
     wlrctl pointer move -100000 -100000 >/dev/null 2>&1
     wlrctl pointer move "$((WX + 150))" "$(row "$1")" >/dev/null 2>&1
-    sleep 0.1
-    wlrctl pointer move 1 0 >/dev/null 2>&1
+    for dx in 1 -1 1; do
+        sleep 0.1
+        wlrctl pointer move "$dx" 0 >/dev/null 2>&1
+    done
 }
 # shellcheck disable=SC2317
 # dbl N: double-click listing row N. One move, two clicks: a reset between them
