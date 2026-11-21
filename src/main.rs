@@ -14,6 +14,7 @@ mod history;
 mod icon;
 mod journal;
 mod location;
+mod masonry;
 mod measure;
 mod notifications;
 mod open_prompt;
@@ -160,6 +161,9 @@ fn main() {
             KeyBinding::new("ctrl-f", StartSearch, Some("DirPane && !AddressBar")),
             KeyBinding::new("f2", RenameSelected, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-h", ToggleHiddenFiles, Some("DirPane && !AddressBar")),
+            // The two layouts, as most file managers number them.
+            KeyBinding::new("ctrl-1", dir_pane::ListView, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-2", dir_pane::GridView, Some("DirPane && !AddressBar")),
             KeyBinding::new("enter", OpenSelected, Some("DirPane && !AddressBar")),
             // Tab between panes, F3 to split, ctrl-w to close: the file manager
             // scheme, which goes back to Norton Commander, rather than the

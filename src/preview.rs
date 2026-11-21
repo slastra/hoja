@@ -37,12 +37,12 @@ use std::time::{Duration, SystemTime};
 use gpui::AnimationExt as _;
 use gpui::{
     AnyView, App, AppContext as _, Context, Entity, EntityId, Global, IntoElement,
-    ParentElement as _, Render, RenderImage, SharedString, Styled as _, Window, div, img,
-    prelude::FluentBuilder as _, px,
+    ParentElement as _, Render, RenderImage, SharedString, Styled as _, StyledImage as _, Window,
+    div, img, prelude::FluentBuilder as _, px,
 };
 use theme::ActiveTheme as _;
 
-use self::loader::{Key, Known, Need};
+use self::loader::Known;
 use self::thumbnail::Size;
 
 /// The width of an image's or a video's picture, in logical pixels.
@@ -69,6 +69,94 @@ pub struct Subject {
 /// The `tooltip` builder for a row.
 pub fn tooltip(subject: Subject) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     move |window, cx| PreviewTooltip::open(subject.clone(), window.scale_factor(), cx).into()
+}
+
+pub use self::loader::{Key, Need};
+
+/// The key a card or a tooltip asks for: the file, and the thumbnail size the
+/// window's scale calls for.
+pub fn key(subject: Subject, scale: f32) -> Key {
+    Key {
+        subject,
+        size: Size::for_scale(scale),
+    }
+}
+
+/// Replace everything `owner` wants. See `loader`.
+pub fn want(owner: EntityId, wants: Vec<(Key, Need, u32)>, cx: &mut App) {
+    loader::want(owner, wants, cx);
+}
+
+/// `owner` wants nothing any more.
+pub fn forget(owner: EntityId, cx: &mut App) {
+    loader::forget(owner, cx);
+}
+
+/// A count that changes whenever the cache learns anything: a layout made
+/// when it was different may have the wrong shapes.
+pub fn learned(cx: &App) -> u64 {
+    loader::learned_count(cx)
+}
+
+/// The narrowest and the widest a card's picture is drawn, as width over
+/// height. A long screenshot or a panorama is cropped to this, centered,
+/// rather than drawn as a card that fills the screen or a sliver.
+const CARD_ASPECTS: (f32, f32) = (0.5, 2.);
+
+/// The shape a card keeps for this file's picture, width over height, or
+/// `None` for a card with no picture.
+///
+/// From the picture when it is made, from the facts before that, and before
+/// those from the file's extension, so a layout can place every card at once
+/// and correct the few the guess got wrong.
+pub fn card_aspect(key: &Key, cx: &App) -> Option<f32> {
+    let aspect = match loader::known(key, cx) {
+        Known::Done(preview) => preview
+            .picture
+            .as_ref()
+            .map(|p| p.width as f32 / p.height.max(1) as f32),
+        Known::Facts(facts) => facts.aspect,
+        Known::Nothing => guess_aspect(&key.subject.path),
+    }?;
+    Some(aspect.clamp(CARD_ASPECTS.0, CARD_ASPECTS.1))
+}
+
+/// A shape from the extension alone: what most files of that kind are.
+fn guess_aspect(path: &Path) -> Option<f32> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "heic" | "heif"
+        | "avif" | "jxl" | "svg" | "qoi" | "ico" => Some(4. / 3.),
+        "mp4" | "m4v" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "flv" | "mpg" | "mpeg" | "3gp"
+        | "ts" | "ogv" => Some(16. / 9.),
+        "pdf" => Some(8.5 / 11.),
+        _ => None,
+    }
+}
+
+/// Whether the picture for `key` is made and can be drawn.
+pub fn has_picture(key: &Key, cx: &App) -> bool {
+    loader::known(key, cx)
+        .done()
+        .is_some_and(|preview| preview.picture.is_some())
+}
+
+/// A card's picture, `width` by `height`, cropped to fill it; or a box that
+/// breathes in its place while it is made.
+pub fn card_picture(key: &Key, width: f32, height: f32, cx: &App) -> gpui::AnyElement {
+    let hold = cx.theme().colors().element_hover;
+    match loader::known(key, cx) {
+        Known::Done(preview) => match &preview.picture {
+            Some(picture) => img(picture.image.clone())
+                .w(px(width))
+                .h(px(height))
+                .object_fit(gpui::ObjectFit::Cover)
+                .rounded_t(px(INNER_RADIUS))
+                .into_any_element(),
+            None => div().w(px(width)).h(px(height)).into_any_element(),
+        },
+        _ => placeholder(width, height, hold, |el| el.rounded_t(px(INNER_RADIUS))),
+    }
 }
 
 /// Remove the working files of thumbnailers that hojas no longer running

@@ -109,6 +109,19 @@ the out-dir, so the test does not write to the cache that the desktop shares.
 scripts/sway-harness.sh "$(scripts/tests/setup-preview.sh)" scripts/tests/preview.sh
 ```
 
+`grid.sh` needs `setup-grid.sh`, which makes more than a screen of images in
+five shapes, a video in each orientation, a PDF, audio, text and folders. The
+suite switches to the grid layout and checks that pictures arrive, that the
+arrows move by card and by band, that End and Home scroll, that a right-click
+and a double-click work on a card, and that Back keeps the grid. The probe
+gives each card in view as `[index, x, y, width, height, picture]`, and the
+harness helpers `card`, `dcard` and `rcard` click a card by its index. Run it
+nested, because it types.
+
+```sh
+scripts/sway-harness.sh "$(scripts/tests/setup-grid.sh)" scripts/tests/grid.sh
+```
+
 The harness drives a drag with `scripts/vpointer`, a small tool that presses,
 moves and releases a virtual pointer. `wlrctl` cannot do this: its press and
 release are one call. The harness builds the tool into `target/vpointer` the

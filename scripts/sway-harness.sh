@@ -249,6 +249,33 @@ hover() {
     done
 }
 # shellcheck disable=SC2317
+# cardat N: the center of grid card N, in output coordinates, from the probe.
+# Cards are placed by their pictures' shapes, so their positions come from
+# hoja rather than from arithmetic here.
+cardat() {
+    probe "next(f'{c[1] + c[3] // 2} {c[2] + c[4] // 2}' for c in p[0]['cards'] if c[0] == $1)"
+}
+# shellcheck disable=SC2317
+# card N / dcard N / rcard N: click, double-click, right-click grid card N.
+card() {
+    # shellcheck disable=SC2046  # two words, x and y
+    goto $(cardat "$1")
+    wlrctl pointer click left >/dev/null 2>&1
+}
+# shellcheck disable=SC2317
+dcard() {
+    # shellcheck disable=SC2046
+    goto $(cardat "$1")
+    wlrctl pointer click left >/dev/null 2>&1
+    wlrctl pointer click left >/dev/null 2>&1
+}
+# shellcheck disable=SC2317
+rcard() {
+    # shellcheck disable=SC2046
+    goto $(cardat "$1")
+    wlrctl pointer click right >/dev/null 2>&1
+}
+# shellcheck disable=SC2317
 # dbl N: double-click listing row N. One move, two clicks: a reset between them
 # reads as two singles.
 dbl() {

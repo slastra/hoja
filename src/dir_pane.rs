@@ -20,6 +20,8 @@ use crate::fs::{self, DirEntry, Sort, SortDir, SortKey, ViewSettings};
 use crate::git::GitStatus;
 use crate::history::{History, Place};
 use crate::icon::Icon;
+
+mod grid;
 use crate::location::Location;
 use crate::path_editor::{PathEditor, PathEditorEvent};
 use crate::workspace;
@@ -61,6 +63,8 @@ actions!(
         RenameSelected,
         ToggleHiddenFiles,
         ToggleFoldersFirst,
+        ListView,
+        GridView,
         Refresh,
         ReverseSort,
         SortByName,
@@ -462,6 +466,25 @@ const INACTIVE_CONTENT_ALPHA: f32 = 0.6;
 /// Alpha rather than substituting `text_muted`, so a name coloured by its git
 /// status keeps its hue: dimming the listing should not cost the listing its
 /// information.
+/// The bar a folder's size shows while it is counted, in a row or on a card.
+fn counting_bar(color: gpui::Hsla, id: gpui::ElementId) -> impl IntoElement + use<> {
+    div()
+        .w(px(COUNTING_BAR_WIDTH))
+        .h(px(COUNTING_BAR_HEIGHT))
+        .rounded_full()
+        .bg(color)
+        .with_animation(
+            id,
+            gpui::Animation::new(COUNTING_PERIOD)
+                .repeat()
+                .with_easing(gpui::pulsating_between(
+                    COUNTING_ALPHA_LOW,
+                    COUNTING_ALPHA_HIGH,
+                )),
+            |bar, delta| bar.opacity(delta),
+        )
+}
+
 fn quieted(mut color: gpui::Hsla, active: bool) -> gpui::Hsla {
     if !active {
         color.a *= INACTIVE_CONTENT_ALPHA;
@@ -1214,6 +1237,9 @@ pub struct DirPane {
     /// Whether the scrollbar is mid-drag. The bar is rebuilt every frame; a
     /// drag is not.
     scrollbar: crate::scrollbar::ScrollbarState,
+    /// The grid layout's scroll and its cached layout. See `grid`.
+    grid_scroll: gpui::ScrollHandle,
+    grid: std::cell::RefCell<grid::GridState>,
     /// Git status by entry name for the loaded directory. Empty outside a
     /// repository, and empty until the background query lands.
     git: crate::git::GitStatuses,
@@ -1304,9 +1330,17 @@ impl DirPane {
 
         // New panes are made active by the workspace as it focuses them; the
         // very first one starts active because it is.
-        let subscriptions = vec![cx.on_focus_in(&focus_handle, window, |_, _, cx| {
-            cx.emit(PaneEvent::Focus);
-        })];
+        let subscriptions = vec![
+            cx.on_focus_in(&focus_handle, window, |_, _, cx| {
+                cx.emit(PaneEvent::Focus);
+            }),
+            // The previews this pane's grid wanted are not pinned once it is
+            // gone.
+            cx.on_release({
+                let id = cx.entity_id();
+                move |_, cx| crate::preview::forget(id, cx)
+            }),
+        ];
 
         // Focus on creation so key bindings resolve without a click first.
         window.focus(&focus_handle, cx);
@@ -1326,6 +1360,8 @@ impl DirPane {
             resize: None,
             moving: None,
             scrollbar: crate::scrollbar::ScrollbarState::default(),
+            grid_scroll: gpui::ScrollHandle::new(),
+            grid: Default::default(),
             git: crate::git::GitStatuses::new(),
             git_task: None,
             watch: None,
@@ -1422,6 +1458,18 @@ impl DirPane {
             searching: self.searching(),
             search_field: matches!(self.path_editor, Some((BarMode::Search, _))),
             top_row: self.top_row(),
+            layout: match self.view.layout {
+                fs::Layout::List => "list",
+                fs::Layout::Grid => "grid",
+            },
+            grid_columns: match self.view.layout {
+                fs::Layout::List => 0,
+                fs::Layout::Grid => self.grid_columns(),
+            },
+            cards: match self.view.layout {
+                fs::Layout::List => Vec::new(),
+                fs::Layout::Grid => self.grid_cards(cx),
+            },
             reading: self.reading_bytes.is_some(),
             error: self.error.clone(),
             menu_open: self.context_menu.is_some(),
@@ -1555,6 +1603,26 @@ impl DirPane {
         // being told: the same change also arrives from the settings file,
         // and a line rebuilt here alone would be right for one of the two
         // ways in and stale for the other.
+        cx.emit(PaneEvent::ViewChanged);
+        cx.notify();
+    }
+
+    /// Show this pane as a list or as a grid.
+    ///
+    /// The entry under the cursor, or failing that the one at the top, stays
+    /// in view across the change, so switching does not lose your place.
+    fn set_layout(&mut self, layout: fs::Layout, cx: &mut Context<Self>) {
+        if self.view.layout == layout {
+            return;
+        }
+        let keep = match self.cursor_ix {
+            Some(ix) => Some((ix, Reveal::Nearest)),
+            None => Some((self.top_row(), Reveal::Top)),
+        };
+        self.view.layout = layout;
+        if let Some((ix, how)) = keep.filter(|(ix, _)| *ix < self.entries.len()) {
+            self.scroll_to(ix, how);
+        }
         cx.emit(PaneEvent::ViewChanged);
         cx.notify();
     }
@@ -2092,7 +2160,10 @@ impl DirPane {
     /// this many, and left and right move only when it is more than one. In
     /// the list it is one.
     fn across(&self) -> usize {
-        1
+        match self.view.layout {
+            fs::Layout::List => 1,
+            fs::Layout::Grid => self.grid_columns(),
+        }
     }
 
     /// Where `motion` lands, or `None` when the listing is empty or the
@@ -2107,6 +2178,16 @@ impl DirPane {
             Motion::Left if across > 1 => step(-1),
             Motion::Right if across > 1 => step(1),
             Motion::Left | Motion::Right => None,
+            // A page in the grid stays in its column, so it is a card a view
+            // away rather than a count of entries.
+            Motion::PageUp | Motion::PageDown if self.view.layout == fs::Layout::Grid => {
+                let down = matches!(motion, Motion::PageDown);
+                match self.cursor_ix.filter(|&ix| ix < len) {
+                    Some(from) => self.grid_page(from, down).or(Some(from)),
+                    // No lead yet: as the list does.
+                    None => step(if down { 1 } else { -1 }),
+                }
+            }
             Motion::PageUp => step(-(self.rows_per_page() as isize)),
             Motion::PageDown => step(self.rows_per_page() as isize),
             Motion::Top => (len > 0).then_some(0),
@@ -2176,6 +2257,9 @@ impl DirPane {
     /// that know how entries are laid out. A layout other than the list
     /// answers these and nothing else.
     fn scroll_to(&self, ix: usize, how: Reveal) {
+        if self.view.layout == fs::Layout::Grid {
+            return self.grid_scroll_to(ix, how);
+        }
         match how {
             Reveal::Nearest => self
                 .scroll
@@ -3007,6 +3091,9 @@ impl DirPane {
     /// height: gpui's own `logical_scroll_top_index` exists only in its test
     /// builds.
     fn top_row(&self) -> usize {
+        if self.view.layout == fs::Layout::Grid {
+            return self.grid_top();
+        }
         let offset = self.scroll.0.borrow().base_handle.offset();
         (-offset.y / px(ROW_HEIGHT)).max(0.) as usize
     }
@@ -3028,7 +3115,10 @@ impl DirPane {
         let top = place.top.as_deref().and_then(find);
         self.anchor_ix = cursor;
         self.cursor_ix = cursor;
-        let in_view = |top: usize, row: usize| row >= top && row < top + self.visible_rows();
+        let in_view = |top: usize, row: usize| match self.view.layout {
+            fs::Layout::List => row >= top && row < top + self.visible_rows(),
+            fs::Layout::Grid => self.grid_in_view(top, row),
+        };
         match (top, cursor) {
             (Some(top), Some(row)) if in_view(top, row) => {
                 self.scroll_to(top, Reveal::TopEvenPastTheEnd)
@@ -4478,8 +4568,6 @@ impl DirPane {
         // The lead row is where ctrl-arrow has moved to and what ctrl-space
         // acts on. It is usually also selected, so it needs its own mark.
         let is_lead = self.cursor_ix == Some(ix);
-        let is_dir = entry.is_dir;
-
         let colors = cx.theme().colors();
         // Deliberately one content colour throughout: names, secondary columns, and
         // icons. No accent on directories, no muting on metadata: hierarchy comes from
@@ -4490,40 +4578,8 @@ impl DirPane {
         // name means untracked, and nothing else in the row says so. The
         // secondary columns and the icon stay neutral so the exception reads as
         // a signal instead of as theming.
-        let base = colors.text;
-        let name_base = self
-            .git
-            .get(&entry.name)
-            .map(|status| match status {
-                GitStatus::Added => colors.version_control_added,
-                GitStatus::Modified => colors.version_control_modified,
-                GitStatus::Deleted => colors.version_control_deleted,
-                GitStatus::Renamed => colors.version_control_renamed,
-                GitStatus::Conflict => colors.version_control_conflict,
-                // `text_muted`, not `version_control_ignored`: the latter is
-                // tuned for diff gutters where near-invisible is fine, and it
-                // leaves a file name too dim to read. Ignored is a
-                // de-emphasis, not a hue.
-                GitStatus::Ignored => colors.text_muted,
-                GitStatus::Unmodified => base,
-            })
-            .unwrap_or(base);
-
-        // Icons and the secondary columns follow `content`; names carry their
-        // own colour. Both quiet down together when this is not the pane the
-        // keys are acting on.
-        let content = quieted(base, self.active);
-        let name_color = quieted(name_base, self.active);
-
-        // Resolution order handles the messy cases: full filename against stems and
-        // suffixes (`eslint.config.js`), repeated `split_once('.')` (`auth.module.js`),
-        // multiple extensions (`Component.stories.tsx`), hidden files (`.gitignore`),
-        // bare extension, then the `"default"` key.
-        let icon_path = if is_dir {
-            FileIcons::get_folder_icon(false, entry.key(), cx)
-        } else {
-            FileIcons::get_icon(entry.key(), cx)
-        };
+        let (content, name_color) = self.entry_colors(entry, cx);
+        let icon_path = self.entry_icon(entry, cx);
 
         // Cells line up with the header by using the same widths and the same
         // handle-sized spacers where the dividers sit.
@@ -4566,20 +4622,7 @@ impl DirPane {
                 .flex_row()
                 .items_center()
                 .when(right, |el| el.justify_end())
-                .child(
-                    div()
-                        .w(px(COUNTING_BAR_WIDTH))
-                        .h(px(COUNTING_BAR_HEIGHT))
-                        .rounded_full()
-                        .bg(content)
-                        .with_animation(
-                            ("counting", ix),
-                            gpui::Animation::new(COUNTING_PERIOD).repeat().with_easing(
-                                gpui::pulsating_between(COUNTING_ALPHA_LOW, COUNTING_ALPHA_HIGH),
-                            ),
-                            |bar, delta| bar.opacity(delta),
-                        ),
-                )
+                .child(counting_bar(content, ("counting", ix).into()))
                 .into_any_element()
         };
 
@@ -4668,6 +4711,53 @@ impl DirPane {
             .into_iter()
             .fold(row, |row, spec| row.child(spacer()).child(cell(spec)));
         self.interactive(row, ix, true, cx)
+    }
+
+    /// The colors an entry is drawn in, as (content, name): everything but the
+    /// name in the first, the name in the second.
+    ///
+    /// One content colour throughout: secondary columns and icons. No accent
+    /// on directories, no muting on metadata: hierarchy comes from position
+    /// and the selection background instead of from hue.
+    ///
+    /// Git status is the one exception, and only on the name. Hue here
+    /// carries information rather than decoration, which is the whole test: a
+    /// green name means untracked, and nothing else says so. Both quiet down
+    /// together when this is not the pane the keys are acting on.
+    fn entry_colors(&self, entry: &DirEntry, cx: &App) -> (gpui::Hsla, gpui::Hsla) {
+        let colors = cx.theme().colors();
+        let base = colors.text;
+        let name_base = self
+            .git
+            .get(&entry.name)
+            .map(|status| match status {
+                GitStatus::Added => colors.version_control_added,
+                GitStatus::Modified => colors.version_control_modified,
+                GitStatus::Deleted => colors.version_control_deleted,
+                GitStatus::Renamed => colors.version_control_renamed,
+                GitStatus::Conflict => colors.version_control_conflict,
+                // `text_muted`, not `version_control_ignored`: the latter is
+                // tuned for diff gutters where near-invisible is fine, and it
+                // leaves a file name too dim to read. Ignored is a
+                // de-emphasis, not a hue.
+                GitStatus::Ignored => colors.text_muted,
+                GitStatus::Unmodified => base,
+            })
+            .unwrap_or(base);
+        (quieted(base, self.active), quieted(name_base, self.active))
+    }
+
+    /// The icon for an entry. Resolution order handles the messy cases: full
+    /// filename against stems and suffixes (`eslint.config.js`), repeated
+    /// `split_once('.')` (`auth.module.js`), multiple extensions
+    /// (`Component.stories.tsx`), hidden files (`.gitignore`), bare
+    /// extension, then the `"default"` key.
+    fn entry_icon(&self, entry: &DirEntry, cx: &App) -> Option<SharedString> {
+        if entry.is_dir {
+            FileIcons::get_folder_icon(false, entry.key(), cx)
+        } else {
+            FileIcons::get_icon(entry.key(), cx)
+        }
     }
 
     /// What an entry does under the pointer, the same in every layout: a
@@ -4971,7 +5061,12 @@ impl DirPane {
             ))
     }
 
-    fn render_body(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_body(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        // Whatever the grid wanted from the preview cache, it does not want
+        // while the list is drawn.
+        if self.view.layout == fs::Layout::List {
+            crate::preview::forget(cx.entity_id(), cx);
+        }
         if let Some(error) = &self.error {
             return div()
                 .flex_1()
@@ -5005,6 +5100,10 @@ impl DirPane {
                 .text_color(cx.theme().colors().text)
                 .child("Empty")
                 .into_any_element();
+        }
+
+        if self.view.layout == fs::Layout::Grid {
+            return self.render_grid(window, cx);
         }
 
         let list = uniform_list(
@@ -5067,7 +5166,7 @@ impl Focusable for DirPane {
 impl EventEmitter<PaneEvent> for DirPane {}
 
 impl Render for DirPane {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Here rather than at each site that moves the selection: this runs
         // after every one of them, and cannot be forgotten by the next one.
         self.sync_footer(cx);
@@ -5159,6 +5258,12 @@ impl Render for DirPane {
             .on_action(cx.listener(Self::rename_selected))
             .on_action(cx.listener(Self::toggle_hidden))
             .on_action(cx.listener(Self::toggle_folders_first))
+            .on_action(
+                cx.listener(|this, _: &ListView, _, cx| this.set_layout(fs::Layout::List, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &GridView, _, cx| this.set_layout(fs::Layout::Grid, cx)),
+            )
             .on_action(cx.listener(Self::refresh_action))
             .on_action(cx.listener(Self::reverse_sort))
             .on_action(cx.listener(Self::sort_by_name))
@@ -5275,8 +5380,12 @@ impl Render for DirPane {
             .bg(cx.theme().colors().background)
             .text_color(cx.theme().colors().text)
             .child(self.render_toolbar(cx))
-            .child(self.render_header(cx))
-            .child(self.render_body(cx))
+            // The column header belongs to the list. Sorting in the grid is
+            // in the view menu.
+            .when(self.view.layout == fs::Layout::List, |el| {
+                el.child(self.render_header(cx))
+            })
+            .child(self.render_body(window, cx))
             .child(self.render_footer(cx))
             .when_some(self.context_menu.clone(), |el, (position, menu)| {
                 el.child(

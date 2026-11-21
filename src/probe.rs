@@ -59,8 +59,18 @@ pub struct PaneProbe {
     pub columns: Vec<String>,
     pub selected: Vec<usize>,
     pub cursor: Option<usize>,
-    /// The first row in view, which is what Back restores.
+    /// The first row in view, which is what Back restores. In the grid, the
+    /// first card whose top is in view.
     pub top_row: usize,
+    /// `"list"` or `"grid"`.
+    pub layout: &'static str,
+    /// Columns of cards in the grid, 0 in the list.
+    pub grid_columns: usize,
+    /// The cards in view, as `[index, x, y, width, height, picture]` in
+    /// window pixels, so a test can point at a card by its index rather than
+    /// work out where it is. `picture` is 1 once the card's picture is drawn.
+    /// Empty in the list.
+    pub cards: Vec<[i32; 6]>,
     pub footer: String,
     /// Rows whose folder size the walk has not finished, by index.
     pub counting: Vec<usize>,

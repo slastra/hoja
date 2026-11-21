@@ -51,8 +51,6 @@ pub struct Key {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Need {
     /// The kind and the shape: what a layout needs to place a file.
-    // Asked for by the grid, which is not drawn yet.
-    #[cfg_attr(not(test), allow(dead_code))]
     Facts,
     /// The picture as well.
     Picture,
@@ -96,6 +94,9 @@ struct Loader {
     running_facts: HashSet<Key>,
     running_pictures: HashSet<Key>,
     wants: HashMap<EntityId, Vec<(Key, Need, u32)>>,
+    /// Bumped whenever a key learns its facts or gets its picture, so a
+    /// layout built from what was known can tell it is out of date.
+    learned: u64,
 }
 
 impl Global for Loader {}
@@ -247,6 +248,11 @@ pub fn forget(owner: EntityId, cx: &mut App) {
     }
 }
 
+/// A count that changes whenever anything is learned. See `Loader::learned`.
+pub fn learned_count(cx: &App) -> u64 {
+    cx.try_global::<Loader>().map_or(0, |loader| loader.learned)
+}
+
 pub fn known(key: &Key, cx: &App) -> Known {
     cx.try_global::<Loader>()
         .map_or(Known::Nothing, |loader| loader.known(key))
@@ -287,6 +293,7 @@ fn pump(cx: &mut App) {
 fn learned(key: Key, facts: Arc<Facts>, cx: &mut App) {
     let loader = cx.default_global::<Loader>();
     loader.running_facts.remove(&key);
+    loader.learned += 1;
     let watchers = loader.watchers(&key);
     let dropped = if facts.aspect.is_some() {
         loader.keep_facts(key, facts);
@@ -306,6 +313,7 @@ fn learned(key: Key, facts: Arc<Facts>, cx: &mut App) {
 fn made(key: Key, preview: Arc<Preview>, cx: &mut App) {
     let loader = cx.default_global::<Loader>();
     loader.running_pictures.remove(&key);
+    loader.learned += 1;
     let watchers = loader.watchers(&key);
     let dropped = loader.keep_ready(key, preview);
     settle(dropped, watchers, cx);
