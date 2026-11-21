@@ -5033,9 +5033,11 @@ impl DirPane {
             .relative()
             .child(list)
             .child(crate::scrollbar::scrollbar(
-                self.scroll.clone(),
-                self.entries.len(),
-                ROW_HEIGHT,
+                crate::scrollbar::ScrollSource::Rows {
+                    handle: self.scroll.clone(),
+                    rows: self.entries.len(),
+                    row_height: ROW_HEIGHT,
+                },
                 cx.entity(),
                 |this: &mut Self| &mut this.scrollbar,
             ))

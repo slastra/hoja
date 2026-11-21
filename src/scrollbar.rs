@@ -1,4 +1,5 @@
-//! A vertical scrollbar for a `uniform_list`.
+//! A vertical scrollbar for a `uniform_list`, or for anything that scrolls
+//! through a `ScrollHandle`. See `ScrollSource`.
 //!
 //! gpui has no scrollbar. `list.rs` reserves the internals one would need and
 //! stops there, so the widget belongs a layer up; Zed's answer lives in its `ui`
@@ -49,7 +50,7 @@ use std::panic::Location;
 use gpui::{
     App, Bounds, Element, ElementId, Entity, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
     InspectorElementId, IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Style, UniformListScrollHandle, Window, fill, point, px, size,
+    Pixels, ScrollHandle, Style, UniformListScrollHandle, Window, fill, point, px, size,
 };
 use theme::ActiveTheme;
 
@@ -104,31 +105,73 @@ pub struct ScrollbarState {
     grab: Option<f32>,
 }
 
-/// A scrollbar over a `uniform_list`.
+/// What a scrollbar scrolls, and the content height it cannot measure itself.
+#[derive(Clone)]
+pub enum ScrollSource {
+    /// A `uniform_list` of rows `row_height` tall. Moved by row: see
+    /// `scroll_to_row`.
+    Rows {
+        handle: UniformListScrollHandle,
+        rows: usize,
+        row_height: f32,
+    },
+    /// An element that scrolls through the interactivity layer, a `div` with
+    /// `overflow_y_scroll`, which reads `set_offset` and moves by the pixel.
+    Pixels {
+        handle: ScrollHandle,
+        content_height: f32,
+    },
+}
+
+impl ScrollSource {
+    /// How far down we are. gpui's offsets grow downward as negatives, so this
+    /// is where the sign goes; everything else here works in positives.
+    fn offset(&self) -> f32 {
+        let offset = match self {
+            Self::Rows { handle, .. } => handle.0.borrow().base_handle.offset(),
+            Self::Pixels { handle, .. } => handle.offset(),
+        };
+        (-f32::from(offset.y)).max(0.)
+    }
+
+    fn content_height(&self) -> f32 {
+        match self {
+            Self::Rows {
+                rows, row_height, ..
+            } => *rows as f32 * row_height,
+            Self::Pixels { content_height, .. } => *content_height,
+        }
+    }
+
+    fn scroll_to(&self, offset: f32) {
+        match self {
+            Self::Rows {
+                handle,
+                rows,
+                row_height,
+            } => scroll_to_row(handle, offset, *row_height, *rows),
+            Self::Pixels { handle, .. } => handle.set_offset(point(px(0.), px(-offset))),
+        }
+    }
+}
+
+/// A vertical scrollbar.
 ///
 /// Laid over the list rather than beside it: one that took width would reflow
 /// every row the moment a directory grew past one screen.
 pub struct Scrollbar<T: 'static> {
-    handle: UniformListScrollHandle,
-    rows: usize,
-    /// Needed to turn a position on the track back into a row, which is the
-    /// only thing a `uniform_list` will actually scroll to.
-    row_height: f32,
+    source: ScrollSource,
     owner: Entity<T>,
     state: fn(&mut T) -> &mut ScrollbarState,
 }
 
 pub fn scrollbar<T: 'static>(
-    handle: UniformListScrollHandle,
-    rows: usize,
-    row_height: f32,
+    source: ScrollSource,
     owner: Entity<T>,
     state: fn(&mut T) -> &mut ScrollbarState,
 ) -> Scrollbar<T> {
     Scrollbar {
-        handle,
-        rows,
-        row_height,
+        source,
         owner,
         state,
     }
@@ -143,15 +186,7 @@ pub struct Prepainted {
     track_height: f32,
 }
 
-impl<T: 'static> Scrollbar<T> {
-    /// How far down we are. gpui's offsets grow downward as negatives, so this
-    /// is where the sign goes; everything else here works in positives.
-    fn offset(&self) -> f32 {
-        (-f32::from(self.handle.0.borrow().base_handle.offset().y)).max(0.)
-    }
-}
-
-/// Put the list somewhere.
+/// Put a `uniform_list` somewhere.
 ///
 /// By row, because a `uniform_list` will not be moved any other way. Writing
 /// `base_handle.set_offset` takes: read it back and the new value is there.
@@ -161,7 +196,7 @@ impl<T: 'static> Scrollbar<T> {
 ///
 /// The cost is that a drag lands on row boundaries instead of pixels. In a
 /// listing of fixed-height rows that is invisible.
-fn scroll_to(handle: &UniformListScrollHandle, offset: f32, row_height: f32, rows: usize) {
+fn scroll_to_row(handle: &UniformListScrollHandle, offset: f32, row_height: f32, rows: usize) {
     if rows == 0 {
         return;
     }
@@ -230,14 +265,14 @@ impl<T: 'static> Element for Scrollbar<T> {
         // Our own bounds, and by now the list beside us has been laid out, so
         // this is the height a reader actually sees.
         let track_height = f32::from(bounds.size.height);
-        let max_offset = (self.rows as f32 * self.row_height - track_height).max(0.);
+        let max_offset = (self.source.content_height() - track_height).max(0.);
         Prepainted {
             // Blocks what is underneath, or a press on the bar reaches the row
             // behind it and starts dragging a file. Except scroll, so the wheel
             // still works with the cursor over the bar, which is what every
             // other scrollbar does.
             hitbox: window.insert_hitbox(bounds, HitboxBehavior::BlockMouseExceptScroll),
-            thumb: thumb(self.offset(), max_offset, track_height),
+            thumb: thumb(self.source.offset(), max_offset, track_height),
             max_offset,
             track_height,
         }
@@ -284,16 +319,15 @@ impl<T: 'static> Element for Scrollbar<T> {
             window.paint_quad(fill(thumb_bounds, fill_color));
 
             let track_top = f32::from(bounds.origin.y);
-            let (row_height, rows) = (self.row_height, self.rows);
             let (max_offset, track_height) = (prepaint.max_offset, prepaint.track_height);
-            let handle = self.handle.clone();
+            let source = self.source.clone();
             let hitbox = prepaint.hitbox.clone();
 
             // Registered here rather than on a `div`, because a raw element has no
             // interactivity layer to hang listeners on.
             window.on_mouse_event({
                 let owner = owner.clone();
-                let handle = handle.clone();
+                let source = source.clone();
                 move |event: &MouseDownEvent, phase, window, cx| {
                     if !phase.bubble() || !hitbox.is_hovered(window) {
                         return;
@@ -307,12 +341,7 @@ impl<T: 'static> Element for Scrollbar<T> {
                         // On the track: centre the thumb here and carry on as
                         // though it had been grabbed in the middle.
                         let grab = height / 2.;
-                        scroll_to(
-                            &handle,
-                            offset_for(y, grab, max_offset, track_height),
-                            row_height,
-                            rows,
-                        );
+                        source.scroll_to(offset_for(y, grab, max_offset, track_height));
                         grab
                     };
                     owner.update(cx, |this, cx| {
@@ -324,7 +353,7 @@ impl<T: 'static> Element for Scrollbar<T> {
 
             window.on_mouse_event({
                 let owner = owner.clone();
-                let handle = handle.clone();
+                let source = source.clone();
                 move |event: &MouseMoveEvent, phase, _window, cx| {
                     if !phase.bubble() {
                         return;
@@ -333,12 +362,7 @@ impl<T: 'static> Element for Scrollbar<T> {
                         return;
                     };
                     let y = f32::from(event.position.y) - track_top;
-                    scroll_to(
-                        &handle,
-                        offset_for(y, grab, max_offset, track_height),
-                        row_height,
-                        rows,
-                    );
+                    source.scroll_to(offset_for(y, grab, max_offset, track_height));
                     owner.update(cx, |_, cx| cx.notify());
                 }
             });
