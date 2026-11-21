@@ -57,6 +57,12 @@ const HIDDEN: &[&str] = &[
     "pane::ExtendToBottom",
     "pane::CursorUp",
     "pane::CursorDown",
+    "pane::MoveLeft",
+    "pane::MoveRight",
+    "pane::ExtendLeft",
+    "pane::ExtendRight",
+    "pane::CursorLeft",
+    "pane::CursorRight",
     "pane::ToggleSelection",
 ];
 

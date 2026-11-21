@@ -43,10 +43,11 @@ use theme::LoadThemes;
 use assets::Assets;
 use command_palette as palette;
 use dir_pane::{
-    ClearSelection, CursorDown, CursorUp, EditPath, ExtendDown, ExtendPageDown, ExtendPageUp,
-    ExtendToBottom, ExtendToTop, ExtendUp, FocusResults, GoHome, GoUp, MoveDown, MovePageDown,
-    MovePageUp, MoveToBottom, MoveToTop, MoveUp, NavBack, NavForward, OpenSelected, RenameSelected,
-    SelectAll, StartSearch, ToggleHiddenFiles, ToggleSelection,
+    ClearSelection, CursorDown, CursorLeft, CursorRight, CursorUp, EditPath, ExtendDown,
+    ExtendLeft, ExtendPageDown, ExtendPageUp, ExtendRight, ExtendToBottom, ExtendToTop, ExtendUp,
+    FocusResults, GoHome, GoUp, MoveDown, MoveLeft, MovePageDown, MovePageUp, MoveRight,
+    MoveToBottom, MoveToTop, MoveUp, NavBack, NavForward, OpenSelected, RenameSelected, SelectAll,
+    StartSearch, ToggleHiddenFiles, ToggleSelection,
 };
 use file_menu::{
     Cancel as MenuCancel, CloseSubmenu, Confirm as MenuConfirm, OpenSubmenu, SelectNext,
@@ -210,6 +211,16 @@ fn main() {
             KeyBinding::new("shift-end", ExtendToBottom, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-up", CursorUp, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-down", CursorDown, Some("DirPane && !AddressBar")),
+            // Sideways. Inert in the list, which has one entry per band; in
+            // the grid they step to the neighboring card. Every text field
+            // is an AddressBar and binds these itself, so the caret keeps
+            // them while typing.
+            KeyBinding::new("left", MoveLeft, Some("DirPane && !AddressBar")),
+            KeyBinding::new("right", MoveRight, Some("DirPane && !AddressBar")),
+            KeyBinding::new("shift-left", ExtendLeft, Some("DirPane && !AddressBar")),
+            KeyBinding::new("shift-right", ExtendRight, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-left", CursorLeft, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-right", CursorRight, Some("DirPane && !AddressBar")),
             KeyBinding::new(
                 "ctrl-space",
                 ToggleSelection,

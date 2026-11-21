@@ -45,6 +45,12 @@ actions!(
         ExtendToBottom,
         CursorUp,
         CursorDown,
+        MoveLeft,
+        MoveRight,
+        ExtendLeft,
+        ExtendRight,
+        CursorLeft,
+        CursorRight,
         ToggleSelection,
         NavBack,
         NavForward,
@@ -1006,12 +1012,27 @@ impl ColumnWidths {
     }
 }
 
+/// How `DirPane::scroll_to` brings an entry into view.
+#[derive(Clone, Copy)]
+enum Reveal {
+    /// The least scroll that shows it.
+    Nearest,
+    /// At the top of the view, as far as the end of the listing allows.
+    Top,
+    /// At the top of the view even when that scrolls past the end, which is
+    /// how Back puts a scroll position back exactly.
+    TopEvenPastTheEnd,
+}
+
 /// A keyboard movement of the lead row. Each has a plain form that takes the
 /// selection with it and a shift form that extends the selection instead.
 #[derive(Clone, Copy)]
 enum Motion {
     Up,
     Down,
+    /// Sideways, which only means something where entries sit side by side.
+    Left,
+    Right,
     PageUp,
     PageDown,
     Top,
@@ -2003,8 +2024,7 @@ impl DirPane {
         if let Some(ix) = fs::type_ahead_target(&self.entries, &buffer, self.cursor_ix) {
             self.selected.only(ix);
             self.place_cursor(ix);
-            self.scroll
-                .scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
+            self.scroll_to(ix, Reveal::Nearest);
             cx.notify();
         }
         self.type_ahead = Some((now, buffer));
@@ -2068,13 +2088,25 @@ impl DirPane {
         ((size.item.height / row) as usize).saturating_sub(1).max(1)
     }
 
-    /// Where `motion` lands, or `None` when the listing is empty.
+    /// Entries side by side in one band of the layout: up and down step by
+    /// this many, and left and right move only when it is more than one. In
+    /// the list it is one.
+    fn across(&self) -> usize {
+        1
+    }
+
+    /// Where `motion` lands, or `None` when the listing is empty or the
+    /// layout has nowhere for it to go.
     fn destination(&self, motion: Motion) -> Option<usize> {
         let len = self.entries.len();
         let step = |delta: isize| fs::step_row(len, self.cursor_ix, delta);
+        let across = self.across();
         match motion {
-            Motion::Up => step(-1),
-            Motion::Down => step(1),
+            Motion::Up => step(-(across as isize)),
+            Motion::Down => step(across as isize),
+            Motion::Left if across > 1 => step(-1),
+            Motion::Right if across > 1 => step(1),
+            Motion::Left | Motion::Right => None,
             Motion::PageUp => step(-(self.rows_per_page() as isize)),
             Motion::PageDown => step(self.rows_per_page() as isize),
             Motion::Top => (len > 0).then_some(0),
@@ -2133,9 +2165,26 @@ impl DirPane {
     }
 
     fn reveal(&mut self, ix: usize, cx: &mut Context<Self>) {
-        self.scroll
-            .scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
+        self.scroll_to(ix, Reveal::Nearest);
         cx.notify();
+    }
+
+    /// Scroll so that entry `ix` is in view, as `how` says.
+    ///
+    /// Every scroll goes through here, and the three measures below it
+    /// (`top_row`, `visible_rows`, `rows_per_page`) are the only other places
+    /// that know how entries are laid out. A layout other than the list
+    /// answers these and nothing else.
+    fn scroll_to(&self, ix: usize, how: Reveal) {
+        match how {
+            Reveal::Nearest => self
+                .scroll
+                .scroll_to_item(ix, gpui::ScrollStrategy::Nearest),
+            Reveal::Top => self.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Top),
+            Reveal::TopEvenPastTheEnd => self
+                .scroll
+                .scroll_to_item_strict(ix, gpui::ScrollStrategy::Top),
+        }
     }
 
     /// Read the current directory on a background thread, then apply on the UI thread.
@@ -2810,7 +2859,7 @@ impl DirPane {
             return;
         }
         if wanted.is_empty() {
-            self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
+            self.scroll_to(0, Reveal::Top);
             return;
         }
         for (ix, entry) in self.entries.iter().enumerate() {
@@ -2821,10 +2870,8 @@ impl DirPane {
         self.anchor_ix = self.selected.first();
         self.cursor_ix = self.anchor_ix;
         match self.anchor_ix {
-            Some(ix) => self
-                .scroll
-                .scroll_to_item(ix, gpui::ScrollStrategy::Nearest),
-            None => self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top),
+            Some(ix) => self.scroll_to(ix, Reveal::Nearest),
+            None => self.scroll_to(0, Reveal::Top),
         }
     }
 
@@ -2923,7 +2970,7 @@ impl DirPane {
                 // The rows moved, so re-find them by name rather than index.
                 this.renaming = None;
                 this.restore_selection();
-                this.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
+                this.scroll_to(0, Reveal::Top);
                 // More is known now than when this sort was handed off, so the
                 // order it computed is already out of date. The walk's own
                 // re-sort may also have run and been overwritten by the line
@@ -2983,16 +3030,12 @@ impl DirPane {
         self.cursor_ix = cursor;
         let in_view = |top: usize, row: usize| row >= top && row < top + self.visible_rows();
         match (top, cursor) {
-            (Some(top), Some(row)) if in_view(top, row) => self
-                .scroll
-                .scroll_to_item_strict(top, gpui::ScrollStrategy::Top),
-            (Some(top), None) => self
-                .scroll
-                .scroll_to_item_strict(top, gpui::ScrollStrategy::Top),
-            (_, Some(row)) => self
-                .scroll
-                .scroll_to_item(row, gpui::ScrollStrategy::Nearest),
-            (None, None) => self.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top),
+            (Some(top), Some(row)) if in_view(top, row) => {
+                self.scroll_to(top, Reveal::TopEvenPastTheEnd)
+            }
+            (Some(top), None) => self.scroll_to(top, Reveal::TopEvenPastTheEnd),
+            (_, Some(row)) => self.scroll_to(row, Reveal::Nearest),
+            (None, None) => self.scroll_to(0, Reveal::Top),
         }
     }
 
@@ -5155,6 +5198,22 @@ impl Render for DirPane {
             .on_action(cx.listener(|this, _: &CursorUp, _, cx| this.focus_cursor(Motion::Up, cx)))
             .on_action(
                 cx.listener(|this, _: &CursorDown, _, cx| this.focus_cursor(Motion::Down, cx)),
+            )
+            .on_action(cx.listener(|this, _: &MoveLeft, _, cx| this.move_cursor(Motion::Left, cx)))
+            .on_action(
+                cx.listener(|this, _: &MoveRight, _, cx| this.move_cursor(Motion::Right, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ExtendLeft, _, cx| this.extend_cursor(Motion::Left, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ExtendRight, _, cx| this.extend_cursor(Motion::Right, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &CursorLeft, _, cx| this.focus_cursor(Motion::Left, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &CursorRight, _, cx| this.focus_cursor(Motion::Right, cx)),
             )
             .on_action(cx.listener(Self::toggle_selection))
             .on_action(cx.listener(Self::focus_results))
