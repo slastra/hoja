@@ -355,6 +355,10 @@ impl Render for PreviewTooltip {
                     // padding above it.
                     .when(full_bleed, |el| el.w(px(PICTURE + 2.)).pb_2())
                     .when(!full_bleed, |el| el.max_w(px(MAX_WIDTH)).p_2())
+                    // Nothing draws outside the card, whatever its width: a
+                    // wider mono face than the one the line length was set
+                    // for is clipped at the edge rather than spilling out.
+                    .overflow_hidden()
                     .flex()
                     .flex_col()
                     .gap_1p5()

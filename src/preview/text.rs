@@ -8,8 +8,10 @@ use std::path::Path;
 const READ: usize = 8 * 1024;
 /// Lines kept.
 pub const LINES: usize = 16;
-/// Characters kept per line, after tabs are expanded.
-pub const COLUMNS: usize = 100;
+/// Characters kept per line, after tabs are expanded. Eighty, so a full line
+/// in the preview's small mono face fits the tooltip's width: at a hundred
+/// it ran past the edge.
+pub const COLUMNS: usize = 80;
 const TAB: usize = 4;
 
 /// The excerpt, or `None` when the bytes do not read as text.
