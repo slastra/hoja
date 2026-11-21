@@ -4450,6 +4450,10 @@ impl DirPane {
             .gap_0p5()
             .px_1()
             .bg(colors.title_bar_background)
+            // The rule under the toolbar, in both layouts: the column header
+            // under it in the list draws only its own lower rule.
+            .border_b_1()
+            .border_color(colors.border)
             .text_sm()
             .child(nav_button(
                 "nav-back",
@@ -4718,10 +4722,9 @@ impl DirPane {
             .items_center()
             .flex_none()
             .h(px(HEADER_HEIGHT))
-            // No surface of its own: the pane's background, set off from the
-            // toolbar and the rows by a rule above and below, as Zed sets off
-            // a panel's header.
-            .border_t_1()
+            // No surface of its own: the pane's background, between the
+            // toolbar's rule above and its own below, as Zed sets off a
+            // panel's header.
             .border_b_1()
             .border_color(colors.border)
             .text_xs()
