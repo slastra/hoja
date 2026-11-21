@@ -16,6 +16,11 @@ updates, and archive browsing that feels like working with ordinary folders.
 > [!WARNING]
 > Hoja is experimental software. Use at your own risk.
 
+<p>
+  <img src="docs/preview.png" width="49%" alt="A hover preview of a Rust file, with syntax colors">
+  <img src="docs/palette.png" width="49%" alt="The command palette over a grid of pictures">
+</p>
+
 ## Features
 
 ### Panes
@@ -117,7 +122,9 @@ updates, and archive browsing that feels like working with ordinary folders.
   attached drives. Hoja reads the same bookmarks used by GTK file dialogs and
   can mount or eject removable drives.
 - **Command palette.** Press `ctrl-shift-p` to search available commands.
-  Frequently used commands naturally rise to the top.
+  Frequently used commands naturally rise to the top. Each shows its key
+  binding, and the palette looks and behaves like Zed's: the arrow keys
+  move the selection, and a click or `enter` runs the command.
 
 ### Appearance
 
@@ -169,6 +176,19 @@ cd packaging && makepkg -si
 ```
 
 It builds from the current `main`, since there are no releases yet.
+
+### Optional packages
+
+Hoja starts without any of these, and each adds something:
+
+- `ffmpegthumbnailer`, or another freedesktop thumbnailer such as `totem`:
+  pictures of videos.
+- `papers` or `evince`: pictures of PDFs. `poppler` adds a PDF's page count
+  and page shape.
+- `git`: names colored by Git status.
+- `udisks2`: mounting drives from the place finder.
+- `wl-clipboard`, `xdg-utils`, `libnotify` and `shared-mime-info`: the
+  clipboard, opening files, notifications, and the Open With menu.
 
 ### From source
 
@@ -269,6 +289,7 @@ up differently: a method reached only from a debug assertion is live in one and
 not the other.
 
 - [docs/testing.md](docs/testing.md): the nested-sway interface harness and its suites
+- [scripts/readme-shots/](scripts/readme-shots/run.sh): retakes the pictures in this README
 - [docs/architecture.md](docs/architecture.md): the transfer engine and its tests
 - [docs/roadmap.md](docs/roadmap.md): what is planned
 
@@ -281,8 +302,9 @@ the GPL-3.0-or-later license. This is why Hoja uses the GPL.
 
 The included assets have their own licenses:
 
-- The icons Hoja's own interface uses are Lucide, under the ISC license. The
-  file-type icons are Zed's set, which includes brand and language marks
+- The icons Hoja's own interface uses are Zed's, which are Lucide's redrawn,
+  and three more from Lucide in the same style, all under the ISC license.
+  The file-type icons are Zed's set, which includes brand and language marks
   belonging to their own projects. See [assets/icons/LICENSES](assets/icons/LICENSES).
 - The Rosé Pine themes have the MIT license. See
   [assets/themes/rose-pine/LICENSE](assets/themes/rose-pine/LICENSE).

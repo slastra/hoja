@@ -16,8 +16,10 @@ backend Hoja actually ships on. The test script can click rows, send keys, and
 capture the window or just its footer; nothing takes your focus, because every
 one of those tools is scoped to the nested display rather than to whatever the
 real session has focused. `HOJA_TEST_WIDTH` and `HOJA_TEST_HEIGHT` size the
-window, which is how `docs/screenshot.png` is made. `HOJA_TEST_HEADLESS=1` hides
-it, at the cost of keyboard input, which does not reach the app there.
+output when it is headless. Nested, the output takes the size of its window on
+the host, so `scripts/readme-shots/run.sh`, which takes the README's pictures,
+resizes that window with `hyprctl`. `HOJA_TEST_HEADLESS=1` hides it, at the
+cost of keyboard input, which does not reach the app there.
 
 Nested, its window presents to the host as class `wlroots`, so float it at a
 fixed size or a tiling compositor will stretch it and move the rows a test
