@@ -26,6 +26,7 @@
 mod audio;
 mod loader;
 mod pdf;
+mod syntax;
 mod text;
 mod thumbnail;
 mod video;
@@ -290,6 +291,9 @@ struct Facts {
     /// Of a PDF, when `pdfinfo` could say.
     pages: Option<u32>,
     lines: Option<Vec<String>>,
+    /// The lines' syntax highlights, by capture name, when a grammar knows
+    /// the file. Coloured from the theme when drawn.
+    highlights: Option<Vec<syntax::LineHighlights>>,
     tags: Option<audio::Tags>,
 }
 
@@ -315,6 +319,7 @@ fn facts(path: &Path) -> Facts {
         duration: None,
         pages: None,
         lines: None,
+        highlights: None,
         tags: None,
     };
     match kind {
@@ -352,7 +357,13 @@ fn facts(path: &Path) -> Facts {
             // A portrait Letter page when the first page cannot be measured.
             facts.aspect = Some(pdf.and_then(|pdf| pdf.aspect).unwrap_or(8.5 / 11.));
         }
-        Kind::Text => facts.lines = text::excerpt(path),
+        Kind::Text => {
+            facts.lines = text::excerpt(path);
+            facts.highlights = facts
+                .lines
+                .as_ref()
+                .and_then(|lines| syntax::highlight(path, lines));
+        }
         Kind::Other => {}
     }
     facts
@@ -671,6 +682,7 @@ fn text_body(
     facts: &Facts,
     mono: Option<SharedString>,
     colors: &theme::ThemeColors,
+    syntax: &theme::SyntaxTheme,
 ) -> gpui::AnyElement {
     match &facts.lines {
         Some(lines) if !lines.is_empty() => div()
@@ -678,12 +690,28 @@ fn text_body(
             .flex_col()
             .text_xs()
             .when_some(mono, |el, family| el.font_family(family))
-            .children(lines.iter().map(|line| {
+            .children(lines.iter().enumerate().map(|(ix, line)| {
                 // An empty line would collapse to no height.
-                let line = if line.is_empty() { " " } else { line.as_str() };
-                div()
-                    .whitespace_nowrap()
-                    .child(SharedString::from(line.to_string()))
+                let text = if line.is_empty() { " " } else { line.as_str() };
+                // Each capture name to the theme's style for it, falling back
+                // along its dots as Zed does: `function.method` to
+                // `function`. A name the theme has no style for stays plain.
+                let highlights: Vec<_> = facts
+                    .highlights
+                    .as_ref()
+                    .and_then(|all| all.get(ix))
+                    .into_iter()
+                    .flatten()
+                    .filter(|(range, _)| range.end <= text.len())
+                    .filter_map(|(range, name)| {
+                        let id = syntax.highlight_id(name)?;
+                        Some((range.clone(), *syntax.get(id as usize)?))
+                    })
+                    .collect();
+                div().whitespace_nowrap().child(
+                    gpui::StyledText::new(SharedString::from(text.to_string()))
+                        .with_highlights(highlights),
+                )
             }))
             .into_any_element(),
         Some(_) => note("Empty file", colors),
@@ -712,13 +740,14 @@ impl Render for PreviewTooltip {
         let mono = crate::theming::numeric_font(cx);
         let ui = crate::theming::ui_font(cx);
         let colors = cx.theme().colors();
+        let syntax = cx.theme().syntax().clone();
 
         let body = match facts.kind {
             Kind::Image | Kind::Video | Kind::Document => {
                 self.picture_body(&facts, preview, colors)
             }
             Kind::Audio => self.audio_body(&facts, preview, colors),
-            Kind::Text => text_body(&facts, mono, colors),
+            Kind::Text => text_body(&facts, mono, colors, &syntax),
             Kind::Other => unreachable!("filtered above"),
         };
         // An image or a video fills the card's width with its picture, or

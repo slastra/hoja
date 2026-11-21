@@ -494,6 +494,7 @@ mod tests {
             duration: None,
             pages: None,
             lines: None,
+            highlights: None,
             tags: None,
         })
     }

@@ -50,6 +50,21 @@ theme = { git = "https://github.com/zed-industries/zed", rev = "c7bea343838f42b4
 file_icons = { git = "https://github.com/zed-industries/zed", rev = "c7bea343838f42b4c14151393e41f0bbe033c95e" }
 theme_settings = { git = "https://github.com/zed-industries/zed", rev = "c7bea343838f42b4c14151393e41f0bbe033c95e" }
 fuzzy_nucleo = { git = "https://github.com/zed-industries/zed", rev = "c7bea343838f42b4c14151393e41f0bbe033c95e" }
+# Syntax highlighting in text previews: Zed's tree-sitter grammars and its own
+# highlight queries, so code is coloured as Zed colours it, from the theme's
+# syntax palette.
+grammars = { git = "https://github.com/zed-industries/zed", rev = "c7bea343838f42b4c14151393e41f0bbe033c95e", features = ["load-grammars"] }
+# Not used directly. Turns on embedding for every zed crate that ships files
+# through `util::fs_embed!`, the grammars' queries among them. Without it, a
+# debug build reads those files at run time from the "repository root", found
+# by walking up from the executable to the first `.git`: from hoja's binary
+# that is hoja's repository, where they are not, and every query comes back
+# missing. Release builds embed them either way.
+util = { git = "https://github.com/zed-industries/zed", rev = "c7bea343838f42b4c14151393e41f0bbe033c95e", features = ["debug-embed"] }
+# The tree-sitter the grammars are built against: zed's, from git at zed's
+# rev, so it is the one copy already in the graph. Keep the rev in step with
+# zed's workspace Cargo.toml when bumping, as with the patch below.
+tree-sitter = { git = "https://github.com/tree-sitter/tree-sitter", rev = "803c6ebaac27d69e1808b45058482e868d073ceb" }
 
 hoja-transfer = { path = "hoja-transfer" }
 # Owns the outbound Wayland drag so the chip that leaves the window is ours.
