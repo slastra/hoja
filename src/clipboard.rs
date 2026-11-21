@@ -18,6 +18,8 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+use crate::uri::{file_uri, uri_to_path};
+
 #[derive(Debug, Clone)]
 pub struct ClipboardSet {
     pub paths: Vec<PathBuf>,
@@ -105,72 +107,4 @@ fn wl_paste(mime: &str) -> Option<String> {
         return None;
     }
     String::from_utf8(output.stdout).ok()
-}
-
-/// Percent-encode a path into a `file://` URI. Encodes everything outside the
-/// RFC 3986 unreserved set plus `/`.
-fn file_uri(path: &std::path::Path) -> String {
-    let mut uri = String::from("file://");
-    for &byte in path.as_os_str().as_encoded_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
-                uri.push(byte as char)
-            }
-            _ => uri.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    uri
-}
-
-pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
-    let rest = uri.strip_prefix("file://")?;
-    // Strip an authority component (usually empty or localhost).
-    let path_start = rest.find('/')?;
-    let encoded = &rest[path_start..];
-
-    let mut bytes = Vec::with_capacity(encoded.len());
-    let mut iter = encoded.bytes();
-    while let Some(b) = iter.next() {
-        if b == b'%' {
-            let hi = iter.next()?;
-            let lo = iter.next()?;
-            let hex = [hi, lo];
-            let s = std::str::from_utf8(&hex).ok()?;
-            bytes.push(u8::from_str_radix(s, 16).ok()?);
-        } else {
-            bytes.push(b);
-        }
-    }
-    Some(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
-}
-
-use std::os::unix::ffi::OsStringExt;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::Path;
-
-    #[test]
-    fn uri_round_trip() {
-        let path = Path::new("/home/user/with space/naïve (1).txt");
-        let uri = file_uri(path);
-        assert!(uri.starts_with("file:///home/user/with%20space/"));
-        assert_eq!(uri_to_path(&uri).unwrap(), path);
-    }
-
-    #[test]
-    fn parses_gnome_blob_shape() {
-        // The reader is exercised end-to-end via wl-paste in the app; here just
-        // pin the URI decoding against the format's examples.
-        assert_eq!(
-            uri_to_path("file:///etc/hostname").unwrap(),
-            Path::new("/etc/hostname")
-        );
-        assert_eq!(
-            uri_to_path("file://localhost/etc/hostname").unwrap(),
-            Path::new("/etc/hostname")
-        );
-        assert!(uri_to_path("https://example.com/x").is_none());
-    }
 }

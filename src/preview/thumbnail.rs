@@ -7,9 +7,7 @@
 //!
 //! - **The name** is the MD5 of the file's URI, in lowercase hex. The URI must
 //!   be escaped exactly as GLib escapes it, because GLib is what wrote most of
-//!   the cache. GLib leaves `!$&'()*+,:=@` alone where a stricter encoder
-//!   escapes them, and a song called "Live (1999).mp3" hashes to a different
-//!   name under the two. `opener::file_uri` is the stricter one.
+//!   the cache. See `crate::uri`.
 //! - **The content** carries `Thumb::URI` and `Thumb::MTime` in PNG text
 //!   chunks. A picture whose `Thumb::MTime` is not the file's mtime is of an
 //!   older version of the file.
@@ -90,7 +88,7 @@ pub fn picture(path: &Path, mimes: &[String], size: Size) -> Option<Picture> {
         return None;
     }
     let mtime = mtime_of(path)?;
-    let uri = glib_uri(path);
+    let uri = crate::uri::file_uri(path);
     let name = format!("{}.png", md5_hex(&uri));
 
     let cached = root.join(size.dir()).join(&name);
@@ -140,19 +138,6 @@ pub fn picture(path: &Path, mimes: &[String], size: Size) -> Option<Picture> {
 
 // ---------------------------------------------------------------------------
 // Names
-
-/// `file://` and the path, escaped as GLib's `g_filename_to_uri` escapes it.
-pub fn glib_uri(path: &Path) -> String {
-    let mut uri = String::from("file://");
-    for &byte in path.as_os_str().as_encoded_bytes() {
-        if byte.is_ascii_alphanumeric() || b"!$&'()*+,-./:=@_~".contains(&byte) {
-            uri.push(byte as char);
-        } else {
-            uri.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    uri
-}
 
 fn md5_hex(text: &str) -> String {
     Md5::digest(text.as_bytes())
@@ -654,17 +639,6 @@ mod tests {
             md5_hex("file:///home/jens/photos/me.png"),
             "c6ee772d9e49320e97ec29a7eb5b1697"
         );
-    }
-
-    #[test]
-    fn the_uri_is_escaped_as_glib_escapes_it() {
-        // Parentheses, plus and comma stay as they are; a space and a
-        // non-ASCII byte do not. Checked against names nemo wrote.
-        assert_eq!(
-            glib_uri(Path::new("/m/Live (1999), take+2.mp3")),
-            "file:///m/Live%20(1999),%20take+2.mp3"
-        );
-        assert_eq!(glib_uri(Path::new("/m/café#1")), "file:///m/caf%C3%A9%231");
     }
 
     #[test]

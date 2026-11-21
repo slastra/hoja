@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::clipboard::uri_to_path;
+use crate::uri::uri_to_path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Place {

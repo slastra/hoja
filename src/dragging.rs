@@ -18,6 +18,8 @@ use std::sync::{Mutex, OnceLock};
 
 use gpui::{Hsla, Rgba, SharedString, SvgRenderer, Window};
 
+use crate::uri::file_uri;
+
 /// Everything the chip shows. One description, two renderers: `DragPreview`
 /// draws it as a gpui element, `svg` rasterises it for the icon surface.
 #[derive(Clone)]
@@ -371,45 +373,9 @@ fn escape(text: &str) -> String {
     out
 }
 
-/// `file://` URI for a path, percent-encoding everything that is not an
-/// unreserved character. Receivers split `text/uri-list` on CRLF and expect
-/// each line to be a valid URI, so a name with a space or an accent has to be
-/// encoded rather than passed through.
-fn file_uri(path: &Path) -> String {
-    use std::os::unix::ffi::OsStrExt;
-    let mut uri = String::from("file://");
-    for &byte in path.as_os_str().as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
-                uri.push(byte as char)
-            }
-            _ => uri.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    uri
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    #[test]
-    fn uris_encode_what_receivers_cannot_parse() {
-        assert_eq!(file_uri(&PathBuf::from("/tmp/a.txt")), "file:///tmp/a.txt");
-        assert_eq!(
-            file_uri(&PathBuf::from("/tmp/two words.txt")),
-            "file:///tmp/two%20words.txt"
-        );
-        // Non-ASCII goes out byte by byte, which is what UTF-8 percent-encoding is.
-        assert_eq!(
-            file_uri(&PathBuf::from("/tmp/café")),
-            "file:///tmp/caf%C3%A9"
-        );
-        // A literal percent must not survive as one, or the receiver decodes a
-        // sequence we never wrote.
-        assert_eq!(file_uri(&PathBuf::from("/tmp/100%")), "file:///tmp/100%25");
-    }
 
     #[test]
     fn markup_in_a_filename_cannot_break_the_svg() {

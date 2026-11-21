@@ -30,6 +30,7 @@ mod probe;
 mod scrollbar;
 mod search;
 mod theming;
+mod uri;
 mod workspace;
 
 use std::path::PathBuf;
@@ -77,9 +78,7 @@ fn parse_args() -> Args {
             "--list-themes" => list_themes = true,
             // A desktop launcher hands a file manager `file:///…` rather than
             // a path, so accept both.
-            other => {
-                dir = Some(clipboard::uri_to_path(other).unwrap_or_else(|| PathBuf::from(other)))
-            }
+            other => dir = Some(uri::uri_to_path(other).unwrap_or_else(|| PathBuf::from(other))),
         }
     }
 
