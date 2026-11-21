@@ -32,9 +32,6 @@ use super::{Column, DirPane, INACTIVE_SELECTION_ALPHA, Reveal, quieted};
 use crate::masonry::{GAP, Masonry};
 use crate::preview::{self, Key, Need};
 
-/// The card width the layout aims at. The column count follows the pane
-/// width, and the cards stretch to fill each band.
-const TARGET_WIDTH: f32 = 220.;
 /// The name line under the picture.
 const CAPTION_HEIGHT: f32 = 26.;
 /// One line of card details.
@@ -64,12 +61,17 @@ pub(super) struct GridState {
     pub(super) pending: Option<(usize, Reveal)>,
     /// The view's height at the last render.
     pub(super) viewport: f32,
+    /// Whether the layout was made from the grid's own measured width,
+    /// rather than borrowed or guessed before its first frame.
+    pub(super) measured: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
 struct Inputs {
     listing: u64,
     width: f32,
+    /// The card width aimed at: the zoom.
+    target: u16,
     details: usize,
     learned: u64,
     scale: f32,
@@ -83,10 +85,20 @@ impl DirPane {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let bounds = self.grid_scroll.bounds();
-        let (width, height) = if bounds.size.width > px(0.) {
+        let measured = bounds.size.width > px(0.);
+        let (width, height) = if measured {
             (f32::from(bounds.size.width), f32::from(bounds.size.height))
         } else {
-            FIRST_GUESS
+            // Before the grid's first frame: the list's last measure when
+            // there is one, which is the same space, so switching from the
+            // list does not lay out twice.
+            self.scroll
+                .0
+                .borrow()
+                .last_item_size
+                .map(|size| (f32::from(size.item.width), f32::from(size.item.height)))
+                .filter(|(w, _)| *w > 0.)
+                .unwrap_or(FIRST_GUESS)
         };
         let scale = window.scale_factor();
         let previews = preview::enabled(cx);
@@ -96,6 +108,7 @@ impl DirPane {
 
         let mut state = self.grid.borrow_mut();
         state.viewport = height;
+        state.measured = measured;
         let layout = state.layout.clone().expect("laid out above");
 
         // A scroll that was waiting for this layout.
@@ -152,10 +165,27 @@ impl DirPane {
             })
             .collect();
 
+        // ctrl-scroll zooms. On the content rather than on the scrolling div,
+        // because gpui calls the front-most listener first: this one runs
+        // before the div's own, and stopping here keeps the wheel from also
+        // scrolling. At least the view's height, so the empty space under a
+        // short grid zooms too.
         let content = div()
             .relative()
             .w_full()
-            .h(px(layout.total_height()))
+            .h(px(layout.total_height().max(height)))
+            .on_scroll(cx.listener(|this, event: &gpui::ScrollEvent, window, cx| {
+                if !event.modifiers.control {
+                    return;
+                }
+                cx.stop_propagation();
+                let dy = event.delta.pixel_delta(window.line_height()).y;
+                if dy > px(0.) {
+                    this.zoom(Some(true), cx);
+                } else if dy < px(0.) {
+                    this.zoom(Some(false), cx);
+                }
+            }))
             .children(cards);
 
         // `min_h_0` on both, or a flex item's minimum height is its content's
@@ -193,6 +223,7 @@ impl DirPane {
         let inputs = Inputs {
             listing: self.listing_moved,
             width,
+            target: self.view.card_width,
             details: self.view.card_details.iter().count(),
             learned: preview::learned(cx),
             scale,
@@ -233,7 +264,8 @@ impl DirPane {
             .iter()
             .map(|key| key.as_ref().and_then(|key| preview::card_aspect(key, cx)))
             .collect();
-        let layout = Masonry::new(width, TARGET_WIDTH, self.entries.len(), |ix, card| {
+        let target = self.view.card_width as f32;
+        let layout = Masonry::new(width, target, self.entries.len(), |ix, card| {
             let picture = aspects[ix].map_or(0., |aspect| (card - BORDER) / aspect);
             BORDER + picture + CAPTION_HEIGHT + details * DETAIL_HEIGHT + BOTTOM_PADDING
         });
@@ -291,6 +323,17 @@ impl DirPane {
                 y >= from && y + h <= from + state.viewport
             }
             _ => false,
+        }
+    }
+
+    /// Columns of the layout made from the grid's measured width, or 0
+    /// before there is one. For the probe: a test reading the count before
+    /// the first measured frame would read a guess.
+    pub(super) fn grid_columns_measured(&self) -> usize {
+        if self.grid.borrow().measured {
+            self.grid_columns()
+        } else {
+            0
         }
     }
 

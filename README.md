@@ -58,6 +58,8 @@ updates, and archive browsing that feels like working with ordinary folders.
   name. The cards keep the sort order from left to right across each band, so
   the arrow keys move as they read. In the grid, the view menu's Columns list
   becomes Card Details, and sets which details a card shows under its name.
+  `ctrl-+` and `ctrl--`, or `ctrl` with the scroll wheel, make the cards
+  larger or smaller, and `ctrl-0` puts the default size back.
 - **Live listings.** Hoja watches every directory it displays. If another
   program changes the contents, the pane refreshes without losing your
   selection. If the directory disappears, Hoja moves to the nearest existing
@@ -202,8 +204,9 @@ allowed, and Hoja applies a change as soon as you save.
 
   // What a new pane shows.
   "view": {
-    // "list" or "grid".
+    // "list" or "grid", and the width the grid's cards aim at, in pixels.
     "layout": "list",
+    "card_width": 220,
 
     "sort": { "key": "name", "direction": "ascending" },
     "show_hidden": false,

@@ -2133,6 +2133,7 @@ impl Workspace {
         self.dirty.layout |= self.state.layout != Some(layout);
         let card_details = config::ColumnsSetting::Order(view.card_details.names());
         self.dirty.card_details |= self.state.card_details.as_ref() != Some(&card_details);
+        self.dirty.card_width |= self.state.card_width != Some(view.card_width);
 
         self.state.sort = Some(sort);
         self.state.show_hidden = Some(view.show_hidden);
@@ -2140,6 +2141,7 @@ impl Workspace {
         self.state.columns = Some(columns);
         self.state.layout = Some(layout);
         self.state.card_details = Some(card_details);
+        self.state.card_width = Some(view.card_width);
 
         if let Some(column_widths) = column_widths {
             self.dirty.column_widths |= self.state.column_widths != column_widths;

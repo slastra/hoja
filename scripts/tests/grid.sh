@@ -12,6 +12,7 @@ expect 'p[0]["layout"] == "list"' "a pane starts as a list"
 # --- switching ---------------------------------------------------------------
 key -M ctrl -k 2 -m ctrl
 wait_for 'p[0]["layout"] == "grid"'
+wait_for 'p[0]["grid_columns"] >= 2'
 expect 'p[0]["grid_columns"] >= 2' "ctrl-2 shows a grid of several columns"
 N=$(probe 'p[0]["grid_columns"]')
 expect 'p[0]["cards"][0][0] == 0 and p[0]["cards"][0][2] == p[0]["cards"][1][2]' \
@@ -52,9 +53,6 @@ expect 'p[0]["top_row"] == 0' "home scrolls back to the top"
 rcard 5
 wait_for 'p[0]["menu_open"]'
 expect 'p[0]["selected"] == [5]' "a right-click selects the card and opens the menu"
-# A file's menu is built again when its applications arrive. Escape before
-# then can land between the two menus, so wait, as context-menu.sh does.
-wait_for '"Open With" in p[0]["menu_items"]' 30
 key -k Escape
 wait_for 'not p[0]["menu_open"]' 20
 
@@ -83,18 +81,30 @@ expect 'p[0]["layout"] == "list"' "and the list button the list"
 at $((WW - 37)) 14
 wait_for 'p[0]["layout"] == "grid"'
 
+# --- zoom --------------------------------------------------------------------
+# Smaller cards fit more across, larger fewer, and ctrl-0 puts the default
+# back. (ctrl-scroll does the same, but wtype lets go of ctrl when it exits,
+# before wlrctl can scroll, so it is not driven here.)
+COLS=$(probe 'p[0]["grid_columns"]')
+key -M ctrl -k minus -m ctrl
+wait_for "p[0]['grid_columns'] > $COLS"
+expect "p[0]['grid_columns'] > $COLS" "ctrl-minus makes the cards smaller"
+key -M ctrl -k 0 -m ctrl
+wait_for "p[0]['grid_columns'] == $COLS"
+key -M ctrl -k equal -m ctrl
+wait_for "p[0]['grid_columns'] < $COLS"
+expect "p[0]['grid_columns'] < $COLS" "ctrl-equals makes them larger"
+key -M ctrl -k 0 -m ctrl
+wait_for "p[0]['grid_columns'] == $COLS"
+expect "p[0]['grid_columns'] == $COLS" "and ctrl-0 puts the default back"
+
 # --- the view menu -----------------------------------------------------------
 at $((WW - 16)) 14
 wait_for 'p[0]["menu_open"]' 20
 expect 'p[0]["menu_items"][:2] == ["List", "Grid"]' "the view menu offers both layouts first"
 expect '"Card Details" in p[0]["menu_items"] and "Columns" not in p[0]["menu_items"]' \
     "and in the grid, Card Details where Columns was"
-# List, Grid, Show Hidden Files, Folders First, then Card Details.
-key -k Down
-key -k Down
-key -k Down
-key -k Down
-key -k Down
+menu_to "Card Details"
 key -k Right
 wait_for 'p[0]["submenu_open"]' 20
 NOTES=$(named notes)

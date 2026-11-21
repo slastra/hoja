@@ -282,6 +282,9 @@ pub struct ViewSettings {
     /// the columns, as a set of its own: a card is narrow, and turning a
     /// column on in the list should not make every card taller.
     pub card_details: crate::dir_pane::ColumnLayout,
+    /// The card width the grid aims at, in logical pixels. The column count
+    /// follows from it and the pane width. Changed by zooming.
+    pub card_width: u16,
 }
 
 impl Default for ViewSettings {
@@ -293,6 +296,7 @@ impl Default for ViewSettings {
             columns: crate::dir_pane::ColumnLayout::default(),
             layout: Layout::default(),
             card_details: crate::dir_pane::ColumnLayout::card_default(),
+            card_width: crate::dir_pane::DEFAULT_CARD_WIDTH,
         }
     }
 }

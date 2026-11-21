@@ -65,6 +65,9 @@ actions!(
         ToggleFoldersFirst,
         ListView,
         GridView,
+        ZoomIn,
+        ZoomOut,
+        ResetZoom,
         Refresh,
         ReverseSort,
         SortByName,
@@ -466,6 +469,34 @@ const INACTIVE_CONTENT_ALPHA: f32 = 0.6;
 /// Alpha rather than substituting `text_muted`, so a name coloured by its git
 /// status keeps its hue: dimming the listing should not cost the listing its
 /// information.
+/// The card width a grid aims at until it is zoomed.
+pub const DEFAULT_CARD_WIDTH: u16 = 220;
+/// The widths zooming steps through, smallest first. The default is one.
+const CARD_WIDTHS: [u16; 5] = [140, 180, DEFAULT_CARD_WIDTH, 280, 360];
+
+/// A card width from a settings file, held to what the zoom steps span.
+pub fn clamp_card_width(width: u16) -> u16 {
+    width.clamp(CARD_WIDTHS[0], CARD_WIDTHS[CARD_WIDTHS.len() - 1])
+}
+
+/// The next zoom step from `width`: larger when `bigger`, smaller if not.
+/// From a width between steps, the next step that way; from the last step,
+/// the same.
+fn zoom_step(width: u16, bigger: bool) -> u16 {
+    if bigger {
+        CARD_WIDTHS
+            .into_iter()
+            .find(|&w| w > width)
+            .unwrap_or(width)
+    } else {
+        CARD_WIDTHS
+            .into_iter()
+            .rev()
+            .find(|&w| w < width)
+            .unwrap_or(width)
+    }
+}
+
 /// The bar a folder's size shows while it is counted, in a row or on a card.
 fn counting_bar(color: gpui::Hsla, id: gpui::ElementId) -> impl IntoElement + use<> {
     div()
@@ -1464,7 +1495,7 @@ impl DirPane {
             },
             grid_columns: match self.view.layout {
                 fs::Layout::List => 0,
-                fs::Layout::Grid => self.grid_columns(),
+                fs::Layout::Grid => self.grid_columns_measured(),
             },
             card_details: self.view.card_details.names(),
             cards: match self.view.layout {
@@ -1475,6 +1506,7 @@ impl DirPane {
             error: self.error.clone(),
             menu_open: self.context_menu.is_some(),
             menu_items: menu.map(|menu| menu.item_labels()).unwrap_or_default(),
+            menu_selected: menu.and_then(|menu| menu.selected_label()),
             submenu_open: submenu.is_some(),
             submenu_items: submenu.unwrap_or_default(),
         }
@@ -1628,6 +1660,29 @@ impl DirPane {
         self.view.layout = layout;
         if let Some((ix, how)) = keep.filter(|(ix, _)| *ix < self.entries.len()) {
             self.scroll_to(ix, how);
+        }
+        cx.emit(PaneEvent::ViewChanged);
+        cx.notify();
+    }
+
+    /// Make the grid's cards larger or smaller, or back to the default. The
+    /// list has nothing to zoom, so there it does nothing.
+    fn zoom(&mut self, to: Option<bool>, cx: &mut Context<Self>) {
+        if self.view.layout != fs::Layout::Grid {
+            return;
+        }
+        let width = match to {
+            Some(bigger) => zoom_step(self.view.card_width, bigger),
+            None => DEFAULT_CARD_WIDTH,
+        };
+        if width == self.view.card_width {
+            return;
+        }
+        self.view.card_width = width;
+        // The card under the cursor stays in view at the new size. Without a
+        // cursor, the first card in view keeps its place: see `grid`.
+        if let Some(ix) = self.cursor_ix.filter(|&ix| ix < self.entries.len()) {
+            self.scroll_to(ix, Reveal::Nearest);
         }
         cx.emit(PaneEvent::ViewChanged);
         cx.notify();
@@ -2082,10 +2137,24 @@ impl DirPane {
 
         // Deferred draws join the dispatch tree a frame late; focusing the menu
         // needs the double hop or the blur-dismiss fires immediately.
+        //
+        // Only if this is still the open menu. An Escape in the gap closes it
+        // (see `clear_selection`), and focus handed to a menu no longer drawn
+        // would leave the keys going nowhere.
         let menu_focus = menu.focus_handle(cx);
+        let (pane, menu_id) = (cx.entity().downgrade(), menu.entity_id());
         window.on_next_frame(move |window, _| {
             window.on_next_frame(move |window, cx| {
-                window.focus(&menu_focus, cx);
+                let still_open = pane
+                    .read_with(cx, |pane, _| {
+                        pane.context_menu
+                            .as_ref()
+                            .is_some_and(|(_, menu)| menu.entity_id() == menu_id)
+                    })
+                    .unwrap_or(false);
+                if still_open {
+                    window.focus(&menu_focus, cx);
+                }
             });
         });
 
@@ -2128,6 +2197,13 @@ impl DirPane {
     }
 
     fn clear_selection(&mut self, _: &ClearSelection, window: &mut Window, cx: &mut Context<Self>) {
+        // A menu is open but the key came here, so the menu does not have focus
+        // yet: it takes it two frames after it opens (see `show_menu`). An
+        // Escape pressed in that gap was meant for the menu.
+        if self.context_menu.take().is_some() {
+            cx.notify();
+            return;
+        }
         // Escape backs out one level at a time: the search before the
         // selection, so results are not dismissed together with what you picked
         // out of them.
@@ -5327,6 +5403,9 @@ impl Render for DirPane {
             .on_action(
                 cx.listener(|this, _: &GridView, _, cx| this.set_layout(fs::Layout::Grid, cx)),
             )
+            .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom(Some(true), cx)))
+            .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom(Some(false), cx)))
+            .on_action(cx.listener(|this, _: &ResetZoom, _, cx| this.zoom(None, cx)))
             .on_action(cx.listener(Self::refresh_action))
             .on_action(cx.listener(Self::reverse_sort))
             .on_action(cx.listener(Self::sort_by_name))
@@ -5472,6 +5551,20 @@ mod tests {
     #[cfg(test)]
     fn layout(names: &[&str]) -> ColumnLayout {
         ColumnLayout::from_names(&names.iter().map(|n| n.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn zoom_steps_through_the_card_widths() {
+        assert_eq!(zoom_step(DEFAULT_CARD_WIDTH, true), 280);
+        assert_eq!(zoom_step(DEFAULT_CARD_WIDTH, false), 180);
+        // At either end it stays.
+        assert_eq!(zoom_step(360, true), 360);
+        assert_eq!(zoom_step(140, false), 140);
+        // From a width between steps, the next step that way.
+        assert_eq!(zoom_step(200, true), 220);
+        assert_eq!(zoom_step(200, false), 180);
+        assert_eq!(clamp_card_width(9000), 360);
+        assert_eq!(clamp_card_width(1), 140);
     }
 
     #[test]

@@ -326,6 +326,19 @@ print(eval(sys.argv[2]))" "$HOJA_PROBE" "$1" 2>/dev/null
 named() { probe "p[0][\"rows\"].index(\"$1\")"; }
 
 # shellcheck disable=SC2317
+# menu_to LABEL: press Down in the open menu until LABEL is the selected row.
+# By name rather than a count of presses: the first press can arrive before
+# the menu has focus and be lost, and a count then lands one row short.
+menu_to() {
+    local _
+    for _ in $(seq 1 20); do
+        [ "$(probe "p[0]['menu_selected'] == '$1'")" = "True" ] && return 0
+        key -k Down
+        sleep 0.15
+    done
+    wait_for "p[0]['menu_selected'] == '$1'"
+}
+# shellcheck disable=SC2317
 # wait_for EXPR [seconds]: poll until the expression is true. Replaces a sleep
 # that was guessing; a test that waits for what it needs does not get slower on
 # a loaded machine and does not pass by accident on a fast one.

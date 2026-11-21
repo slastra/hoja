@@ -265,6 +265,10 @@ impl Nav {
     fn submenu_labels(&self) -> Option<Vec<String>> {
         Some(self.open_items()?.iter().filter_map(label_of).collect())
     }
+
+    fn selected_label(&self) -> Option<String> {
+        label_of(self.items.get(self.selected?)?)
+    }
 }
 
 /// Roughly how wide a menu panel is, for deciding which side a submenu opens
@@ -350,6 +354,13 @@ impl FileMenu {
     /// needs to assert what is on offer, not merely that something is.
     pub fn item_labels(&self) -> Vec<String> {
         self.nav.labels()
+    }
+
+    /// The label of the row the keyboard is on in the menu itself, for the
+    /// probe: a test steps to a row by its name rather than by counting keys,
+    /// one of which can arrive before the menu has focus.
+    pub fn selected_label(&self) -> Option<String> {
+        self.nav.selected_label()
     }
 
     /// The open submenu's labels, or `None` when nothing is open.

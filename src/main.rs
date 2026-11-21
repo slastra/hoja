@@ -164,6 +164,16 @@ fn main() {
             // The two layouts, as most file managers number them.
             KeyBinding::new("ctrl-1", dir_pane::ListView, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-2", dir_pane::GridView, Some("DirPane && !AddressBar")),
+            // The grid's card size, as a browser zooms. Plus is on the equals
+            // key, so both spellings, with or without shift.
+            KeyBinding::new("ctrl-=", dir_pane::ZoomIn, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl-+", dir_pane::ZoomIn, Some("DirPane && !AddressBar")),
+            KeyBinding::new("ctrl--", dir_pane::ZoomOut, Some("DirPane && !AddressBar")),
+            KeyBinding::new(
+                "ctrl-0",
+                dir_pane::ResetZoom,
+                Some("DirPane && !AddressBar"),
+            ),
             KeyBinding::new("enter", OpenSelected, Some("DirPane && !AddressBar")),
             // Tab between panes, F3 to split, ctrl-w to close: the file manager
             // scheme, which goes back to Norton Commander, rather than the

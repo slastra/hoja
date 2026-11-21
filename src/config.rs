@@ -106,6 +106,8 @@ pub struct ViewDefaults {
     /// What a card shows in grid layout, in the same two shapes as
     /// `columns`. A map adjusts the card default, which is the size alone.
     pub card_details: Option<ColumnsSetting>,
+    /// The card width the grid aims at, in pixels.
+    pub card_width: Option<u16>,
 }
 
 /// The `columns` block, in either of the two shapes it is written in.
@@ -302,6 +304,7 @@ pub struct State {
     pub layout: Option<LayoutName>,
     /// Always written in the list form, as `columns` is.
     pub card_details: Option<ColumnsSetting>,
+    pub card_width: Option<u16>,
     pub window: Option<WindowState>,
 }
 
@@ -327,6 +330,7 @@ pub struct Dirty {
     pub columns: bool,
     pub layout: bool,
     pub card_details: bool,
+    pub card_width: bool,
     pub window: bool,
 }
 
@@ -375,6 +379,9 @@ impl State {
         }
         if dirty.card_details {
             disk.card_details = self.card_details.clone();
+        }
+        if dirty.card_width {
+            disk.card_width = self.card_width;
         }
         if dirty.window {
             disk.window = self.window;
@@ -556,6 +563,9 @@ pub fn initial_view(settings: &Settings, state: &State, winner: Winner) -> ViewS
         )
         .map(|setting| setting.layout(default.card_details))
         .unwrap_or(default.card_details),
+        card_width: pick(state.card_width, settings.view.card_width, winner)
+            .map(crate::dir_pane::clamp_card_width)
+            .unwrap_or(default.card_width),
     }
 }
 

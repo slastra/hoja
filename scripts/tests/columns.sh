@@ -26,6 +26,9 @@ expect 'p[0]["columns"] == ["Size", "Kind", "Modified"]' \
 # three columns that is the mode and the owner, so it says them.
 click "$(named b-script)"
 wait_for 'p[0]["selected"] == [p[0]["rows"].index("b-script")]'
+# The footer is rebuilt as the pane renders, and can be a frame behind the
+# selection in the probe, so wait for it rather than read it once.
+wait_for '"-rwxr-xr-x" in p[0]["footer"]'
 expect '"-rwxr-xr-x" in p[0]["footer"]' \
     "the footer carries the mode while no column does"
 
@@ -115,13 +118,7 @@ echo "  ok   clicking a header still sorts by it"
 # rows are rebuilt rather than the menu simply being left alone.
 at $((WW - 16)) 14
 wait_for 'p[0]["menu_open"]' 20
-# List, Grid, Show Hidden Files, Folders First, then Columns: the Downs skip
-# the separators between them.
-key -k Down
-key -k Down
-key -k Down
-key -k Down
-key -k Down
+menu_to "Columns"
 key -k Right
 wait_for 'p[0]["submenu_open"]' 20
 expect 'p[0]["submenu_items"] == ["Size", "Kind", "Modified", "Permissions", "Owner", "Group"]' \

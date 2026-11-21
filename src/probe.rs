@@ -95,6 +95,8 @@ pub struct PaneProbe {
     /// The menu's row labels, top to bottom, separators omitted. Lets a test
     /// assert what is on offer rather than only that something is.
     pub menu_items: Vec<String>,
+    /// The menu row the keyboard is on, by label.
+    pub menu_selected: Option<String>,
     /// Whether a submenu is open, and what is in it. Two fields rather than an
     /// `Option<Vec<_>>` so a test can distinguish "open but empty" from
     /// "closed", which an empty list alone would not.
