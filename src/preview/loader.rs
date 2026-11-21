@@ -94,9 +94,31 @@ struct Loader {
     running_facts: HashSet<Key>,
     running_pictures: HashSet<Key>,
     wants: HashMap<EntityId, Vec<(Key, Need, u32)>>,
+    /// Each owner's background sweep: keys whose facts are asked for in
+    /// order when no wanted work is waiting, and how far it has got.
+    sweeps: HashMap<EntityId, Sweep>,
+    /// The settled shape of every key whose shape is known: `Some` aspect,
+    /// or `None` for a file with no picture. Kept when the preview is
+    /// evicted, which is the point: a few bytes a file, and a card whose
+    /// preview was let go keeps its shape, so the cards under it do not move.
+    shapes: HashMap<Key, Option<f32>>,
     /// Bumped whenever a key learns its facts or gets its picture, so a
     /// layout built from what was known can tell it is out of date.
     learned: u64,
+    /// The keys that learned something, oldest first, so a layout can look
+    /// at only those rather than ask about every card it has. `log_end` is
+    /// the sequence number after the last entry. Trimmed from the front: a
+    /// reader that falls further behind than the log reaches starts over.
+    log: VecDeque<Key>,
+    log_end: u64,
+}
+
+/// How many changes the log keeps.
+const LOG: usize = 1 << 16;
+
+struct Sweep {
+    keys: Arc<Vec<Key>>,
+    next: usize,
 }
 
 impl Global for Loader {}
@@ -124,9 +146,54 @@ impl Loader {
         wanted
     }
 
+    /// The shape of `key` if it is known: from what is cached, else from
+    /// the shape memory. The outer `None` is "not known yet".
+    fn shape(&self, key: &Key) -> Option<Option<f32>> {
+        match self.known(key) {
+            Known::Done(preview) => Some(super::settled_shape(&preview)),
+            Known::Facts(facts) => Some(facts.aspect),
+            Known::Nothing => self.shapes.get(key).copied(),
+        }
+    }
+
+    /// Whether anything is known or under way for `key`, so a sweep can pass
+    /// it by.
+    fn settled_or_busy(&self, key: &Key) -> bool {
+        self.ready.contains_key(key)
+            || self.facts.contains_key(key)
+            || self.shapes.contains_key(key)
+            || self.running_facts.contains(key)
+    }
+
     /// The work to start now, best placed first, within the worker limits:
-    /// facts jobs, then thumbnail jobs.
-    fn next(&self) -> (Vec<Key>, Vec<Key>) {
+    /// facts jobs, then thumbnail jobs. Facts slots left over go to the
+    /// sweeps, which move on past what they hand out.
+    fn next(&mut self) -> (Vec<Key>, Vec<Key>) {
+        let (mut facts, pictures) = self.next_wanted();
+        let mut slots = FACTS_WORKERS
+            .saturating_sub(self.running_facts.len())
+            .saturating_sub(facts.len());
+        let owners: Vec<EntityId> = self.sweeps.keys().copied().collect();
+        for owner in owners {
+            while slots > 0 {
+                let Some(sweep) = self.sweeps.get(&owner) else {
+                    break;
+                };
+                let Some(key) = sweep.keys.get(sweep.next).cloned() else {
+                    break;
+                };
+                self.sweeps.get_mut(&owner).expect("present").next += 1;
+                if self.settled_or_busy(&key) || facts.contains(&key) {
+                    continue;
+                }
+                facts.push(key);
+                slots -= 1;
+            }
+        }
+        (facts, pictures)
+    }
+
+    fn next_wanted(&self) -> (Vec<Key>, Vec<Key>) {
         let mut wanted: Vec<(&Key, (Need, u32))> = self.wanted().into_iter().collect();
         wanted.sort_by_key(|(_, (_, priority))| *priority);
         let mut facts_slots = FACTS_WORKERS.saturating_sub(self.running_facts.len());
@@ -159,6 +226,27 @@ impl Loader {
             }
         }
         (facts, pictures)
+    }
+
+    fn remember_shape(&mut self, key: &Key, shape: Option<f32>) {
+        self.shapes.insert(key.clone(), shape);
+    }
+
+    fn log(&mut self, key: &Key) {
+        self.log.push_back(key.clone());
+        self.log_end += 1;
+        if self.log.len() > LOG {
+            self.log.drain(..LOG / 2);
+        }
+    }
+
+    /// The keys logged from sequence number `since` on, and where the log
+    /// ends now; `None` when `since` is further back than the log reaches.
+    fn changes_since(&self, since: u64) -> Option<(Vec<Key>, u64)> {
+        let start = self.log_end - self.log.len() as u64;
+        let from = since.checked_sub(start)?;
+        let keys = self.log.iter().skip(from as usize).cloned().collect();
+        Some((keys, self.log_end))
     }
 
     fn pinned(&self) -> HashSet<Key> {
@@ -241,11 +329,47 @@ pub fn want(owner: EntityId, wants: Vec<(Key, Need, u32)>, cx: &mut App) {
 }
 
 /// `owner` wants nothing any more: it was released, or stopped showing
-/// previews.
+/// previews. Its sweep stops too.
 pub fn forget(owner: EntityId, cx: &mut App) {
-    if cx.default_global::<Loader>().wants.remove(&owner).is_some() {
+    let loader = cx.default_global::<Loader>();
+    let swept = loader.sweeps.remove(&owner).is_some();
+    if loader.wants.remove(&owner).is_some() || swept {
         pump(cx);
     }
+}
+
+/// Replace `owner`'s sweep with `keys`, from the first.
+pub fn sweep(owner: EntityId, keys: Arc<Vec<Key>>, cx: &mut App) {
+    let loader = cx.default_global::<Loader>();
+    if loader
+        .sweeps
+        .get(&owner)
+        .is_some_and(|sweep| Arc::ptr_eq(&sweep.keys, &keys))
+    {
+        return;
+    }
+    loader.sweeps.insert(owner, Sweep { keys, next: 0 });
+    pump(cx);
+}
+
+/// The keys that learned something since sequence number `since`, and the
+/// number to ask from next time; `None` when the log no longer reaches back
+/// that far and everything has to be looked at again.
+pub fn changes_since(since: u64, cx: &App) -> Option<(Vec<Key>, u64)> {
+    match cx.try_global::<Loader>() {
+        Some(loader) => loader.changes_since(since),
+        None => Some((Vec::new(), since)),
+    }
+}
+
+/// Where the change log ends now: what a new reader asks from.
+pub fn log_end(cx: &App) -> u64 {
+    cx.try_global::<Loader>().map_or(0, |loader| loader.log_end)
+}
+
+/// The shape of `key` if it is known. See `Loader::shape`.
+pub fn shape(key: &Key, cx: &App) -> Option<Option<f32>> {
+    cx.try_global::<Loader>()?.shape(key)
 }
 
 /// A count that changes whenever anything is learned. See `Loader::learned`.
@@ -294,6 +418,12 @@ fn learned(key: Key, facts: Arc<Facts>, cx: &mut App) {
     let loader = cx.default_global::<Loader>();
     loader.running_facts.remove(&key);
     loader.learned += 1;
+    // A file with no picture, or a measured shape, is settled now. A guessed
+    // one waits for the picture.
+    if facts.aspect.is_none() || facts.measured {
+        loader.remember_shape(&key, facts.aspect);
+    }
+    loader.log(&key);
     let watchers = loader.watchers(&key);
     let dropped = if facts.aspect.is_some() {
         loader.keep_facts(key, facts);
@@ -314,6 +444,8 @@ fn made(key: Key, preview: Arc<Preview>, cx: &mut App) {
     let loader = cx.default_global::<Loader>();
     loader.running_pictures.remove(&key);
     loader.learned += 1;
+    loader.remember_shape(&key, super::settled_shape(&preview));
+    loader.log(&key);
     let watchers = loader.watchers(&key);
     let dropped = loader.keep_ready(key, preview);
     settle(dropped, watchers, cx);
@@ -358,6 +490,7 @@ mod tests {
             mimes: Vec::new(),
             dimensions: None,
             aspect,
+            measured: aspect.is_some(),
             duration: None,
             pages: None,
             lines: None,
@@ -376,6 +509,52 @@ mod tests {
 
     fn owner(n: u64) -> EntityId {
         EntityId::from(n)
+    }
+
+    #[test]
+    fn a_sweep_fills_what_the_screen_leaves_and_skips_what_is_known() {
+        let mut loader = Loader::default();
+        // One card on screen, and a sweep of ten in which two are known.
+        loader
+            .wants
+            .insert(owner(1), vec![(key(100), Need::Picture, 0)]);
+        loader.shapes.insert(key(1), Some(1.));
+        loader.keep_facts(key(2), facts(Some(1.)));
+        loader.sweeps.insert(
+            owner(1),
+            Sweep {
+                keys: Arc::new((0..10).map(key).collect()),
+                next: 0,
+            },
+        );
+        let (facts, _) = loader.next();
+        // The screen first, then the sweep in order, past the known ones.
+        assert_eq!(facts, [key(100), key(0), key(3), key(4)]);
+        // It moves on, so the next call carries on from there. (The card on
+        // screen is due again: its facts never arrived.)
+        let (facts, _) = loader.next();
+        assert_eq!(facts[..3], [key(100), key(5), key(6)]);
+    }
+
+    #[test]
+    fn a_shape_outlives_its_evicted_preview() {
+        let mut loader = Loader::default();
+        let (k, _) = done(0);
+        loader.remember_shape(&k, Some(1.5));
+        for n in 0..KEEP as u64 + 5 {
+            let (k, p) = done(n);
+            loader.keep_ready(k, p);
+        }
+        assert!(
+            matches!(loader.known(&key(0)), Known::Nothing),
+            "the preview is gone"
+        );
+        assert_eq!(loader.shape(&key(0)), Some(Some(1.5)), "the shape is not");
+        assert_eq!(
+            loader.shape(&key(9999)),
+            None,
+            "and an unknown one is unknown"
+        );
     }
 
     #[test]

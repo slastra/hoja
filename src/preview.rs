@@ -103,22 +103,54 @@ pub fn learned(cx: &App) -> u64 {
 /// rather than drawn as a card that fills the screen or a sliver.
 const CARD_ASPECTS: (f32, f32) = (0.5, 2.);
 
-/// The shape a card keeps for this file's picture, width over height, or
-/// `None` for a card with no picture.
+/// A card's settled shape, width over height and clamped, or `None` while it
+/// is not settled. The inner `None` is a card with no picture.
 ///
-/// From the picture when it is made, from the facts before that, and before
-/// those from the file's extension, so a layout can place every card at once
-/// and correct the few the guess got wrong.
-pub fn card_aspect(key: &Key, cx: &App) -> Option<f32> {
-    let aspect = match loader::known(key, cx) {
-        Known::Done(preview) => preview
-            .picture
-            .as_ref()
-            .map(|p| p.width as f32 / p.height.max(1) as f32),
-        Known::Facts(facts) => facts.aspect,
-        Known::Nothing => guess_aspect(&key.subject.path),
-    }?;
-    Some(aspect.clamp(CARD_ASPECTS.0, CARD_ASPECTS.1))
+/// Settled from the facts when the file's header could be read, else from
+/// the picture once it is made. Before either, a layout uses
+/// `guessed_aspect`, so it can place every card at once and correct the few
+/// the guess got wrong.
+pub fn settled_aspect(key: &Key, cx: &App) -> Option<Option<f32>> {
+    Some(loader::shape(key, cx)?.map(clamp_aspect))
+}
+
+/// A card's shape from its extension alone, clamped.
+pub fn guessed_aspect(key: &Key) -> Option<f32> {
+    guess_aspect(&key.subject.path).map(clamp_aspect)
+}
+
+fn clamp_aspect(aspect: f32) -> f32 {
+    aspect.clamp(CARD_ASPECTS.0, CARD_ASPECTS.1)
+}
+
+/// See `loader::changes_since`.
+pub fn changes_since(since: u64, cx: &App) -> Option<(Vec<Key>, u64)> {
+    loader::changes_since(since, cx)
+}
+
+/// See `loader::log_end`.
+pub fn log_end(cx: &App) -> u64 {
+    loader::log_end(cx)
+}
+
+/// Ask for the shapes of `keys` in the background, in their order, behind
+/// everything any owner wants on screen. A grid gives its whole listing, so
+/// the shapes of cards it has not reached are known before it reaches them.
+pub fn sweep_shapes(owner: EntityId, keys: Arc<Vec<Key>>, cx: &mut App) {
+    loader::sweep(owner, keys, cx);
+}
+
+/// The shape a finished preview's card keeps: the measured one from its
+/// facts when there is one, which a thumbnail rounded to whole pixels cannot
+/// disturb; the picture's own when the facts only guessed; none when there
+/// is no picture to show.
+fn settled_shape(preview: &Preview) -> Option<f32> {
+    let picture = preview.picture.as_ref()?;
+    if preview.facts.measured {
+        preview.facts.aspect
+    } else {
+        Some(picture.width as f32 / picture.height.max(1) as f32)
+    }
 }
 
 /// A shape from the extension alone: what most files of that kind are.
@@ -249,6 +281,10 @@ struct Facts {
     /// Width over height of the picture to come, so its place can be kept
     /// at the right shape. `None` for a file that will have no picture.
     aspect: Option<f32>,
+    /// `aspect` was read from the file, rather than guessed for a format
+    /// whose header could not be read. A measured shape is final; a guessed
+    /// one waits for the picture to say.
+    measured: bool,
     /// Of a video. An audio file's is in its tags.
     duration: Option<Duration>,
     /// Of a PDF, when `pdfinfo` could say.
@@ -275,6 +311,7 @@ fn facts(path: &Path) -> Facts {
         mimes,
         dimensions: None,
         aspect: None,
+        measured: false,
         duration: None,
         pages: None,
         lines: None,
@@ -283,6 +320,7 @@ fn facts(path: &Path) -> Facts {
     match kind {
         Kind::Image => {
             facts.dimensions = image_size(path);
+            facts.measured = facts.dimensions.is_some();
             // A format `image` cannot read still gets a picture from its
             // thumbnailer. Its shape is a guess until then.
             facts.aspect = Some(
@@ -295,6 +333,7 @@ fn facts(path: &Path) -> Facts {
             let video = video::read(path);
             facts.dimensions = video.map(|v| (v.width, v.height));
             facts.duration = video.and_then(|v| v.duration);
+            facts.measured = video.is_some();
             facts.aspect = Some(video.map_or(16. / 9., |v| v.aspect));
         }
         Kind::Audio => {
@@ -309,6 +348,7 @@ fn facts(path: &Path) -> Facts {
         Kind::Document => {
             let pdf = pdf::read(path);
             facts.pages = pdf.map(|pdf| pdf.pages);
+            facts.measured = pdf.is_some_and(|pdf| pdf.aspect.is_some());
             // A portrait Letter page when the first page cannot be measured.
             facts.aspect = Some(pdf.and_then(|pdf| pdf.aspect).unwrap_or(8.5 / 11.));
         }

@@ -20,6 +20,7 @@
 //!   to reveal a card before the layout for that listing exists. The request
 //!   waits in `pending` and is carried out by the render that has the layout.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -55,6 +56,23 @@ pub(super) struct GridState {
     /// with no picture to ask for: a folder, an archive member.
     keys: Vec<Option<Key>>,
     keys_for: Option<u64>,
+    /// The same keys without the gaps, in order, for the loader's
+    /// background sweep of shapes.
+    sweep: Option<Arc<Vec<Key>>>,
+    /// The shape each card was laid out with, so shapes can be held.
+    aspects: Vec<Option<f32>>,
+    /// Each card's settled shape, `None` while it is still a guess, and its
+    /// guess from the extension. Kept here and brought up to date from the
+    /// preview cache's change log, so a layout looks at the few cards that
+    /// learned something rather than asking about every one.
+    settled: Vec<Option<Option<f32>>>,
+    guesses: Vec<Option<f32>>,
+    index_of: HashMap<Key, usize>,
+    /// Where in the change log this grid has read to; `None` before the
+    /// first look at a listing, which looks at every card.
+    seq: Option<u64>,
+    /// Cards settled while above the view, still laid out at their old shape.
+    held: Vec<usize>,
     /// The first card in view at the last render, and its top then.
     anchor: Option<(usize, f32)>,
     /// A scroll asked for before the layout it needs.
@@ -148,12 +166,24 @@ impl DirPane {
         for ix in last + 1..(last + 1 + ahead).min(layout.len()) {
             push(ix, Need::Facts, 2_000_000, &mut wants);
         }
-        let keys: Vec<Option<Key>> = near
+        // Each card with the shape the layout gave it, which may be one held
+        // from before, so the picture always fills the card it is in.
+        let keys: Vec<Option<(Key, f32)>> = near
             .iter()
-            .map(|&ix| state.keys.get(ix).cloned().flatten())
+            .map(|&ix| {
+                let key = state.keys.get(ix).cloned().flatten()?;
+                Some((key, state.aspects.get(ix).copied().flatten()?))
+            })
             .collect();
+        let sweep = state.sweep.clone();
         drop(state);
         preview::want(owner, wants, cx);
+        // Every card's shape, in the background, top first: the ones above
+        // the view are what move the cards in it when they change, so they
+        // are settled before the view gets there.
+        if let Some(sweep) = sweep {
+            preview::sweep_shapes(owner, sweep, cx);
+        }
 
         let now = SystemTime::now();
         let cards: Vec<_> = near
@@ -251,6 +281,22 @@ impl DirPane {
                 })
                 .collect();
             state.keys_for = Some(self.listing_moved);
+            state.sweep = Some(Arc::new(state.keys.iter().flatten().cloned().collect()));
+            state.guesses = state
+                .keys
+                .iter()
+                .map(|key| key.as_ref().and_then(preview::guessed_aspect))
+                .collect();
+            state.index_of = state
+                .keys
+                .iter()
+                .enumerate()
+                .filter_map(|(ix, key)| Some((key.clone()?, ix)))
+                .collect();
+            state.settled = vec![None; state.keys.len()];
+            state.seq = None;
+            state.held.clear();
+            state.aspects.clear();
             // A new listing has nothing on screen to hold still.
             state.anchor = None;
         }
@@ -259,11 +305,77 @@ impl DirPane {
         }
 
         let details = inputs.details as f32;
-        let aspects: Vec<Option<f32>> = state
-            .keys
-            .iter()
-            .map(|key| key.as_ref().and_then(|key| preview::card_aspect(key, cx)))
-            .collect();
+        let count = self.entries.len();
+
+        // Bring the settled shapes up to date: the cards the change log
+        // names, or every card on a first look or a log that has moved on
+        // past where this grid read to.
+        let changed: Vec<usize> = match state.seq.and_then(|seq| preview::changes_since(seq, cx)) {
+            Some((keys, end)) => {
+                state.seq = Some(end);
+                keys.iter()
+                    .filter_map(|key| state.index_of.get(key).copied())
+                    .collect()
+            }
+            None => {
+                // Read before looking, so a change while looking is not lost.
+                state.seq = Some(preview::log_end(cx));
+                (0..count).collect()
+            }
+        };
+        for &ix in &changed {
+            state.settled[ix] = match &state.keys[ix] {
+                Some(key) => preview::settled_aspect(key, cx),
+                None => Some(None),
+            };
+        }
+
+        let state = &mut *state;
+        let fresh = |ix: usize| state.settled[ix].unwrap_or(state.guesses[ix]);
+        let only_learned = state.made_from.is_some_and(|made| {
+            made == (Inputs {
+                learned: made.learned,
+                ..inputs
+            })
+        });
+        let mut aspects: Vec<Option<f32>>;
+        match state
+            .layout
+            .as_ref()
+            .filter(|_| only_learned && state.aspects.len() == count)
+        {
+            // Only what the cache learned changed: hold the cards above the
+            // view at the shapes they had, while any of them is still a
+            // guess. Each shape that settles above the view moves every card
+            // under it in its column, and with the shapes arriving one at a
+            // time from the sweep, that was a second or more of jitter after
+            // a jump down a large folder. Held, they land in one layout once
+            // the last is known.
+            Some(old) => {
+                aspects = state.aspects.clone();
+                let top = self.grid_offset();
+                let above = |ix: usize| old.rect(ix).is_some_and(|(_, y, _, h)| y + h <= top);
+                let unsettled_above = (0..count)
+                    .any(|ix| state.keys[ix].is_some() && state.settled[ix].is_none() && above(ix));
+                let mut update = std::mem::take(&mut state.held);
+                update.extend(changed);
+                update.sort_unstable();
+                update.dedup();
+                for ix in update {
+                    if unsettled_above && above(ix) {
+                        state.held.push(ix);
+                    } else {
+                        aspects[ix] = fresh(ix);
+                    }
+                }
+            }
+            // A first layout, or one for a new width, zoom or set of card
+            // details: every card at the best shape known.
+            None => {
+                aspects = (0..count).map(fresh).collect();
+                state.held.clear();
+            }
+        }
         let target = self.view.card_width as f32;
         let layout = Masonry::new(width, target, self.entries.len(), |ix, card| {
             let picture = aspects[ix].map_or(0., |aspect| (card - BORDER) / aspect);
@@ -282,6 +394,7 @@ impl DirPane {
         }
         state.layout = Some(layout);
         state.made_from = Some(inputs);
+        state.aspects = aspects;
     }
 
     /// How far down the grid is scrolled, in positive pixels.
@@ -388,7 +501,7 @@ impl DirPane {
         &self,
         ix: usize,
         (x, y, w, h): (f32, f32, f32, f32),
-        key: Option<Key>,
+        picture: Option<(Key, f32)>,
         now: SystemTime,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
@@ -405,9 +518,6 @@ impl DirPane {
             .as_ref()
             .filter(|renaming| renaming.ix == ix)
             .map(|renaming| renaming.editor.clone());
-        let picture = key
-            .as_ref()
-            .and_then(|key| Some((key, preview::card_aspect(key, cx)?)));
         let numeric = crate::theming::numeric_font(cx);
         let folder_bytes = self.folder_bytes(ix);
         let counting = self.counting_size(ix);
@@ -447,7 +557,7 @@ impl DirPane {
             .when(!selected, |el| el.hover(move |style| style.bg(hover)))
             .when_some(picture, |el, (key, aspect)| {
                 let width = w - BORDER;
-                el.child(preview::card_picture(key, width, width / aspect, cx))
+                el.child(preview::card_picture(&key, width, width / aspect, cx))
             })
             .child(
                 div()

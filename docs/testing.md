@@ -138,6 +138,17 @@ which only the watch on the git directory can see.
 scripts/sway-harness.sh "$(scripts/tests/setup-git.sh)" scripts/tests/git.sh
 ```
 
+`grid-big.sh` needs `setup-grid-big.sh`, which writes 1500 small images in
+seven shapes with plain Python, more than the preview cache keeps. The suite
+pages down the grid and reads the probe every 50ms for 2.5s after each page,
+with `watch-shifts.py`, counting any card that moves relative to the others
+while the view is still. It checks paging past the cache's size, a jump to
+the end, and the way back to the top. It takes about two minutes.
+
+```sh
+scripts/sway-harness.sh "$(scripts/tests/setup-grid-big.sh)" scripts/tests/grid-big.sh
+```
+
 `icon-theme.sh` uses the grid fixture. It writes an icon theme of its own,
 with a dark and a light variant, into the harness's private config, so it
 does not depend on what is installed. It checks that a family name takes the
