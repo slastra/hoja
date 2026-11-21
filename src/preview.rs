@@ -24,12 +24,12 @@
 //! the texture of the one it lets go.
 
 mod audio;
+mod loader;
 mod pdf;
 mod text;
 mod thumbnail;
 mod video;
 
-use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -37,15 +37,14 @@ use std::time::{Duration, SystemTime};
 use gpui::AnimationExt as _;
 use gpui::{
     AnyView, App, AppContext as _, Context, Entity, EntityId, Global, IntoElement,
-    ParentElement as _, Render, RenderImage, SharedString, Styled as _, WeakEntity, Window, div,
-    img, prelude::FluentBuilder as _, px,
+    ParentElement as _, Render, RenderImage, SharedString, Styled as _, Window, div, img,
+    prelude::FluentBuilder as _, px,
 };
 use theme::ActiveTheme as _;
 
+use self::loader::{Key, Known, Need};
 use self::thumbnail::Size;
 
-/// Previews kept, and so pictures kept in the atlas.
-const KEEP: usize = 48;
 /// The width of an image's or a video's picture, in logical pixels.
 const PICTURE: f32 = 256.;
 /// The tallest a picture is drawn. A taller one is drawn narrower, so a
@@ -60,7 +59,7 @@ const MAX_WIDTH: f32 = 640.;
 const INNER_RADIUS: f32 = 5.;
 
 /// The file a row shows, as the row knows it when it is drawn.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Subject {
     pub path: Arc<Path>,
     pub modified: Option<SystemTime>,
@@ -91,8 +90,8 @@ pub fn set_enabled(on: Option<bool>, cx: &mut App) {
 /// The open preview, for the probe: its kind and the file's name, with
 /// `loading` in front until the picture is done.
 pub fn probe(cx: &App) -> Option<String> {
-    let open = cx.try_global::<Previews>()?.open.as_ref()?;
-    Some(open.1.clone())
+    let (_, key, name) = cx.try_global::<OpenTooltip>()?.0.as_ref()?;
+    Some(label(&loader::known(key, cx), name))
 }
 
 struct Enabled(bool);
@@ -279,146 +278,31 @@ fn picture(path: &Path, facts: Arc<Facts>, size: Size) -> Preview {
 }
 
 // ---------------------------------------------------------------------------
-// The cache
-
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct Key {
-    subject: Subject,
-    size: Size,
-}
-
-#[derive(Default)]
-struct Previews {
-    ready: HashMap<Key, Arc<Preview>>,
-    /// Oldest first.
-    order: VecDeque<Key>,
-    /// Work under way, and the tooltips waiting on it. One piece of work per
-    /// file however many times it is hovered meanwhile. The facts, once
-    /// they are in, so a tooltip that opens later still shows them.
-    loading: HashMap<Key, Loading>,
-    /// The tooltip on screen, by entity, with what the probe says about it.
-    open: Option<(EntityId, String)>,
-}
-
-#[derive(Default)]
-struct Loading {
-    facts: Option<Arc<Facts>>,
-    waiting: Vec<WeakEntity<PreviewTooltip>>,
-}
-
-impl Global for Previews {}
-
-impl Previews {
-    /// Keep `preview`, and give back the pictures of what it pushed out: an
-    /// older preview of the same file at the same size, and the oldest ones
-    /// past `KEEP`. Their textures are the caller's to drop.
-    fn insert(&mut self, key: Key, preview: Arc<Preview>) -> Vec<Arc<RenderImage>> {
-        let mut gone = Vec::new();
-        if let Some(old) = self.ready.insert(key.clone(), preview) {
-            self.order.retain(|k| k != &key);
-            gone.push(old);
-        }
-        self.order.push_back(key);
-        while self.order.len() > KEEP {
-            let Some(oldest) = self.order.pop_front() else {
-                break;
-            };
-            gone.extend(self.ready.remove(&oldest));
-        }
-        gone.iter()
-            .filter_map(|preview| Some(preview.picture.as_ref()?.image.clone()))
-            .collect()
-    }
-
-    fn touch(&mut self, key: &Key) {
-        if let Some(at) = self.order.iter().position(|k| k == key) {
-            let key = self.order.remove(at).expect("position is in range");
-            self.order.push_back(key);
-        }
-    }
-}
-
-/// Join the work on `key` if it is under way, and start it if not.
-fn wait_for(key: Key, tooltip: &Entity<PreviewTooltip>, cx: &mut App) {
-    let previews = cx.default_global::<Previews>();
-    if let Some(loading) = previews.loading.get_mut(&key) {
-        loading.waiting.push(tooltip.downgrade());
-        return;
-    }
-    previews.loading.insert(
-        key.clone(),
-        Loading {
-            facts: None,
-            waiting: vec![tooltip.downgrade()],
-        },
-    );
-    start(key, cx);
-}
-
-/// The work for one file: the facts, then the picture, both off the UI
-/// thread. Not tied to any tooltip, so it finishes and is cached even when
-/// the pointer has moved on.
-fn start(key: Key, cx: &mut App) {
-    cx.spawn(async move |cx| {
-        let path = key.subject.path.clone();
-        let facts = cx
-            .background_spawn({
-                let path = path.clone();
-                async move { Arc::new(facts(&path)) }
-            })
-            .await;
-        // The facts first, so the tooltip shows what it can, and keeps a
-        // place of the right shape for the picture, while that is made.
-        cx.update(|cx| learned(&key, facts.clone(), cx));
-        let size = key.size;
-        let preview = cx
-            .background_spawn(async move { picture(&path, facts, size) })
-            .await;
-        cx.update(|cx| finish(key, Arc::new(preview), cx));
-    })
-    .detach();
-}
-
-/// Hand the facts to the tooltips waiting on them.
-fn learned(key: &Key, facts: Arc<Facts>, cx: &mut App) {
-    let Some(loading) = cx.default_global::<Previews>().loading.get_mut(key) else {
-        return;
-    };
-    loading.facts = Some(facts.clone());
-    let waiting = loading.waiting.clone();
-    for tooltip in waiting {
-        let _ = tooltip.update(cx, |tooltip, cx| tooltip.learn(facts.clone(), cx));
-    }
-}
-
-/// Put a finished preview in the cache, and drop what falls out of it.
-fn finish(key: Key, preview: Arc<Preview>, cx: &mut App) {
-    let previews = cx.default_global::<Previews>();
-    let waiting = previews
-        .loading
-        .remove(&key)
-        .map(|loading| loading.waiting)
-        .unwrap_or_default();
-    for image in previews.insert(key, preview.clone()) {
-        cx.drop_image(image, None);
-    }
-    for tooltip in waiting {
-        let _ = tooltip.update(cx, |tooltip, cx| tooltip.show(preview.clone(), cx));
-    }
-}
-
-// ---------------------------------------------------------------------------
 // The view
 
+/// The tooltip on screen, for the probe: its entity, its file, and the
+/// file's name.
+#[derive(Default)]
+struct OpenTooltip(Option<(EntityId, Key, SharedString)>);
+
+impl Global for OpenTooltip {}
+
+/// What the probe says: the kind and the name, with `loading` in front
+/// until the work is done.
+fn label(known: &Known, name: &str) -> String {
+    match known {
+        Known::Done(preview) => format!("{}: {name}", preview.facts.kind.name()),
+        Known::Facts(facts) => format!("loading {}: {name}", facts.kind.name()),
+        Known::Nothing => format!("loading: {name}"),
+    }
+}
+
 struct PreviewTooltip {
-    name: SharedString,
+    key: Key,
     size: Option<u64>,
     /// The window's scale when the tooltip opened, which sets the size of the
     /// picture asked for and the size it is drawn at.
     scale: f32,
-    facts: Option<Arc<Facts>>,
-    /// Set when the picture is done, or known not to come.
-    preview: Option<Arc<Preview>>,
 }
 
 impl PreviewTooltip {
@@ -427,117 +311,67 @@ impl PreviewTooltip {
             subject: subject.clone(),
             size: Size::for_scale(scale),
         };
-        let previews = cx.default_global::<Previews>();
-        let cached = previews.ready.get(&key).cloned();
-        // A file whose work is under way may have its facts in already.
-        let known = cached
-            .as_ref()
-            .map(|preview| preview.facts.clone())
-            .or_else(|| previews.loading.get(&key)?.facts.clone());
+        let name: SharedString = subject
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+            .into();
         let tooltip = cx.new(|_| PreviewTooltip {
-            name: subject
-                .path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default()
-                .into(),
+            key: key.clone(),
             size: subject.size,
             scale,
-            facts: known,
-            preview: cached.clone(),
         });
-        Self::track_for_probe(&tooltip, cx);
-        if cached.is_some() {
-            cx.default_global::<Previews>().touch(&key);
-        } else {
-            wait_for(key, &tooltip, cx);
-        }
-        tooltip
-    }
-
-    /// Name this tooltip in the probe while it is on screen.
-    fn track_for_probe(tooltip: &Entity<Self>, cx: &mut App) {
         let id = tooltip.entity_id();
-        let label = tooltip.read(cx).label();
-        cx.default_global::<Previews>().open = Some((id, label));
-        // Cleared when this tooltip goes, and only if a newer one has not
-        // taken its place.
+        // Ahead of everything a grid wants: this is the one file being looked
+        // at on purpose.
+        loader::want(id, vec![(key.clone(), Need::Picture, 0)], cx);
+        cx.set_global(OpenTooltip(Some((id, key, name))));
+        // When the tooltip goes, so does what it wanted, and the probe stops
+        // naming it unless a newer tooltip has taken its place.
         //
         // gpui releases the view after the frame that stopped drawing it, and
         // the probe for that frame is already written by then, still naming
         // this tooltip. Nothing else asks for a frame, so ask for one, only
         // when a test is reading.
-        cx.observe_release(tooltip, move |_, cx| {
-            let previews = cx.default_global::<Previews>();
-            if previews.open.as_ref().is_some_and(|(open, _)| *open == id) {
-                previews.open = None;
+        cx.observe_release(&tooltip, move |_, cx| {
+            loader::forget(id, cx);
+            let open = cx.default_global::<OpenTooltip>();
+            if open.0.as_ref().is_some_and(|(open, _, _)| *open == id) {
+                open.0 = None;
                 if crate::probe::path().is_some() {
                     cx.refresh_windows();
                 }
             }
         })
         .detach();
-    }
-
-    /// What the probe says: the kind and the name, with `loading` in front
-    /// until the work is done.
-    fn label(&self) -> String {
-        match (&self.preview, &self.facts) {
-            (Some(preview), _) => format!("{}: {}", preview.facts.kind.name(), self.name),
-            (None, Some(facts)) => format!("loading {}: {}", facts.kind.name(), self.name),
-            (None, None) => format!("loading: {}", self.name),
-        }
-    }
-
-    fn relabel(&self, cx: &mut Context<Self>) {
-        let id = cx.entity_id();
-        let label = self.label();
-        if let Some(open) = cx.default_global::<Previews>().open.as_mut()
-            && open.0 == id
-        {
-            open.1 = label;
-        }
-    }
-
-    fn learn(&mut self, facts: Arc<Facts>, cx: &mut Context<Self>) {
-        self.facts = Some(facts);
-        self.relabel(cx);
-        cx.notify();
-    }
-
-    fn show(&mut self, preview: Arc<Preview>, cx: &mut Context<Self>) {
-        self.facts = Some(preview.facts.clone());
-        self.preview = Some(preview);
-        self.relabel(cx);
-        cx.notify();
+        tooltip
     }
 
     /// The line under the body: dimensions, length and rates, then the size.
-    fn facts_line(&self) -> String {
+    fn facts_line(&self, facts: &Facts, preview: Option<&Preview>) -> String {
         let mut line = Vec::new();
-        if let Some(facts) = &self.facts {
-            let original = self.preview.as_ref().and_then(|p| p.original);
-            if let Some((w, h)) = facts.dimensions.or(original) {
-                line.push(format!("{w} × {h}"));
-            }
-            if let Some(duration) = facts.duration {
+        let original = preview.and_then(|p| p.original);
+        if let Some((w, h)) = facts.dimensions.or(original) {
+            line.push(format!("{w} × {h}"));
+        }
+        if let Some(duration) = facts.duration {
+            line.push(audio::clock(duration));
+        }
+        match facts.pages {
+            Some(1) => line.push("1 page".into()),
+            Some(pages) => line.push(format!("{pages} pages")),
+            None => {}
+        }
+        if let Some(tags) = &facts.tags {
+            if let Some(duration) = tags.duration {
                 line.push(audio::clock(duration));
             }
-            match facts.pages {
-                Some(1) => line.push("1 page".into()),
-                Some(pages) => line.push(format!("{pages} pages")),
-                None => {}
+            if let Some(rate) = tags.bitrate {
+                line.push(format!("{rate} kbit/s"));
             }
-            if let Some(tags) = &facts.tags {
-                if let Some(duration) = tags.duration {
-                    line.push(audio::clock(duration));
-                }
-                if let Some(rate) = tags.bitrate {
-                    line.push(format!("{rate} kbit/s"));
-                }
-                if let Some(rate) = tags.sample_rate {
-                    line.push(format!("{:.1} kHz", rate as f32 / 1000.));
-                }
+            if let Some(rate) = tags.sample_rate {
+                line.push(format!("{:.1} kHz", rate as f32 / 1000.));
             }
         }
         if let Some(size) = self.size {
@@ -603,9 +437,9 @@ enum Shown<'a> {
     Ready(&'a Picture),
 }
 
-impl PreviewTooltip {
-    fn shown(&self) -> Shown<'_> {
-        match &self.preview {
+impl<'a> Shown<'a> {
+    fn of(preview: Option<&'a Preview>) -> Self {
+        match preview {
             None => Shown::Waiting,
             Some(preview) => preview
                 .picture
@@ -613,12 +447,19 @@ impl PreviewTooltip {
                 .map_or(Shown::Missing, Shown::Ready),
         }
     }
+}
 
+impl PreviewTooltip {
     /// The picture of an image, a video or a PDF's first page, the full width
     /// of the card, or the place kept for it.
-    fn picture_body(&self, facts: &Facts, colors: &theme::ThemeColors) -> gpui::AnyElement {
+    fn picture_body(
+        &self,
+        facts: &Facts,
+        preview: Option<&Preview>,
+        colors: &theme::ThemeColors,
+    ) -> gpui::AnyElement {
         let hold = colors.element_hover;
-        match self.shown() {
+        match Shown::of(preview) {
             Shown::Ready(picture) => {
                 let (w, h) = frame(picture.width as f32 / picture.height.max(1) as f32);
                 div()
@@ -646,9 +487,14 @@ impl PreviewTooltip {
     }
 
     /// An audio file's tags, with its cover beside them when it has one.
-    fn audio_body(&self, facts: &Facts, colors: &theme::ThemeColors) -> gpui::AnyElement {
+    fn audio_body(
+        &self,
+        facts: &Facts,
+        preview: Option<&Preview>,
+        colors: &theme::ThemeColors,
+    ) -> gpui::AnyElement {
         let tags = facts.tags.clone().unwrap_or_default();
-        let cover = match self.shown() {
+        let cover = match Shown::of(preview) {
             Shown::Ready(picture) => {
                 let (w, h) = self.cover(picture);
                 Some(
@@ -729,16 +575,21 @@ impl Render for PreviewTooltip {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Until the kind is known, and for a file with nothing to show, an
         // empty element: gpui draws a tooltip at whatever size its view takes.
-        let Some(facts) = self.facts.clone().filter(|f| f.kind != Kind::Other) else {
+        let known = loader::known(&self.key, cx);
+        let Some(facts) = known.facts().cloned().filter(|f| f.kind != Kind::Other) else {
             return div().into_any_element();
         };
+        let preview = known.done().cloned();
+        let preview = preview.as_deref();
         let mono = crate::theming::numeric_font(cx);
         let ui = crate::theming::ui_font(cx);
         let colors = cx.theme().colors();
 
         let body = match facts.kind {
-            Kind::Image | Kind::Video | Kind::Document => self.picture_body(&facts, colors),
-            Kind::Audio => self.audio_body(&facts, colors),
+            Kind::Image | Kind::Video | Kind::Document => {
+                self.picture_body(&facts, preview, colors)
+            }
+            Kind::Audio => self.audio_body(&facts, preview, colors),
             Kind::Text => text_body(&facts, mono, colors),
             Kind::Other => unreachable!("filtered above"),
         };
@@ -746,8 +597,8 @@ impl Render for PreviewTooltip {
         // with the place kept for it. The card then has a fixed width, and
         // only the facts line under the picture is padded.
         let full_bleed = matches!(facts.kind, Kind::Image | Kind::Video | Kind::Document)
-            && !matches!(self.shown(), Shown::Missing);
-        let line = self.facts_line();
+            && !matches!(Shown::of(preview), Shown::Missing);
+        let line = self.facts_line(&facts, preview);
 
         // The padding keeps the box clear of the pointer: gpui puts a
         // tooltip one pixel from it.
@@ -813,54 +664,6 @@ mod tests {
         assert_eq!(Kind::of(&chain(&["application/pdf"])), Kind::Document);
         assert_eq!(Kind::of(&chain(&["application/zip"])), Kind::Other);
         assert_eq!(Kind::of(&[]), Kind::Other);
-    }
-
-    fn preview_of(n: u64) -> (Key, Arc<Preview>) {
-        let key = Key {
-            subject: Subject {
-                path: Path::new("/f").join(n.to_string()).into(),
-                modified: None,
-                size: Some(n),
-            },
-            size: Size::Large,
-        };
-        let facts = Facts {
-            kind: Kind::Text,
-            mimes: Vec::new(),
-            dimensions: None,
-            aspect: None,
-            duration: None,
-            pages: None,
-            lines: None,
-            tags: None,
-        };
-        let preview = Preview {
-            facts: Arc::new(facts),
-            picture: None,
-            original: None,
-        };
-        (key, Arc::new(preview))
-    }
-
-    #[test]
-    fn the_cache_keeps_the_newest() {
-        let mut previews = Previews::default();
-        for n in 0..KEEP as u64 + 2 {
-            let (key, preview) = preview_of(n);
-            previews.insert(key, preview);
-        }
-        assert_eq!(previews.ready.len(), KEEP);
-        assert_eq!(previews.order.len(), KEEP);
-        assert!(!previews.ready.contains_key(&preview_of(0).0));
-        assert!(!previews.ready.contains_key(&preview_of(1).0));
-        assert!(previews.ready.contains_key(&preview_of(2).0));
-
-        // The same file again replaces its entry rather than taking a second
-        // place, and becomes the newest.
-        let (key, preview) = preview_of(2);
-        previews.insert(key.clone(), preview);
-        assert_eq!(previews.order.len(), KEEP);
-        assert!(previews.order.back() == Some(&key));
     }
 
     #[test]
