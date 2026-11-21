@@ -72,7 +72,9 @@ pub fn tooltip(subject: Subject) -> impl Fn(&mut Window, &mut App) -> AnyView + 
     move |window, cx| PreviewTooltip::open(subject.clone(), window.scale_factor(), cx).into()
 }
 
-pub use self::loader::{Key, Need};
+// What owners of previews use straight from the loader: see its module
+// documentation.
+pub use self::loader::{Key, Need, changes_since, forget, log_end, sweep as sweep_shapes, want};
 
 /// The key a card or a tooltip asks for: the file, and the thumbnail size the
 /// window's scale calls for.
@@ -81,22 +83,6 @@ pub fn key(subject: Subject, scale: f32) -> Key {
         subject,
         size: Size::for_scale(scale),
     }
-}
-
-/// Replace everything `owner` wants. See `loader`.
-pub fn want(owner: EntityId, wants: Vec<(Key, Need, u32)>, cx: &mut App) {
-    loader::want(owner, wants, cx);
-}
-
-/// `owner` wants nothing any more.
-pub fn forget(owner: EntityId, cx: &mut App) {
-    loader::forget(owner, cx);
-}
-
-/// A count that changes whenever the cache learns anything: a layout made
-/// when it was different may have the wrong shapes.
-pub fn learned(cx: &App) -> u64 {
-    loader::learned_count(cx)
 }
 
 /// The narrowest and the widest a card's picture is drawn, as width over
@@ -122,23 +108,6 @@ pub fn guessed_aspect(key: &Key) -> Option<f32> {
 
 fn clamp_aspect(aspect: f32) -> f32 {
     aspect.clamp(CARD_ASPECTS.0, CARD_ASPECTS.1)
-}
-
-/// See `loader::changes_since`.
-pub fn changes_since(since: u64, cx: &App) -> Option<(Vec<Key>, u64)> {
-    loader::changes_since(since, cx)
-}
-
-/// See `loader::log_end`.
-pub fn log_end(cx: &App) -> u64 {
-    loader::log_end(cx)
-}
-
-/// Ask for the shapes of `keys` in the background, in their order, behind
-/// everything any owner wants on screen. A grid gives its whole listing, so
-/// the shapes of cards it has not reached are known before it reaches them.
-pub fn sweep_shapes(owner: EntityId, keys: Arc<Vec<Key>>, cx: &mut App) {
-    loader::sweep(owner, keys, cx);
 }
 
 /// The shape a finished preview's card keeps: the measured one from its

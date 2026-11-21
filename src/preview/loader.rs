@@ -102,9 +102,6 @@ struct Loader {
     /// evicted, which is the point: a few bytes a file, and a card whose
     /// preview was let go keeps its shape, so the cards under it do not move.
     shapes: HashMap<Key, Option<f32>>,
-    /// Bumped whenever a key learns its facts or gets its picture, so a
-    /// layout built from what was known can tell it is out of date.
-    learned: u64,
     /// The keys that learned something, oldest first, so a layout can look
     /// at only those rather than ask about every card it has. `log_end` is
     /// the sequence number after the last entry. Trimmed from the front: a
@@ -338,7 +335,10 @@ pub fn forget(owner: EntityId, cx: &mut App) {
     }
 }
 
-/// Replace `owner`'s sweep with `keys`, from the first.
+/// Replace `owner`'s sweep with `keys`, from the first: their facts are asked
+/// for in the background, in that order, behind everything any owner wants on
+/// screen. A grid gives its whole listing, so the shapes of cards it has not
+/// reached are known before it reaches them.
 pub fn sweep(owner: EntityId, keys: Arc<Vec<Key>>, cx: &mut App) {
     let loader = cx.default_global::<Loader>();
     if loader
@@ -362,7 +362,9 @@ pub fn changes_since(since: u64, cx: &App) -> Option<(Vec<Key>, u64)> {
     }
 }
 
-/// Where the change log ends now: what a new reader asks from.
+/// Where the change log ends now: what a new reader asks from. It moves
+/// whenever anything is learned, so it also tells a layout made from what was
+/// known that it may be out of date.
 pub fn log_end(cx: &App) -> u64 {
     cx.try_global::<Loader>().map_or(0, |loader| loader.log_end)
 }
@@ -370,11 +372,6 @@ pub fn log_end(cx: &App) -> u64 {
 /// The shape of `key` if it is known. See `Loader::shape`.
 pub fn shape(key: &Key, cx: &App) -> Option<Option<f32>> {
     cx.try_global::<Loader>()?.shape(key)
-}
-
-/// A count that changes whenever anything is learned. See `Loader::learned`.
-pub fn learned_count(cx: &App) -> u64 {
-    cx.try_global::<Loader>().map_or(0, |loader| loader.learned)
 }
 
 pub fn known(key: &Key, cx: &App) -> Known {
@@ -417,7 +414,6 @@ fn pump(cx: &mut App) {
 fn learned(key: Key, facts: Arc<Facts>, cx: &mut App) {
     let loader = cx.default_global::<Loader>();
     loader.running_facts.remove(&key);
-    loader.learned += 1;
     // A file with no picture, or a measured shape, is settled now. A guessed
     // one waits for the picture.
     if facts.aspect.is_none() || facts.measured {
@@ -443,7 +439,6 @@ fn learned(key: Key, facts: Arc<Facts>, cx: &mut App) {
 fn made(key: Key, preview: Arc<Preview>, cx: &mut App) {
     let loader = cx.default_global::<Loader>();
     loader.running_pictures.remove(&key);
-    loader.learned += 1;
     loader.remember_shape(&key, super::settled_shape(&preview));
     loader.log(&key);
     let watchers = loader.watchers(&key);

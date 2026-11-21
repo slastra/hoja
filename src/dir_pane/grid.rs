@@ -91,7 +91,9 @@ struct Inputs {
     /// The card width aimed at: the zoom.
     target: u16,
     details: usize,
-    learned: u64,
+    /// Where the preview cache's change log ended: it moves when anything
+    /// is learned.
+    log: u64,
     scale: f32,
     previews: bool,
 }
@@ -255,7 +257,7 @@ impl DirPane {
             width,
             target: self.view.card_width,
             details: self.view.card_details.iter().count(),
-            learned: preview::learned(cx),
+            log: preview::log_end(cx),
             scale,
             previews,
         };
@@ -334,7 +336,7 @@ impl DirPane {
         let fresh = |ix: usize| state.settled[ix].unwrap_or(state.guesses[ix]);
         let only_learned = state.made_from.is_some_and(|made| {
             made == (Inputs {
-                learned: made.learned,
+                log: made.log,
                 ..inputs
             })
         });
