@@ -250,6 +250,17 @@ impl Default for Sort {
     }
 }
 
+/// How a pane lays its entries out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Layout {
+    /// One row per entry, with columns.
+    #[default]
+    List,
+    /// Cards in columns, a picture on each that has one. Entry *i* goes to
+    /// column *i* mod *N*, so the order reads left to right.
+    Grid,
+}
+
 /// Everything about how a pane presents a listing. One value so splits copy it
 /// wholesale and a future config file has a single thing to serialize.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -266,6 +277,11 @@ pub struct ViewSettings {
     /// no chevron to show it, which is correct: the rows are still in the
     /// order that was asked for.
     pub columns: crate::dir_pane::ColumnLayout,
+    pub layout: Layout,
+    /// What a card shows under its name in grid layout. The same table as
+    /// the columns, as a set of its own: a card is narrow, and turning a
+    /// column on in the list should not make every card taller.
+    pub card_details: crate::dir_pane::ColumnLayout,
 }
 
 impl Default for ViewSettings {
@@ -275,6 +291,8 @@ impl Default for ViewSettings {
             show_hidden: false,
             folders_first: true,
             columns: crate::dir_pane::ColumnLayout::default(),
+            layout: Layout::default(),
+            card_details: crate::dir_pane::ColumnLayout::card_default(),
         }
     }
 }
@@ -1063,6 +1081,7 @@ mod tests {
 
         let shown = |names: &[&str]| {
             crate::dir_pane::ColumnLayout::from_flags(
+                crate::dir_pane::ColumnLayout::default(),
                 &names.iter().map(|n| (n.to_string(), true)).collect(),
             )
         };

@@ -2129,11 +2129,17 @@ impl Workspace {
         self.dirty.folders_first |= self.state.folders_first != Some(view.folders_first);
         let columns = config::ColumnsSetting::Order(view.columns.names());
         self.dirty.columns |= self.state.columns.as_ref() != Some(&columns);
+        let layout = config::LayoutName::from(view.layout);
+        self.dirty.layout |= self.state.layout != Some(layout);
+        let card_details = config::ColumnsSetting::Order(view.card_details.names());
+        self.dirty.card_details |= self.state.card_details.as_ref() != Some(&card_details);
 
         self.state.sort = Some(sort);
         self.state.show_hidden = Some(view.show_hidden);
         self.state.folders_first = Some(view.folders_first);
         self.state.columns = Some(columns);
+        self.state.layout = Some(layout);
+        self.state.card_details = Some(card_details);
 
         if let Some(column_widths) = column_widths {
             self.dirty.column_widths |= self.state.column_widths != column_widths;

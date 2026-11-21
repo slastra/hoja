@@ -868,6 +868,17 @@ impl Default for ColumnLayout {
 }
 
 impl ColumnLayout {
+    /// What a card shows by default: its size, and nothing else, so a card
+    /// stays a picture with a caption.
+    pub fn card_default() -> Self {
+        let mut shown = [false; Column::ALL.len()];
+        shown[Column::Size as usize] = true;
+        Self {
+            order: Column::ALL,
+            shown,
+        }
+    }
+
     pub fn get(self, column: Column) -> bool {
         self.shown[column as usize]
     }
@@ -971,8 +982,11 @@ impl ColumnLayout {
     ///
     /// What a hand-written `{"permissions": true}` means. Unknown keys are
     /// ignored, so a column that no longer exists cannot resurrect itself.
-    pub fn from_flags(flags: &std::collections::HashMap<String, bool>) -> Self {
-        let mut layout = Self::default();
+    ///
+    /// `base` is the usual set: `default()` for the columns, `card_default()`
+    /// for the card details.
+    pub fn from_flags(base: Self, flags: &std::collections::HashMap<String, bool>) -> Self {
+        let mut layout = base;
         for column in Column::ALL {
             if let Some(on) = flags.get(column.key()) {
                 layout.shown[column as usize] = *on;
@@ -5243,7 +5257,9 @@ mod tests {
         // it turns one column on rather than turning the other five off.
         let map = std::collections::HashMap::from([("permissions".to_string(), true)]);
         assert_eq!(
-            ColumnLayout::from_flags(&map).iter().collect::<Vec<_>>(),
+            ColumnLayout::from_flags(ColumnLayout::default(), &map)
+                .iter()
+                .collect::<Vec<_>>(),
             [
                 Column::Size,
                 Column::Kind,
@@ -5256,7 +5272,10 @@ mod tests {
     #[test]
     fn a_column_that_no_longer_exists_cannot_resurrect_itself() {
         let map = std::collections::HashMap::from([("inode".to_string(), true)]);
-        assert_eq!(ColumnLayout::from_flags(&map), ColumnLayout::default());
+        assert_eq!(
+            ColumnLayout::from_flags(ColumnLayout::default(), &map),
+            ColumnLayout::default()
+        );
         assert_eq!(layout(&["inode", "size"]).names(), ["size"]);
     }
 

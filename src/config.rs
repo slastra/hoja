@@ -102,6 +102,10 @@ pub struct ViewDefaults {
     pub folders_first: Option<bool>,
     /// Which columns to draw, and in what order. See `ColumnsSetting`.
     pub columns: Option<ColumnsSetting>,
+    pub layout: Option<LayoutName>,
+    /// What a card shows in grid layout, in the same two shapes as
+    /// `columns`. A map adjusts the card default, which is the size alone.
+    pub card_details: Option<ColumnsSetting>,
 }
 
 /// The `columns` block, in either of the two shapes it is written in.
@@ -134,10 +138,38 @@ pub enum ColumnsSetting {
 }
 
 impl ColumnsSetting {
-    fn layout(&self) -> crate::dir_pane::ColumnLayout {
+    /// The set this describes. A map adjusts `base`, the usual set for
+    /// whatever this setting is for.
+    fn layout(&self, base: crate::dir_pane::ColumnLayout) -> crate::dir_pane::ColumnLayout {
         match self {
             Self::Order(names) => crate::dir_pane::ColumnLayout::from_names(names),
-            Self::Flags(flags) => crate::dir_pane::ColumnLayout::from_flags(flags),
+            Self::Flags(flags) => crate::dir_pane::ColumnLayout::from_flags(base, flags),
+        }
+    }
+}
+
+/// `"list"` or `"grid"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LayoutName {
+    List,
+    Grid,
+}
+
+impl From<LayoutName> for crate::fs::Layout {
+    fn from(name: LayoutName) -> Self {
+        match name {
+            LayoutName::List => Self::List,
+            LayoutName::Grid => Self::Grid,
+        }
+    }
+}
+
+impl From<crate::fs::Layout> for LayoutName {
+    fn from(layout: crate::fs::Layout) -> Self {
+        match layout {
+            crate::fs::Layout::List => Self::List,
+            crate::fs::Layout::Grid => Self::Grid,
         }
     }
 }
@@ -267,6 +299,9 @@ pub struct State {
     /// The same keys again, saying which of them are drawn and in what
     /// order. Always written in the list form; the map form is for hand.
     pub columns: Option<ColumnsSetting>,
+    pub layout: Option<LayoutName>,
+    /// Always written in the list form, as `columns` is.
+    pub card_details: Option<ColumnsSetting>,
     pub window: Option<WindowState>,
 }
 
@@ -290,6 +325,8 @@ pub struct Dirty {
     pub folders_first: bool,
     pub column_widths: bool,
     pub columns: bool,
+    pub layout: bool,
+    pub card_details: bool,
     pub window: bool,
 }
 
@@ -332,6 +369,12 @@ impl State {
         }
         if dirty.columns {
             disk.columns = self.columns.clone();
+        }
+        if dirty.layout {
+            disk.layout = self.layout;
+        }
+        if dirty.card_details {
+            disk.card_details = self.card_details.clone();
         }
         if dirty.window {
             disk.window = self.window;
@@ -501,8 +544,18 @@ pub fn initial_view(settings: &Settings, state: &State, winner: Winner) -> ViewS
         // written in decides how much it claims, a list being an arrangement
         // and a map an adjustment.
         columns: pick(state.columns.clone(), settings.view.columns.clone(), winner)
-            .map(|setting| setting.layout())
+            .map(|setting| setting.layout(default.columns))
             .unwrap_or(default.columns),
+        layout: pick(state.layout, settings.view.layout, winner)
+            .map(Into::into)
+            .unwrap_or(default.layout),
+        card_details: pick(
+            state.card_details.clone(),
+            settings.view.card_details.clone(),
+            winner,
+        )
+        .map(|setting| setting.layout(default.card_details))
+        .unwrap_or(default.card_details),
     }
 }
 
@@ -598,6 +651,51 @@ mod tests {
             "and says nothing about the columns it does not name"
         );
         assert!(!view.columns.get(crate::dir_pane::Column::Owner));
+    }
+
+    #[test]
+    fn layout_and_card_details_are_read() {
+        let settings: Settings = serde_json_lenient::from_str(
+            r#"{"view": {"layout": "grid", "card_details": {"modified": true}}}"#,
+        )
+        .unwrap();
+        let view = initial_view(&settings, &State::default(), Winner::Settings);
+        assert_eq!(view.layout, crate::fs::Layout::Grid);
+        // A map adjusts the card default, which is the size alone, not the
+        // column default.
+        assert_eq!(view.card_details.names(), ["size", "modified"]);
+        assert!(
+            view.columns.get(crate::dir_pane::Column::Kind),
+            "and the columns are a set of their own"
+        );
+    }
+
+    #[test]
+    fn with_nothing_written_a_pane_is_a_list_and_cards_show_the_size() {
+        let view = initial_view(&Settings::default(), &State::default(), Winner::State);
+        assert_eq!(view.layout, crate::fs::Layout::List);
+        assert_eq!(view.card_details.names(), ["size"]);
+    }
+
+    #[test]
+    fn layout_and_card_details_survive_the_state_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let state = State {
+            layout: Some(LayoutName::Grid),
+            card_details: Some(ColumnsSetting::Order(vec!["kind".into(), "size".into()])),
+            ..State::default()
+        };
+        let dirty = Dirty {
+            layout: true,
+            card_details: true,
+            ..Dirty::default()
+        };
+        state.commit_at(&path, dirty);
+        let read = State::read(&path);
+        let view = initial_view(&Settings::default(), &read, Winner::State);
+        assert_eq!(view.layout, crate::fs::Layout::Grid);
+        assert_eq!(view.card_details.names(), ["kind", "size"]);
     }
 
     #[test]
