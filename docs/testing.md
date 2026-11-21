@@ -128,6 +128,16 @@ scripts/sway-harness.sh "$FIX" scripts/tests/grid.sh "$OUT"
 HOJA_TEST_KEEP_STATE=1 scripts/sway-harness.sh "$FIX" scripts/tests/grid-restore.sh "$OUT"
 ```
 
+`git.sh` needs `setup-git.sh`, which makes a repository with a change deep in
+a folder, a new file, an ignored folder, and a tracked folder that holds only
+an ignored file. The probe gives each row's git status. The suite checks what
+each row shows, then commits in the test body and checks the colours clear,
+which only the watch on the git directory can see.
+
+```sh
+scripts/sway-harness.sh "$(scripts/tests/setup-git.sh)" scripts/tests/git.sh
+```
+
 `icon-theme.sh` uses the grid fixture. It writes an icon theme of its own,
 with a dark and a light variant, into the harness's private config, so it
 does not depend on what is installed. It checks that a family name takes the

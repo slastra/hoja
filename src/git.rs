@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// What happened to a path, in the order a row should prefer when a directory
-/// rolls up several children.
+/// rolls up several children. The order is Zed's (`entry_git_aware_label_color`
+/// in its editor crate): a conflict over a deletion over a change over an
+/// addition, and ignored below all of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GitStatus {
     /// Tracked, committed, unmodified. Never stored, the absence of an entry
@@ -61,16 +63,37 @@ pub type GitStatuses = HashMap<String, GitStatus>;
 /// and gets worktrees, submodules, and `$GIT_DIR` right, none of which a naive
 /// walk does.
 pub fn repo_root(dir: &Path) -> Option<PathBuf> {
-    let out = Command::new("git")
-        .args(["-C", dir.to_str()?, "rev-parse", "--show-toplevel"])
-        .output()
-        .ok()?;
+    rev_parse(dir, "--show-toplevel")
+}
+
+/// The repository's git directory, which a commit, an add, a checkout or a
+/// reset writes to and nothing else in the listing shows. Watched for that.
+pub fn git_dir(dir: &Path) -> Option<PathBuf> {
+    rev_parse(dir, "--absolute-git-dir")
+}
+
+fn rev_parse(dir: &Path, what: &str) -> Option<PathBuf> {
+    let out = git(dir)?.args(["rev-parse", what]).output().ok()?;
     if !out.status.success() {
         return None;
     }
-    let root = String::from_utf8(out.stdout).ok()?;
-    let root = root.trim_end_matches('\n');
-    (!root.is_empty()).then(|| PathBuf::from(root))
+    let path = String::from_utf8(out.stdout).ok()?;
+    let path = path.trim_end_matches('\n');
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+/// `git -C dir`, as a background reader should run it.
+///
+/// `GIT_OPTIONAL_LOCKS=0` stops `git status` refreshing the index as it
+/// goes, which it otherwise does whenever a file's stat data has moved on.
+/// That write lands in the git directory hoja watches, which would ask for
+/// another status, which would write again.
+fn git(dir: &Path) -> Option<Command> {
+    let mut command = Command::new("git");
+    command
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args(["-C", dir.to_str()?]);
+    Some(command)
 }
 
 /// Status for everything at or below `dir`, folded onto the entries of `dir`.
@@ -81,18 +104,15 @@ pub fn statuses(dir: &Path) -> GitStatuses {
     let Some(root) = repo_root(dir) else {
         return GitStatuses::new();
     };
-    let Some(dir_str) = dir.to_str() else {
-        return GitStatuses::new();
-    };
-
     // `-z` because file names may contain newlines, and without it git quotes
     // and escapes them instead. `--no-renames` keeps every record two-column,
     // so a rename cannot desynchronise the NUL-separated stream with its extra
     // path field.
-    let out = Command::new("git")
+    let Some(mut command) = git(dir) else {
+        return GitStatuses::new();
+    };
+    let out = command
         .args([
-            "-C",
-            dir_str,
             "status",
             "--porcelain=v2",
             "-z",
@@ -126,9 +146,16 @@ pub fn statuses(dir: &Path) -> GitStatuses {
         };
         // The first component is the entry in this listing; anything deeper
         // rolls up into it.
-        let Some(name) = rest.components().next() else {
+        let mut components = rest.components();
+        let Some(name) = components.next() else {
             continue;
         };
+        // Except being ignored. That is said of the entry itself, as Zed has
+        // it: a tracked folder with an ignored log file in it is not an
+        // ignored folder, and dimming it would say it was.
+        if status == GitStatus::Ignored && components.next().is_some() {
+            continue;
+        }
         let name = name.as_os_str().to_string_lossy().into_owned();
         statuses
             .entry(name)
@@ -210,6 +237,54 @@ mod tests {
         // Headers carry no path.
         assert_eq!(parse_record(b"# branch.oid abc123"), None);
         assert_eq!(parse_record(b""), None);
+    }
+
+    /// A real repository: what `git status` says, folded onto a listing.
+    #[test]
+    fn statuses_fold_onto_the_listing_as_zed_shows_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let run = |args: &[&str]| {
+            let ok = Command::new("git")
+                .args(["-C", root.to_str().unwrap()])
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        run(&["init", "-q"]);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("clean")).unwrap();
+        std::fs::write(root.join(".gitignore"), "*.log\ntarget/\n").unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(root.join("clean/a.txt"), "a\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "first"]);
+
+        // A tracked folder with an ignored file inside, and nothing else.
+        std::fs::write(root.join("clean/debug.log"), "x\n").unwrap();
+        // A change deep in a folder, an untracked file, an ignored folder.
+        std::fs::write(root.join("src/main.rs"), "fn main() { }\n").unwrap();
+        std::fs::write(root.join("new.txt"), "n\n").unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::write(root.join("target/out"), "o\n").unwrap();
+
+        let statuses = statuses(root);
+        assert_eq!(statuses.get("src"), Some(&GitStatus::Modified));
+        assert_eq!(statuses.get("new.txt"), Some(&GitStatus::Added));
+        assert_eq!(statuses.get("target"), Some(&GitStatus::Ignored));
+        assert_eq!(
+            statuses.get("clean"),
+            None,
+            "an ignored file does not dim the tracked folder it is in"
+        );
+        assert!(git_dir(root).is_some_and(|d| d.ends_with(".git")));
     }
 
     #[test]

@@ -1274,7 +1274,11 @@ pub struct DirPane {
     /// Git status by entry name for the loaded directory. Empty outside a
     /// repository, and empty until the background query lands.
     git: crate::git::GitStatuses,
+    /// The directory `git` is the statuses of.
+    git_for: Option<PathBuf>,
     git_task: Option<Task<()>>,
+    /// The repository's git directory, watched. See `watch_git`.
+    git_watch: Option<(PathBuf, Task<()>)>,
     /// The directory the change watcher is armed on, paired with its task, so
     /// re-listing the same directory does not tear down and rebuild the inotify
     /// watch, and so a watcher that failed to arm cannot be recorded as armed.
@@ -1394,7 +1398,9 @@ impl DirPane {
             grid_scroll: gpui::ScrollHandle::new(),
             grid: Default::default(),
             git: crate::git::GitStatuses::new(),
+            git_for: None,
             git_task: None,
+            git_watch: None,
             watch: None,
             view,
             loaded_dir: None,
@@ -1474,6 +1480,21 @@ impl DirPane {
             sizes: column(Column::Size),
             modified: column(Column::Modified),
             permissions: column(Column::Permissions),
+            git: self
+                .entries
+                .iter()
+                .take(crate::probe::MAX_ROWS)
+                .map(|entry| match self.git.get(&entry.name) {
+                    Some(GitStatus::Added) => "added",
+                    Some(GitStatus::Modified) => "modified",
+                    Some(GitStatus::Deleted) => "deleted",
+                    Some(GitStatus::Renamed) => "renamed",
+                    Some(GitStatus::Conflict) => "conflict",
+                    Some(GitStatus::Ignored) => "ignored",
+                    Some(GitStatus::Unmodified) | None => "",
+                })
+                .map(String::from)
+                .collect(),
             columns: self
                 .view
                 .columns
@@ -2728,25 +2749,81 @@ impl DirPane {
     /// fast sequence of navigations cannot land a stale answer on the wrong
     /// directory.
     fn reload_git(&mut self, cx: &mut Context<Self>) {
-        // Clear first: the old directory's statuses must not tint this one.
-        self.git = crate::git::GitStatuses::new();
         // `git -C` needs a directory to run in, and a repository cannot be
         // inside an archive anyway.
         let Some(dir) = self.dir.disk().map(Path::to_path_buf) else {
+            self.git = crate::git::GitStatuses::new();
+            self.git_for = None;
+            self.git_watch = None;
             return;
         };
+        // Another directory's statuses must not tint this one. The same
+        // directory keeps its colours until the answer, so a refresh does not
+        // flash every name to plain and back.
+        if self.git_for.as_ref() != Some(&dir) {
+            self.git = crate::git::GitStatuses::new();
+        }
         self.git_task = Some(cx.spawn(async move |this, cx| {
-            let statuses = cx
-                .background_spawn(async move { crate::git::statuses(&dir) })
+            let (statuses, git_dir) = cx
+                .background_spawn({
+                    let dir = dir.clone();
+                    async move { (crate::git::statuses(&dir), crate::git::git_dir(&dir)) }
+                })
                 .await;
-            if statuses.is_empty() {
-                return;
-            }
             let _ = this.update(cx, |this, cx| {
+                // Empty is an answer too: everything committed, or no
+                // repository, and the names go back to plain.
                 this.git = statuses;
+                this.git_for = Some(dir);
+                this.watch_git(git_dir, cx);
                 cx.notify();
             });
         }));
+    }
+
+    /// Watch the repository's git directory, so a commit, an add, a checkout
+    /// or a reset recolours the names. None of them touches the listed
+    /// directory, which is all `watch_dir` sees, so without this the colours
+    /// stay as they were until the pane is next re-read.
+    fn watch_git(&mut self, git_dir: Option<PathBuf>, cx: &mut Context<Self>) {
+        let Some(git_dir) = git_dir else {
+            self.git_watch = None;
+            return;
+        };
+        if self.git_watch.as_ref().map(|(dir, _)| dir) == Some(&git_dir) {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let Ok(mut watcher) = notify::recommended_watcher(move |res| {
+            let _ = tx.send(res);
+        }) else {
+            return;
+        };
+        use notify::Watcher as _;
+        // Not recursive: the index, HEAD and the files beside them are what a
+        // status depends on, and `objects/` under it churns on every write.
+        if watcher
+            .watch(&git_dir, notify::RecursiveMode::NonRecursive)
+            .is_err()
+        {
+            return;
+        }
+        let task = cx.spawn(async move |this, cx| {
+            let _watcher = watcher;
+            loop {
+                cx.background_executor().timer(WATCH_INTERVAL).await;
+                if !crate::config::drain_changes(&rx) {
+                    continue;
+                }
+                // A commit writes several files in a row. Ask once.
+                cx.background_executor().timer(WATCH_INTERVAL).await;
+                crate::config::drain_changes(&rx);
+                if this.update(cx, |this, cx| this.reload_git(cx)).is_err() {
+                    break;
+                }
+            }
+        });
+        self.git_watch = Some((git_dir, task));
     }
 
     /// What is selected and where the cursor is, by key rather than by index.
@@ -4864,22 +4941,21 @@ impl DirPane {
     /// green name means untracked, and nothing else says so. Both quiet down
     /// together when this is not the pane the keys are acting on.
     fn entry_colors(&self, entry: &DirEntry, cx: &App) -> (gpui::Hsla, gpui::Hsla) {
-        let colors = cx.theme().colors();
-        let base = colors.text;
+        let base = cx.theme().colors().text;
+        // The theme's status colours, which are what Zed's project panel uses
+        // for a name (`Color::Created` and the rest), rather than its
+        // `version_control_*` colours, which are tuned for a diff gutter.
+        let status = cx.theme().status();
         let name_base = self
             .git
             .get(&entry.name)
-            .map(|status| match status {
-                GitStatus::Added => colors.version_control_added,
-                GitStatus::Modified => colors.version_control_modified,
-                GitStatus::Deleted => colors.version_control_deleted,
-                GitStatus::Renamed => colors.version_control_renamed,
-                GitStatus::Conflict => colors.version_control_conflict,
-                // `text_muted`, not `version_control_ignored`: the latter is
-                // tuned for diff gutters where near-invisible is fine, and it
-                // leaves a file name too dim to read. Ignored is a
-                // de-emphasis, not a hue.
-                GitStatus::Ignored => colors.text_muted,
+            .map(|git| match git {
+                GitStatus::Added => status.created,
+                GitStatus::Modified => status.modified,
+                GitStatus::Deleted => status.deleted,
+                GitStatus::Renamed => status.renamed,
+                GitStatus::Conflict => status.conflict,
+                GitStatus::Ignored => status.ignored,
                 GitStatus::Unmodified => base,
             })
             .unwrap_or(base);

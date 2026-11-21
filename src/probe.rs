@@ -53,6 +53,9 @@ pub struct PaneProbe {
     /// not, because this one is the same string on every machine: what the
     /// other two print depends on whose `/etc/passwd` the test is running on.
     pub permissions: Vec<String>,
+    /// Each row's git status, the colour its name is drawn in: `added`,
+    /// `modified`, `deleted`, `renamed`, `conflict`, `ignored`, or empty.
+    pub git: Vec<String>,
     /// Which columns this pane draws, by header label, in display order. The
     /// set is no longer fixed, so a test that wants to know whether a column
     /// arrived cannot infer it from anything else here.

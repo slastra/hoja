@@ -130,9 +130,12 @@ updates, and archive browsing that feels like working with ordinary folders.
   You can also set the order in the settings file with a list. A column you
   hide keeps its place until you close Hoja. After that it comes back in the
   usual place, because a column that is not shown has no position to record.
-- **Git status.** File names are coloured by Git status, including folders,
-  using Git's own status information so Hoja always matches the command
-  line.
+- **Git status.** File names are coloured by Git status, as in Zed's project
+  panel and with the same theme colours: added, modified, deleted, a
+  conflict, and ignored names dimmed. A folder takes the status of what is in
+  it, except that an ignored file does not dim the folder that holds it. The
+  status comes from Git itself, so Hoja always matches the command line, and
+  it follows a commit, an add or a checkout made in a terminal.
 - **Themes.** Hoja reads Zed theme files from `~/.config/hoja/themes/` and
   reloads them automatically. Rosé Pine themes are included. The interface
   and number fonts are settings too.
