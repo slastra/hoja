@@ -172,19 +172,24 @@ strip() { grim -g "$WX,$((WY + WH - 26)) 700x26" "$OUT/$1.png" 2>&1 | head -1; }
 # 28 toolbar + 24 header, then ROW_HEIGHT each, from hoja's own top edge.
 row()   { echo $(( WY + 52 + 11 + $1 * 22 )); }
 # shellcheck disable=SC2317
-click() {
-    wlrctl pointer move 100000 100000 >/dev/null 2>&1   # corner, then absolute-ish
+# goto X Y: put the pointer at a point in output coordinates. wlrctl has no
+# absolute move, so this parks the pointer in the top-left corner and moves
+# from there: right and down first, so the second move cannot stop short.
+goto() {
+    wlrctl pointer move 100000 100000 >/dev/null 2>&1
     wlrctl pointer move -100000 -100000 >/dev/null 2>&1
-    wlrctl pointer move "$((WX + 150))" "$(row "$1")" >/dev/null 2>&1
+    wlrctl pointer move "$1" "$2" >/dev/null 2>&1
+}
+# shellcheck disable=SC2317
+click() {
+    goto "$((WX + 150))" "$(row "$1")"
     wlrctl pointer click left >/dev/null 2>&1
 }
 # shellcheck disable=SC2317
 # right N: right-click listing row N, or empty space below the last row for
 # an index past the end, to open (or fail to open) a context menu.
 right() {
-    wlrctl pointer move 100000 100000 >/dev/null 2>&1
-    wlrctl pointer move -100000 -100000 >/dev/null 2>&1
-    wlrctl pointer move "$((WX + 150))" "$(row "$1")" >/dev/null 2>&1
+    goto "$((WX + 150))" "$(row "$1")"
     wlrctl pointer click right >/dev/null 2>&1
 }
 # shellcheck disable=SC2317
@@ -217,15 +222,12 @@ drag_at() {
 }
 
 # --- pointer -----------------------------------------------------------------
-# wlrctl's absolute positioning is a corner reset followed by a relative move,
-# which is why every one of these starts by slamming into the top-left.
+# Each of these starts with `goto`, above, since wlrctl has no absolute move.
 
 # shellcheck disable=SC2317
 # at X Y: click a point in window coordinates.
 at() {
-    wlrctl pointer move 100000 100000 >/dev/null 2>&1
-    wlrctl pointer move -100000 -100000 >/dev/null 2>&1
-    wlrctl pointer move "$((WX + $1))" "$((WY + $2))" >/dev/null 2>&1
+    goto "$((WX + $1))" "$((WY + $2))"
     wlrctl pointer click left >/dev/null 2>&1
 }
 # shellcheck disable=SC2317
@@ -240,9 +242,7 @@ at() {
 # five showed no tooltip, and with one nudge after it, one in fifteen after a
 # click. A real mouse never sends a motion alone, so it never sees this.
 hover() {
-    wlrctl pointer move 100000 100000 >/dev/null 2>&1
-    wlrctl pointer move -100000 -100000 >/dev/null 2>&1
-    wlrctl pointer move "$((WX + 150))" "$(row "$1")" >/dev/null 2>&1
+    goto "$((WX + 150))" "$(row "$1")"
     for dx in 1 -1 1; do
         sleep 0.1
         wlrctl pointer move "$dx" 0 >/dev/null 2>&1
@@ -252,9 +252,7 @@ hover() {
 # dbl N: double-click listing row N. One move, two clicks: a reset between them
 # reads as two singles.
 dbl() {
-    wlrctl pointer move 100000 100000 >/dev/null 2>&1
-    wlrctl pointer move -100000 -100000 >/dev/null 2>&1
-    wlrctl pointer move "$((WX + 150))" "$(row "$1")" >/dev/null 2>&1
+    goto "$((WX + 150))" "$(row "$1")"
     wlrctl pointer click left >/dev/null 2>&1
     wlrctl pointer click left >/dev/null 2>&1
 }
