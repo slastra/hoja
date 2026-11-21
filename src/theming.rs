@@ -95,6 +95,9 @@ pub fn apply(name: &str, cx: &mut App) -> Result<()> {
     // Recorded only once it resolved, so a bad name in settings.json leaves the
     // working theme in place rather than pointing the watcher at nothing.
     set_active(name);
+    // A light theme for a dark one, or the other way: an icon theme given by
+    // family follows.
+    crate::icon_theme::reapply(cx);
     cx.refresh_windows();
     Ok(())
 }

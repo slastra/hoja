@@ -91,6 +91,9 @@ pub struct Settings {
     /// A preview of an image, video, audio or text file when the pointer
     /// rests on its row. On unless this says `false`.
     pub previews: Option<bool>,
+    /// A Zed icon theme for the file icons, by name or family. See
+    /// `icon_theme`. Unset follows Zed's own setting.
+    pub icon_theme: Option<crate::icon_theme::IconThemeSetting>,
     pub view: ViewDefaults,
 }
 

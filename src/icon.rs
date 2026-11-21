@@ -68,8 +68,15 @@ impl RenderOnce for Icon {
                 .text_color(self.color)
                 .into_any_element(),
             IconSource::External(path) => {
-                // `text_color` is a no-op here, the raster keeps its own colours.
-                img(path).size(self.size).flex_none().into_any_element()
+                // `text_color` is a no-op here, the raster keeps its own
+                // colours. Its alpha still says how strong the icon is, which
+                // is how a pane that is not active quiets its icons, so the
+                // coloured ones dim with the rest.
+                img(path)
+                    .size(self.size)
+                    .flex_none()
+                    .opacity(self.color.a)
+                    .into_any_element()
             }
         }
     }

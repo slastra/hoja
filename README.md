@@ -137,7 +137,11 @@ updates, and archive browsing that feels like working with ordinary folders.
   reloads them automatically. Rosé Pine themes are included. The interface
   and number fonts are settings too.
 - **Icons.** File icons follow the Zed icon system and inherit colours from
-  the active theme.
+  the active theme. Zed icon themes colour them: Hoja loads the icon themes
+  of the Zed extensions installed on the machine, and any in
+  `~/.config/hoja/icon_themes/`. Name one with `icon_theme`, or leave it out
+  and Hoja uses the one Zed is set to. A family name, such as "Colored Zed
+  Icons Theme", takes its dark or light variant to match the colour theme.
 - **Settings.** Configure Hoja with `~/.config/hoja/settings.json`. Hoja
   never rewrites the file, preserves your comments, and reloads changes
   automatically.
@@ -201,6 +205,9 @@ allowed, and Hoja applies a change as soon as you save.
 
   // A preview when the pointer rests on a file. On by default.
   "previews": true,
+
+  // A Zed icon theme, by name or by family. Leave it out to use Zed's.
+  "icon_theme": "Colored Zed Icons Theme",
 
   // What a new pane shows.
   "view": {

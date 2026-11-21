@@ -2064,6 +2064,10 @@ impl Workspace {
         // `"font"` from the file should put the default back.
         crate::theming::apply_fonts(settings.font.as_deref(), settings.mono_font.as_deref(), cx);
         crate::preview::set_enabled(settings.previews, cx);
+        // Read again as well: a theme installed in Zed since hoja started
+        // is then found by saving the settings file.
+        crate::icon_theme::load(cx);
+        crate::icon_theme::apply(settings.icon_theme.clone(), cx);
 
         // The file was just written, so it is the newest answer and wins where
         // it has one. Where it has none, as in a file that only sets a theme,
@@ -2252,6 +2256,7 @@ impl Workspace {
         let notice = self.notice.as_ref().map(|n| n.text().to_string());
         window.on_next_frame(move |_, cx| {
             let preview = crate::preview::probe(cx);
+            let icon_theme = theme::GlobalTheme::icon_theme(cx).name.to_string();
             // One reading for every pane, so two cannot disagree about how long
             // ago a file was written.
             let now = std::time::SystemTime::now();
@@ -2266,6 +2271,7 @@ impl Workspace {
                 interrupted,
                 undo_depth,
                 preview,
+                icon_theme,
                 revision: 0, // `write` owns this
             });
         });

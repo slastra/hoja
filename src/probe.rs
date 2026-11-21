@@ -143,6 +143,8 @@ pub struct Probe {
     /// `image`, `video`, `audio`, `text` or `none`, or `loading` before the
     /// work is done.
     pub preview: Option<String>,
+    /// The file icon theme in force, by name.
+    pub icon_theme: String,
     /// Bumped on every write, so a reader can tell a fresh answer from the same
     /// one twice without comparing the whole object. Set by `write`, which is
     /// the only thing that knows whether a write happened; a caller filling it

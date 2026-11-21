@@ -128,6 +128,16 @@ scripts/sway-harness.sh "$FIX" scripts/tests/grid.sh "$OUT"
 HOJA_TEST_KEEP_STATE=1 scripts/sway-harness.sh "$FIX" scripts/tests/grid-restore.sh "$OUT"
 ```
 
+`icon-theme.sh` uses the grid fixture. It writes an icon theme of its own,
+with a dark and a light variant, into the harness's private config, so it
+does not depend on what is installed. It checks that a family name takes the
+variant that matches the colour theme, that an icon is drawn in the theme's
+own colour, and that removing the setting puts the default icons back.
+
+```sh
+scripts/sway-harness.sh "$(scripts/tests/setup-grid.sh)" scripts/tests/icon-theme.sh
+```
+
 The harness drives a drag with `scripts/vpointer`, a small tool that presses,
 moves and releases a virtual pointer. `wlrctl` cannot do this: its press and
 release are one call. The harness builds the tool into `target/vpointer` the
