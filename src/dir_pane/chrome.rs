@@ -109,7 +109,15 @@ impl DirPane {
                 cx,
             ))
             .child(match self.path_editor.clone() {
-                Some((_, editor)) => editor.into_any_element(),
+                // The label's padding, so the path does not move when it
+                // becomes editable.
+                Some((_, editor)) => div()
+                    .flex_1()
+                    .min_w_0()
+                    .px_2()
+                    .flex()
+                    .child(editor)
+                    .into_any_element(),
                 None => div()
                     .id("path-display-slot")
                     .flex_1()

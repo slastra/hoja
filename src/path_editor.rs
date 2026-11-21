@@ -171,7 +171,6 @@ pub struct PathEditor {
     placeholder: SharedString,
     /// The key context this field renders with, built once. See `also_in`.
     context: SharedString,
-    chrome: Chrome,
 }
 
 impl PathEditor {
@@ -211,7 +210,6 @@ impl PathEditor {
             error: false,
             placeholder: SharedString::default(),
             context: "AddressBar".into(),
-            chrome: Chrome::Field,
         }
     }
 
@@ -247,13 +245,6 @@ impl PathEditor {
             "a key context identifier, or gpui's parser will not terminate"
         );
         self.context = format!("AddressBar {context}").into();
-        self
-    }
-
-    /// Draw no background and no border: for a field that is already the only
-    /// thing on its row of a surface that has both.
-    pub fn bare(mut self) -> Self {
-        self.chrome = Chrome::Bare;
         self
     }
 
@@ -698,20 +689,6 @@ impl Focusable for PathEditor {
     }
 }
 
-/// How the field draws itself.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Chrome {
-    /// Inline, as Zed edits inline: in the place of the text it edits, the
-    /// address bar's path or a row's name, with that text's padding and no
-    /// border or background of its own. The caret and the selection say it is
-    /// being edited, as in Zed's project panel when it renames.
-    Field,
-    /// Not even the padding. Inside a picker the field *is* the modal's first
-    /// row: it has the whole width, a rule under it, and nothing beside it to
-    /// be confused with.
-    Bare,
-}
-
 impl EventEmitter<PathEditorEvent> for PathEditor {}
 impl EventEmitter<DismissEvent> for PathEditor {}
 
@@ -751,15 +728,24 @@ impl Render for PathEditor {
             .cursor(gpui::CursorStyle::IBeam)
             .flex_1()
             .h(px(22.))
-            .map(|el| match self.chrome {
-                Chrome::Field => el.px_1().rounded_sm(),
-                Chrome::Bare => el,
+            // Inline, as Zed edits: the text starts at the field's left edge,
+            // where the text it stands in for starts, and there is no border
+            // or background. The caret and the selection say it is being
+            // edited. The caller gives it the padding of what it replaces.
+            //
+            // The border is always there, clear unless there is an error, and
+            // the margin takes its width back, so an error outlines the field
+            // without moving its text. As Zed colours a rename that will not
+            // do, it is the only thing that reports a path that did not
+            // resolve.
+            .mx(px(-1.))
+            .border_1()
+            .rounded_sm()
+            .border_color(if self.error {
+                error
+            } else {
+                gpui::transparent_black()
             })
-            // An error is the one border either draws, as Zed colours a rename
-            // that will not do: it is the only thing that reports a path that
-            // did not resolve, and without it the field would silently do
-            // nothing.
-            .when(self.error, |el| el.border_1().border_color(error))
             .overflow_hidden()
             .child(PathElement {
                 editor: cx.entity(),
