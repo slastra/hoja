@@ -120,6 +120,9 @@ impl Cancel {
 pub struct Progress {
     pub bytes: AtomicU64,
     pub files: AtomicU64,
+    /// What an extraction will write, in bytes, once it knows: the sizes of
+    /// the members it was asked for. A listing leaves it at zero.
+    pub total: AtomicU64,
 }
 
 /// One member that could not be extracted, while the rest were.
@@ -1171,6 +1174,13 @@ pub fn extract(
     if wanted.is_empty() {
         return Ok(Vec::new());
     }
+    let total = wanted
+        .iter()
+        .filter_map(|ix| index.listing().members.get(*ix))
+        .filter(|member| !member.is_dir && member.link.is_none())
+        .map(|member| member.size)
+        .sum();
+    progress.total.store(total, Ordering::Relaxed);
 
     let mut sink = Extract::new(dest, key(inside));
     let failures =

@@ -203,6 +203,15 @@ scripts/sway-harness.sh "$SLOW" scripts/tests/search-while-reading.sh
 scripts/sway-harness.sh "$SLOW" scripts/tests/select-while-reading.sh
 ```
 
+`extract-cancel.sh` copies a file out of an archive and cancels it from the
+strip while bzip2 is still working through the 80 MB in front of it.
+`setup-slow-extract.sh` builds that archive, apart from the one above, which
+other suites read whole:
+
+```sh
+scripts/sway-harness.sh "$(scripts/tests/setup-slow-extract.sh)" scripts/tests/extract-cancel.sh
+```
+
 Two things it cannot do. It cannot synthesise a drag: `wlrctl` only clicks, and
 `swaymsg seat - cursor` moves the pointer without gpui starting a drag from it,
 so column resizing and drag-and-drop need a person. And it has no second

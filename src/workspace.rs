@@ -12,6 +12,8 @@ use hoja_transfer::{
 };
 use theme::ActiveTheme;
 
+use std::sync::Arc;
+
 use crate::clipboard::{self, ClipboardSet};
 use crate::command_palette::{self, CommandPalette};
 use crate::config::{self, Settings, State};
@@ -245,6 +247,46 @@ enum UndoEntry {
 }
 
 /// A running or finished transfer job as the UI tracks it.
+/// An extraction in the strip: a row like a transfer's, with its bar and
+/// its cancel, for the part of a copy out of an archive that happens before
+/// there is a transfer. It used to be a notice that said "Extracting…" and
+/// nothing else, with no way to stop it, over a member at the end of a large
+/// tarball that took a minute to reach.
+struct Extraction {
+    id: u64,
+    label: String,
+    progress: Arc<crate::archive::Progress>,
+    cancel: crate::archive::Cancel,
+}
+
+impl Extraction {
+    fn start(label: String) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        Self {
+            id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            label,
+            progress: Arc::default(),
+            cancel: crate::archive::Cancel::new(),
+        }
+    }
+
+    fn fraction(&self) -> f32 {
+        let total = self
+            .progress
+            .total
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let done = self
+            .progress
+            .bytes
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if total == 0 {
+            0.
+        } else {
+            (done as f64 / total as f64).min(1.) as f32
+        }
+    }
+}
+
 struct JobView {
     handle: JobHandle,
     /// Where the job writes, for refreshing affected panes on completion.
@@ -602,6 +644,9 @@ pub struct Workspace {
     /// interoperate with other applications.
     clipboard: Option<Stash>,
     jobs: Vec<JobView>,
+    /// Members being taken out of an archive, before a job takes them the
+    /// rest of the way. See `Extraction`.
+    extractions: Vec<Extraction>,
     /// Transfers that were running when hoja last stopped, waiting to be
     /// finished or dismissed. Read once, at startup.
     interrupted: Vec<Interrupted>,
@@ -672,6 +717,7 @@ impl Workspace {
             pane_subscriptions: HashMap::from([(pane.entity_id(), subscription)]),
             clipboard: None,
             jobs: Vec::new(),
+            extractions: Vec::new(),
             interrupted: Vec::new(),
             scan_task: None,
             undo_stack: Vec::new(),
@@ -1059,11 +1105,26 @@ impl Workspace {
         // writing: `is_partial_name` already keeps those out of every listing,
         // and a staging directory is exactly that sort of thing.
         let temp = hoja_transfer::partial_path(&dest_dir.join("extract"));
-        let label = match roots.len() {
-            1 => "1 item".to_string(),
-            n => format!("{} items", notifications::count(n as u64)),
+        let what = match roots.as_slice() {
+            [one] => one.rsplit('/').next().unwrap_or(one).to_string(),
+            many => format!("{} items", notifications::count(many.len() as u64)),
         };
-        self.set_notice(Some(Notice::Info(format!("Extracting {label}…"))), cx);
+        let to = dest_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| dest_dir.display().to_string());
+        let extraction = Extraction::start(format!("Extracting {what} → {to}"));
+        let (id, progress, cancel) = (
+            extraction.id,
+            extraction.progress.clone(),
+            extraction.cancel.clone(),
+        );
+        self.extractions.push(extraction);
+        // What the strip said before is about something else now: the row
+        // takes its place, as the "Extracting…" notice used to.
+        self.set_notice(None, cx);
+        self.ensure_polling(window, cx);
+        cx.notify();
 
         // A record for the extraction itself, held until the move that follows
         // has one of its own. Without it a crash while extracting left the
@@ -1081,21 +1142,15 @@ impl Workspace {
             },
             std::time::SystemTime::now(),
         );
-        let cancel = crate::archive::Cancel::new();
         let task = cx.spawn_in(window, async move |this, cx| {
             let _extracting = extracting;
             let out = temp.clone();
+            let stop = cancel.clone();
             let extracted = cx
                 .background_spawn(async move {
                     std::fs::create_dir(&out)?;
-                    let failures = crate::archive::extract(
-                        &archive,
-                        &inside,
-                        &roots,
-                        &out,
-                        &crate::archive::Progress::default(),
-                        &cancel,
-                    )?;
+                    let failures =
+                        crate::archive::extract(&archive, &inside, &roots, &out, &progress, &stop)?;
                     // What actually landed, which is what the engine is given.
                     // Reading the directory rather than deriving it from the
                     // selection: a member that failed left nothing behind, and
@@ -1110,7 +1165,15 @@ impl Workspace {
                 .await;
 
             let _ = this.update_in(cx, |this, window, cx| match extracted {
+                _ if cancel.stopped() => {
+                    // Asked for, so nothing to say about it.
+                    this.extractions.retain(|e| e.id != id);
+                    let _ = std::fs::remove_dir_all(&temp);
+                    cx.notify();
+                }
                 Ok((sources, failures)) => {
+                    this.extractions.retain(|e| e.id != id);
+                    cx.notify();
                     if !failures.is_empty() {
                         this.set_notice(
                             Some(Notice::Problem(format!(
@@ -1122,8 +1185,6 @@ impl Workspace {
                             ))),
                             cx,
                         );
-                    } else {
-                        this.set_notice(None, cx);
                     }
                     if sources.is_empty() {
                         let _ = std::fs::remove_dir_all(&temp);
@@ -1148,6 +1209,7 @@ impl Workspace {
                     );
                 }
                 Err(err) => {
+                    this.extractions.retain(|e| e.id != id);
                     let _ = std::fs::remove_dir_all(&temp);
                     this.set_notice(Some(Notice::Problem(err.to_string())), cx);
                 }
@@ -1219,23 +1281,29 @@ impl Workspace {
             return;
         };
 
-        self.set_notice(Some(Notice::Info("Extracting…".to_string())), cx);
+        let name = member.rsplit('/').next().unwrap_or(&member).to_string();
+        let extraction = Extraction::start(format!("Opening {name}"));
+        let (id, progress, cancel) = (
+            extraction.id,
+            extraction.progress.clone(),
+            extraction.cancel.clone(),
+        );
+        self.extractions.push(extraction);
+        // What the strip said before is about something else now: the row
+        // takes its place, as the "Extracting…" notice used to.
+        self.set_notice(None, cx);
+        self.ensure_polling(window, cx);
+        cx.notify();
 
-        let cancel = crate::archive::Cancel::new();
         let roots = vec![member];
         let task = cx.spawn_in(window, async move |this, cx| {
             let out = dest.clone();
+            let stop = cancel.clone();
             let result = cx
                 .background_spawn(async move {
                     std::fs::create_dir_all(&out)?;
-                    let failures = crate::archive::extract(
-                        &archive,
-                        &inside,
-                        &roots,
-                        &out,
-                        &crate::archive::Progress::default(),
-                        &cancel,
-                    )?;
+                    let failures =
+                        crate::archive::extract(&archive, &inside, &roots, &out, &progress, &stop)?;
                     // What actually landed, the same reasoning `extract_into`
                     // follows: a member that failed left nothing behind, so
                     // this is what there is to open rather than what was asked
@@ -1248,7 +1316,14 @@ impl Workspace {
                 })
                 .await;
 
+            let _ = this.update(cx, |this, cx| {
+                this.extractions.retain(|e| e.id != id);
+                cx.notify();
+            });
             let _ = this.update(cx, |this, cx| match result {
+                _ if cancel.stopped() => {
+                    let _ = std::fs::remove_dir_all(&dest);
+                }
                 Ok((opened, failures)) if opened.is_empty() || !failures.is_empty() => {
                     let _ = std::fs::remove_dir_all(&dest);
                     this.set_notice(
@@ -1257,7 +1332,6 @@ impl Workspace {
                     );
                 }
                 Ok((opened, _)) => {
-                    this.set_notice(None, cx);
                     if let Some(path) = opened.first()
                         && let Err(err) = crate::opener::open(path)
                     {
@@ -1364,7 +1438,12 @@ impl Workspace {
                 let keep_going = this
                     .update_in(cx, |this, window, cx| {
                         this.poll_jobs(window, cx);
-                        !this.jobs.is_empty()
+                        // An extraction has no events to poll, only a bar
+                        // that moves.
+                        if !this.extractions.is_empty() {
+                            cx.notify();
+                        }
+                        !this.jobs.is_empty() || !this.extractions.is_empty()
                     })
                     .unwrap_or(false);
                 if !keep_going {
@@ -2239,6 +2318,7 @@ impl Workspace {
             .collect();
         let undo_depth = self.undo_stack.len();
         let interrupted = self.interrupted.len();
+        let extractions = self.extractions.len();
         // `conflict_dialog` and `open_prompt` sit outside `Modal` (see its own
         // doc comment), so a test that needs to know one is up reads it from
         // here rather than from a field that only ever answers for the three
@@ -2269,6 +2349,7 @@ impl Workspace {
                 modal,
                 notice,
                 interrupted,
+                extractions,
                 undo_depth,
                 preview,
                 icon_theme,
@@ -2432,6 +2513,79 @@ impl Workspace {
                             .on_click(
                                 cx.listener(move |this, _, _, cx| this.dismiss_interrupted(ix, cx)),
                             ),
+                    )
+                    .into_any_element()
+            })
+            .collect()
+    }
+
+    fn render_extractions(&self, cx: &Context<Self>) -> Vec<gpui::AnyElement> {
+        let colors = cx.theme().colors();
+        self.extractions
+            .iter()
+            .map(|extraction| {
+                let id = extraction.id;
+                let done = extraction
+                    .progress
+                    .bytes
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let total = extraction
+                    .progress
+                    .total
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                // Before the total is known the archive is still being
+                // listed, and before a byte lands it is being read through
+                // to the first member wanted: in a compressed tarball that
+                // can be most of the file, and "0 B / 1 B" for all of it read
+                // as stuck.
+                let status = if total == 0 || done == 0 {
+                    "reading…".to_string()
+                } else {
+                    format!("{} / {}", fs::format_size(done), fs::format_size(total))
+                };
+                strip_row()
+                    .text_color(colors.text)
+                    .child(
+                        div()
+                            .flex_none()
+                            .max_w(px(280.))
+                            .truncate()
+                            .child(extraction.label.clone()),
+                    )
+                    .child(div().flex_1().child(ui::progress_bar(
+                        ("extraction-bar", id as usize),
+                        extraction.fraction(),
+                        colors.element_background,
+                        cx,
+                    )))
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(STATUS_W))
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .overflow_hidden()
+                            .text_color(colors.text_muted)
+                            .when_some(crate::theming::numeric_font(cx), |el, family| {
+                                el.font_family(family)
+                            })
+                            .child(status),
+                    )
+                    .child(div().flex_none().w(px(PAUSE_W)))
+                    .child(
+                        ui::icon_button(
+                            ("extraction-x", id as usize),
+                            "icons/file_icons/close.svg",
+                            cx,
+                        )
+                        .tooltip(ui::tooltip("Cancel Extraction"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(extraction) = this.extractions.iter().find(|e| e.id == id) {
+                                extraction.cancel.stop();
+                            }
+                            cx.notify();
+                        })),
                     )
                     .into_any_element()
             })
@@ -2722,6 +2876,7 @@ impl Workspace {
             // Above the running jobs: these are from a previous session and
             // are waiting on an answer, where the rows below are working.
             .children(self.render_interrupted(cx))
+            .children(self.render_extractions(cx))
             .when_some(self.notice.as_ref(), |el, notice| {
                 let color = if notice.is_problem() {
                     error_color
@@ -2913,7 +3068,10 @@ impl Render for Workspace {
             // the pane doing the searching, a background pane's used to be
             // invisible. The strip is now transfers and notices only.
             .when(
-                !self.jobs.is_empty() || self.notice.is_some() || !self.interrupted.is_empty(),
+                !self.jobs.is_empty()
+                    || !self.extractions.is_empty()
+                    || self.notice.is_some()
+                    || !self.interrupted.is_empty(),
                 |el| el.child(self.render_job_strip(cx)),
             )
             .when_some(self.modal.as_ref().map(Modal::element), |el, modal| {

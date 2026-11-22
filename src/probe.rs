@@ -139,6 +139,9 @@ pub struct Probe {
     /// Transfers left unfinished by a previous run and waiting to be picked
     /// up or dismissed.
     pub interrupted: usize,
+    /// Extractions from an archive in the strip, before a transfer takes
+    /// over from them.
+    pub extractions: usize,
     /// How many things ctrl-z would undo, so a test can tell that a transfer
     /// reached the stack and that undoing it took it off again.
     pub undo_depth: usize,
