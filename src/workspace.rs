@@ -29,7 +29,7 @@ use crate::notifications;
 use crate::open_prompt::{OpenPrompt, OpenPromptEvent};
 use crate::pane_group::{PaneGroup, SplitDirection};
 use crate::place_finder::{self, PlaceEvent, PlaceFinder};
-use crate::tabs::Tabs;
+use crate::tabs::{Tabs, TabsEvent};
 use crate::ui::{self, ButtonStyle};
 
 actions!(
@@ -657,6 +657,7 @@ pub struct Workspace {
     panes: Vec<Entity<DirPane>>,
     /// The tiles, in the order they were made.
     tiles: Vec<Entity<Tabs>>,
+    tile_subscriptions: HashMap<EntityId, Subscription>,
     active_pane: Entity<DirPane>,
     focus_handle: FocusHandle,
     pane_subscriptions: HashMap<EntityId, Subscription>,
@@ -730,11 +731,13 @@ impl Workspace {
         });
         let subscription = Self::subscribe_to_pane(&pane, window, cx);
         let tile = cx.new(|_| Tabs::new(pane.clone()));
+        let tile_subscription = Self::subscribe_to_tile(&tile, window, cx);
 
         let mut workspace = Self {
             center: PaneGroup::new(tile.clone()),
             panes: vec![pane.clone()],
-            tiles: vec![tile],
+            tiles: vec![tile.clone()],
+            tile_subscriptions: HashMap::from([(tile.entity_id(), tile_subscription)]),
             active_pane: pane.clone(),
             focus_handle: cx.focus_handle(),
             pane_subscriptions: HashMap::from([(pane.entity_id(), subscription)]),
@@ -851,6 +854,45 @@ impl Workspace {
         })
     }
 
+    /// What a press on a tile's tab bar asked for.
+    fn subscribe_to_tile(
+        tile: &Entity<Tabs>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        cx.subscribe_in(tile, window, |this, tile, event, window, cx| match event {
+            TabsEvent::Activate(ix) => this.activate_tab_in(&tile.clone(), *ix, window, cx),
+            TabsEvent::Close(ix) => {
+                let pane = tile.read(cx).list.items().get(*ix).cloned();
+                if let Some(pane) = pane {
+                    this.close_tab(&pane, window, cx);
+                }
+            }
+            TabsEvent::New => {
+                // The tab opens in the tile whose bar was pressed, so that
+                // tile's shown tab becomes the active pane first.
+                let shown = tile.read(cx).shown().clone();
+                this.show_pane(shown, window, cx);
+                this.new_tab(&NewTab, window, cx);
+            }
+        })
+    }
+
+    /// Make a tile holding `pane`, and listen to its bar.
+    fn make_tile(
+        &mut self,
+        pane: Entity<DirPane>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<Tabs> {
+        let tile = cx.new(|_| Tabs::new(pane));
+        let subscription = Self::subscribe_to_tile(&tile, window, cx);
+        self.tile_subscriptions
+            .insert(tile.entity_id(), subscription);
+        self.tiles.push(tile.clone());
+        tile
+    }
+
     fn set_active_pane(&mut self, pane: &Entity<DirPane>, cx: &mut Context<Self>) {
         if &self.active_pane != pane {
             self.active_pane = pane.clone();
@@ -901,8 +943,7 @@ impl Workspace {
             return;
         };
         let new_pane = self.add_pane(dir, view, window, cx);
-        let tile = cx.new(|_| Tabs::new(new_pane));
-        self.tiles.push(tile.clone());
+        let tile = self.make_tile(new_pane, window, cx);
         self.center.split(&source, &tile, direction);
         #[cfg(debug_assertions)]
         eprintln!("[hoja] split {direction:?} -> {}", self.center.shape());
@@ -933,6 +974,7 @@ impl Workspace {
         let was_active = gone.contains(&self.active_pane);
         self.forget_panes(&gone);
         self.tiles.retain(|t| t != tile);
+        self.tile_subscriptions.remove(&tile.entity_id());
 
         if was_active && let Some(fallback) = self.tiles.last().cloned() {
             let shown = fallback.read(cx).shown().clone();
@@ -987,18 +1029,31 @@ impl Workspace {
 
     /// Show the tab at `ix` in the active tile. Past the end means the last.
     fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tile) = self.tile_of(&self.active_pane.clone(), cx) else {
-            return;
-        };
-        let old = tile.read(cx).shown().clone();
-        tile.update(cx, |tile, _| tile.list.activate(ix));
-        let new = tile.read(cx).shown().clone();
-        if old == new {
-            return;
+        if let Some(tile) = self.tile_of(&self.active_pane.clone(), cx) {
+            self.activate_tab_in(&tile, ix, window, cx);
         }
-        tile.update(cx, |_, cx| cx.notify());
-        old.update(cx, |old, cx| old.set_visible(false, cx));
-        new.update(cx, |new, cx| new.set_visible(true, cx));
+    }
+
+    /// Show the tab at `ix` in `tile`, and make that tile the active one: a
+    /// click on another pane's tab moves to that pane, as in Zed.
+    fn activate_tab_in(
+        &mut self,
+        tile: &Entity<Tabs>,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let old = tile.read(cx).shown().clone();
+        tile.update(cx, |tile, cx| {
+            tile.list.activate(ix);
+            tile.reveal_shown();
+            cx.notify();
+        });
+        let new = tile.read(cx).shown().clone();
+        if old != new {
+            old.update(cx, |old, cx| old.set_visible(false, cx));
+            new.update(cx, |new, cx| new.set_visible(true, cx));
+        }
         self.show_pane(new, window, cx);
         cx.notify();
     }
@@ -1024,6 +1079,7 @@ impl Workspace {
         tile.update(cx, |tile, cx| {
             let at = tile.list.insert_after_active(pane.clone());
             tile.list.activate(at);
+            tile.reveal_shown();
             cx.notify();
         });
         old.update(cx, |old, cx| old.set_visible(false, cx));
@@ -2498,9 +2554,10 @@ impl Workspace {
                             titles: list
                                 .items()
                                 .iter()
-                                .map(|pane| tab_title(pane.read(cx).location()))
+                                .map(|pane| crate::tabs::title(pane.read(cx).location()))
                                 .collect(),
                             active: list.active(),
+                            rects: tile.read(cx).rects(),
                         }
                     })
                     .collect(),
@@ -3162,11 +3219,6 @@ fn parent_dirs(paths: &[PathBuf]) -> Vec<PathBuf> {
     dirs.sort();
     dirs.dedup();
     dirs
-}
-
-/// What a tab is called: the last name in its location, as the window title.
-fn tab_title(location: &Location) -> String {
-    file_label(&location.key())
 }
 
 fn file_label(path: &std::path::Path) -> String {

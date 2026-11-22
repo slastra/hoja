@@ -683,6 +683,10 @@ impl DirPane {
         }
     }
 
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
     pub fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
         if self.active != active {
             self.active = active;

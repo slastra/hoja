@@ -136,6 +136,8 @@ pub struct TabsProbe {
     pub titles: Vec<String>,
     /// Which one is shown.
     pub active: usize,
+    /// Where each tab is drawn, `[x, y, width, height]`, empty with no bar.
+    pub rects: Vec<[i32; 4]>,
 }
 
 #[derive(Serialize, PartialEq, Eq)]

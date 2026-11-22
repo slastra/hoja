@@ -67,3 +67,36 @@ wait_for 'len(d["tabs"][0]["titles"]) == 1'
 key -M ctrl -k w -m ctrl
 sleep 0.5
 expect 'len(p) == 1 and len(d["tabs"][0]["titles"]) == 1' "the last tab of the last pane stays"
+
+# The bar: none with one tab, and the rows where they always were.
+expect 'd["tabs"][0]["rects"] == []' "one tab has no bar"
+Y0=$(row 0)
+key -M ctrl -k t -m ctrl
+wait_for 'len(d["tabs"][0]["rects"]) == 2'
+expect "d['tabs'][0]['rects'][0][3] == 32" "the bar is Zed's height"
+shot two-tabs
+expect "$(row 0) == $Y0 + 32" "the rows move down under the bar"
+
+tab 0
+wait_for 'd["tabs"][0]["active"] == 0'
+expect 'd["tabs"][0]["active"] == 0' "a click shows a tab"
+
+mtab 1
+wait_for 'len(d["tabs"][0]["titles"]) == 1'
+expect 'd["tabs"][0]["rects"] == []' "a middle click closes a tab, and the bar goes with the second"
+expect "$(row 0) == $Y0" "the rows go back up"
+
+# A double click on the empty end of the bar opens a tab. The ctrl-t first
+# is a check too: a press on the bar once gave the keys to the window, and
+# after a middle click nothing gave them back.
+key -M ctrl -k t -m ctrl
+wait_for 'len(d["tabs"][0]["rects"]) == 2'
+goto "$((WX + WW - 40))" "$((WY + 16))"
+wlrctl pointer click left >/dev/null 2>&1
+wlrctl pointer click left >/dev/null 2>&1
+wait_for 'len(d["tabs"][0]["titles"]) == 3'
+expect 'd["tabs"][0]["active"] == 2' "a double click on the bar opens a tab"
+
+tabclose 0
+wait_for 'len(d["tabs"][0]["titles"]) == 2'
+expect 'd["tabs"][0]["active"] == 1' "the close button closes its own tab, not the shown one"

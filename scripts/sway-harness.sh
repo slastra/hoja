@@ -170,7 +170,12 @@ shot()  { grim "$OUT/$1.png" 2>/dev/null; }
 strip() { grim -g "$WX,$((WY + WH - 26)) 700x26" "$OUT/$1.png" 2>&1 | head -1; }
 # shellcheck disable=SC2317
 # 28 toolbar + 24 header, then ROW_HEIGHT each, from hoja's own top edge.
-row()   { echo $(( WY + 52 + 11 + $1 * 22 )); }
+# A pane with a second tab has a 32 pixel tab bar above all of it.
+row()   {
+    local bar=0
+    [ "$(probe 'len(d["tabs"][0]["titles"]) > 1')" = "True" ] && bar=32
+    echo $(( WY + 52 + bar + 11 + $1 * 22 ))
+}
 # shellcheck disable=SC2317
 # goto X Y: put the pointer at a point in output coordinates. wlrctl has no
 # absolute move, so this parks the pointer in the top-left corner and moves
@@ -228,6 +233,36 @@ drag_at() {
 # at X Y: click a point in window coordinates.
 at() {
     goto "$((WX + $1))" "$((WY + $2))"
+    wlrctl pointer click left >/dev/null 2>&1
+}
+# shellcheck disable=SC2317
+# tabat N [DX]: window coordinates in tab N of the first pane, from the probe:
+# its center, or DX pixels in from its right edge.
+tabat() {
+    probe "next(f'{r[0] + (r[2] - ${2:-0} if ${2:-0} else r[2] // 2)} {r[1] + r[3] // 2}' for i, r in enumerate(d['tabs'][0]['rects']) if i == $1)"
+}
+# shellcheck disable=SC2317
+# tab N / mtab N / tabclose N: click tab N, middle-click it, or click its close
+# button, which sits 11 pixels in from its right edge (a border, 4 of
+# padding, half of 14).
+tab() {
+    # shellcheck disable=SC2046  # two words, x and y
+    at $(tabat "$1")
+}
+# shellcheck disable=SC2317
+mtab() {
+    # shellcheck disable=SC2046
+    set -- $(tabat "$1")
+    goto "$((WX + $1))" "$((WY + $2))"
+    wlrctl pointer click middle >/dev/null 2>&1
+}
+# shellcheck disable=SC2317
+tabclose() {
+    # shellcheck disable=SC2046
+    set -- $(tabat "$1" 12)
+    # The button shows only under the pointer, so rest there first.
+    goto "$((WX + $1))" "$((WY + $2))"
+    sleep 0.2
     wlrctl pointer click left >/dev/null 2>&1
 }
 # shellcheck disable=SC2317

@@ -341,6 +341,146 @@ pub fn prompt_scrim(prompt: AnyElement) -> Div {
         .child(prompt)
 }
 
+/// Zed's `TabPosition`: where a tab sits, which decides its borders.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TabPosition {
+    First,
+    /// How the tab stands to the shown one.
+    Middle(std::cmp::Ordering),
+    Last,
+}
+
+impl TabPosition {
+    /// The position of tab `ix` of `count`, the shown one being `active`.
+    pub fn of(ix: usize, count: usize, active: usize) -> Self {
+        if ix == 0 {
+            Self::First
+        } else if ix + 1 == count {
+            Self::Last
+        } else {
+            Self::Middle(ix.cmp(&active))
+        }
+    }
+}
+
+/// Zed's `Tab` at the default density: 32 pixels high, a 12 pixel slot at
+/// the start, the content, and a 14 pixel slot at the end, usually for its
+/// close button.
+///
+/// The borders are Zed's, which is why the position is asked for: the shown
+/// tab has rules at its sides and none under it, so it joins what is below,
+/// and a pixel of padding stands in for a missing rule so that every tab is
+/// the same width whether it is shown or not.
+pub fn tab(
+    id: impl Into<ElementId>,
+    position: TabPosition,
+    selected: bool,
+    content: AnyElement,
+    end: Option<AnyElement>,
+    cx: &App,
+) -> Stateful<Div> {
+    use std::cmp::Ordering;
+    let colors = cx.theme().colors();
+    let (text, background) = if selected {
+        (colors.text, colors.tab_active_background)
+    } else {
+        (colors.text_muted, colors.tab_inactive_background)
+    };
+    let tab = div()
+        .id(id)
+        .flex_none()
+        .h(px(TAB_HEIGHT))
+        .bg(background)
+        .border_color(colors.border)
+        .cursor_pointer();
+    let tab = match position {
+        TabPosition::First if selected => tab.pl_px().border_r_1().pb_px(),
+        TabPosition::First => tab.pl_px().pr_px().border_b_1(),
+        TabPosition::Last if selected => tab.border_l_1().border_r_1().pb_px(),
+        TabPosition::Last => tab.pl_px().border_b_1().border_r_1(),
+        TabPosition::Middle(Ordering::Equal) => tab.border_l_1().border_r_1().pb_px(),
+        TabPosition::Middle(Ordering::Less) => tab.border_l_1().pr_px().border_b_1(),
+        TabPosition::Middle(Ordering::Greater) => tab.border_r_1().pl_px().border_b_1(),
+    };
+    tab.child(
+        div()
+            .group(TAB_GROUP)
+            .relative()
+            .h(px(TAB_HEIGHT - 1.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .px_1()
+            .gap_1()
+            .text_sm()
+            .text_color(text)
+            .child(div().flex_none().size(px(12.)))
+            .child(content)
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(14.))
+                    .flex()
+                    .justify_center()
+                    .children(end),
+            ),
+    )
+}
+
+/// The hover group of a tab, for an end slot that shows only under the
+/// pointer, as Zed's close button does.
+pub const TAB_GROUP: &str = "tab";
+
+/// Zed's tab height at the default density.
+pub const TAB_HEIGHT: f32 = 32.;
+
+/// Zed's `TabBar`: the tabs in a row that scrolls sideways, on the bar's
+/// background, with the rule under the bar drawn behind them so that the
+/// shown tab, which has no rule of its own, breaks it.
+///
+/// `tabs` is the tabs and then whatever fills the rest of the row.
+pub fn tab_bar(
+    id: impl Into<ElementId>,
+    tabs: Vec<AnyElement>,
+    scroll: &gpui::ScrollHandle,
+    cx: &App,
+) -> Stateful<Div> {
+    let colors = cx.theme().colors();
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .w_full()
+        .h(px(TAB_HEIGHT))
+        .bg(colors.tab_bar_background)
+        .child(
+            div()
+                .relative()
+                .flex_1()
+                .h_full()
+                .overflow_x_hidden()
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .border_b_1()
+                        .border_color(colors.border),
+                )
+                .child(
+                    div()
+                        .id("tabs")
+                        .size_full()
+                        .flex()
+                        .flex_row()
+                        .overflow_x_scroll()
+                        .track_scroll(scroll)
+                        .children(tabs),
+                ),
+        )
+}
+
 /// The answer after `active` among `count`, or before it, wrapping round as
 /// Zed's prompt does.
 pub fn step_answer(active: usize, count: usize, forward: bool) -> usize {
@@ -364,5 +504,15 @@ mod tests {
         assert_eq!(step_answer(3, 4, true), 0);
         assert_eq!(step_answer(0, 4, false), 3);
         assert_eq!(step_answer(0, 0, true), 0);
+    }
+
+    #[test]
+    fn a_tab_knows_where_it_stands() {
+        use std::cmp::Ordering;
+        assert!(TabPosition::of(0, 3, 1) == TabPosition::First);
+        assert!(TabPosition::of(1, 3, 1) == TabPosition::Middle(Ordering::Equal));
+        assert!(TabPosition::of(1, 4, 2) == TabPosition::Middle(Ordering::Less));
+        assert!(TabPosition::of(2, 4, 1) == TabPosition::Middle(Ordering::Greater));
+        assert!(TabPosition::of(2, 3, 0) == TabPosition::Last);
     }
 }
