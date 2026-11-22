@@ -162,7 +162,14 @@ impl Tabs {
                     .flex_row()
                     .items_center()
                     .gap_1()
-                    .child(Icon::from_path(icon_for(location), colors.text_muted).size(px(14.)))
+                    // Only an archive gets an icon, as Zed shows none: a
+                    // folder inside one is named like any folder on disk.
+                    .when(matches!(location, Location::Archive { .. }), |el| {
+                        el.child(
+                            Icon::from_path("icons/file_icons/archive.svg", colors.text_muted)
+                                .size(px(14.)),
+                        )
+                    })
                     .child(
                         div()
                             .when(!lit, |el| el.text_color(colors.text_muted))
@@ -238,13 +245,6 @@ pub fn title(location: &Location) -> String {
     key.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| key.display().to_string())
-}
-
-fn icon_for(location: &Location) -> &'static str {
-    match location {
-        Location::Disk(_) => "icons/file_icons/folder.svg",
-        Location::Archive { .. } => "icons/file_icons/archive.svg",
-    }
 }
 
 impl Render for Tabs {
