@@ -29,6 +29,7 @@ use crate::notifications;
 use crate::open_prompt::{OpenPrompt, OpenPromptEvent};
 use crate::pane_group::{PaneGroup, SplitDirection};
 use crate::place_finder::{self, PlaceEvent, PlaceFinder};
+use crate::tabs::Tabs;
 use crate::ui::{self, ButtonStyle};
 
 actions!(
@@ -45,6 +46,19 @@ actions!(
         FocusNext,
         FocusPrevious,
         ClosePane,
+        NewTab,
+        CloseTab,
+        NextTab,
+        PreviousTab,
+        ActivateTab1,
+        ActivateTab2,
+        ActivateTab3,
+        ActivateTab4,
+        ActivateTab5,
+        ActivateTab6,
+        ActivateTab7,
+        ActivateTab8,
+        ActivateTab9,
         Copy,
         Cut,
         Paste,
@@ -633,9 +647,16 @@ impl JobState {
 /// `active_pane` handle plus a flat `panes` list track that, and focus drives it, a
 /// pane emits `PaneEvent::Focus` on focus-in and we make it active in response. Clicking
 /// a pane focuses it, so activation needs no separate click plumbing.
+///
+/// Each leaf of the tree is a tile holding tabs (`Tabs`), and each tab is a
+/// `DirPane`. `active_pane` is the shown tab of the focused tile.
 pub struct Workspace {
     center: PaneGroup,
+    /// Every tab in every tile, hidden ones included: a transfer, a delete or
+    /// a settings change concerns them all.
     panes: Vec<Entity<DirPane>>,
+    /// The tiles, in the order they were made.
+    tiles: Vec<Entity<Tabs>>,
     active_pane: Entity<DirPane>,
     focus_handle: FocusHandle,
     pane_subscriptions: HashMap<EntityId, Subscription>,
@@ -708,10 +729,12 @@ impl Workspace {
             pane
         });
         let subscription = Self::subscribe_to_pane(&pane, window, cx);
+        let tile = cx.new(|_| Tabs::new(pane.clone()));
 
         let mut workspace = Self {
-            center: PaneGroup::new(pane.clone()),
+            center: PaneGroup::new(tile.clone()),
             panes: vec![pane.clone()],
+            tiles: vec![tile],
             active_pane: pane.clone(),
             focus_handle: cx.focus_handle(),
             pane_subscriptions: HashMap::from([(pane.entity_id(), subscription)]),
@@ -786,7 +809,7 @@ impl Workspace {
     ) -> Subscription {
         cx.subscribe_in(pane, window, |this, pane, event, window, cx| match event {
             PaneEvent::Focus => this.set_active_pane(pane, cx),
-            PaneEvent::Remove => this.remove_pane(&pane.clone(), window, cx),
+            PaneEvent::Remove => this.close_tab(&pane.clone(), window, cx),
             PaneEvent::ViewChanged => this.remember_view(&pane.clone(), cx),
             PaneEvent::Notice { message, problem } => {
                 let notice = if *problem {
@@ -874,37 +897,151 @@ impl Workspace {
         let dir = self.active_pane.read(cx).location().clone();
         // Copied at construction, so the new pane reads the directory once.
         let view = self.active_pane.read(cx).view_settings();
-        let source = self.active_pane.clone();
+        let Some(source) = self.tile_of(&self.active_pane.clone(), cx) else {
+            return;
+        };
         let new_pane = self.add_pane(dir, view, window, cx);
-        self.center.split(&source, &new_pane, direction);
+        let tile = cx.new(|_| Tabs::new(new_pane));
+        self.tiles.push(tile.clone());
+        self.center.split(&source, &tile, direction);
         #[cfg(debug_assertions)]
         eprintln!("[hoja] split {direction:?} -> {}", self.center.shape());
         cx.notify();
     }
 
-    fn remove_pane(&mut self, pane: &Entity<DirPane>, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.center.contains(pane) {
+    /// The tile holding `pane` among its tabs.
+    fn tile_of(&self, pane: &Entity<DirPane>, cx: &App) -> Option<Entity<Tabs>> {
+        self.tiles
+            .iter()
+            .find(|tile| tile.read(cx).list.index_of(pane).is_some())
+            .cloned()
+    }
+
+    /// Close a tile and every tab in it.
+    fn close_tile(&mut self, tile: &Entity<Tabs>, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.center.contains(tile) {
             return;
         }
 
         // Refuses when this is the last pane in the window.
-        match self.center.remove(pane) {
+        match self.center.remove(tile) {
             Ok(true) => {}
             _ => return,
         }
 
-        let was_active = &self.active_pane == pane;
-        self.panes.retain(|p| p != pane);
-        self.pane_subscriptions.remove(&pane.entity_id());
+        let gone: Vec<Entity<DirPane>> = tile.read(cx).list.items().to_vec();
+        let was_active = gone.contains(&self.active_pane);
+        self.forget_panes(&gone);
+        self.tiles.retain(|t| t != tile);
 
-        if was_active && let Some(fallback) = self.panes.last().cloned() {
-            self.active_pane = fallback.clone();
-            self.mark_active(cx);
-            window.focus(&fallback.focus_handle(cx), cx);
+        if was_active && let Some(fallback) = self.tiles.last().cloned() {
+            let shown = fallback.read(cx).shown().clone();
+            self.show_pane(shown, window, cx);
         }
         #[cfg(debug_assertions)]
         eprintln!("[hoja] close -> {}", self.center.shape());
         cx.notify();
+    }
+
+    /// Close one tab, and its tile with it when it is the last one there.
+    fn close_tab(&mut self, pane: &Entity<DirPane>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tile) = self.tile_of(pane, cx) else {
+            return;
+        };
+        if tile.read(cx).list.items().len() < 2 {
+            self.close_tile(&tile, window, cx);
+            return;
+        }
+        let was_shown = tile.read(cx).shown() == pane;
+        tile.update(cx, |tile, cx| {
+            tile.list.remove(pane);
+            cx.notify();
+        });
+        self.forget_panes(std::slice::from_ref(pane));
+        if was_shown {
+            let shown = tile.read(cx).shown().clone();
+            shown.update(cx, |shown, cx| shown.set_visible(true, cx));
+            if &self.active_pane == pane {
+                self.show_pane(shown, window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Drop the workspace's hold on these panes: their subscriptions, and
+    /// their place in `panes`.
+    fn forget_panes(&mut self, gone: &[Entity<DirPane>]) {
+        self.panes.retain(|p| !gone.contains(p));
+        for pane in gone {
+            self.pane_subscriptions.remove(&pane.entity_id());
+        }
+    }
+
+    /// Make `pane` the active one now, rather than when its focus event
+    /// arrives, so nothing in between acts on a pane that has gone.
+    fn show_pane(&mut self, pane: Entity<DirPane>, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&pane.focus_handle(cx), cx);
+        self.active_pane = pane;
+        self.mark_active(cx);
+    }
+
+    /// Show the tab at `ix` in the active tile. Past the end means the last.
+    fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tile) = self.tile_of(&self.active_pane.clone(), cx) else {
+            return;
+        };
+        let old = tile.read(cx).shown().clone();
+        tile.update(cx, |tile, _| tile.list.activate(ix));
+        let new = tile.read(cx).shown().clone();
+        if old == new {
+            return;
+        }
+        tile.update(cx, |_, cx| cx.notify());
+        old.update(cx, |old, cx| old.set_visible(false, cx));
+        new.update(cx, |new, cx| new.set_visible(true, cx));
+        self.show_pane(new, window, cx);
+        cx.notify();
+    }
+
+    fn step_tab(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tile) = self.tile_of(&self.active_pane.clone(), cx) else {
+            return;
+        };
+        let ix = tile.read(cx).list.step(delta);
+        self.activate_tab(ix, window, cx);
+    }
+
+    /// A tab after the shown one, where the shown one is, with its view: the
+    /// same copy a split makes, in the same tile.
+    fn new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tile) = self.tile_of(&self.active_pane.clone(), cx) else {
+            return;
+        };
+        let dir = self.active_pane.read(cx).location().clone();
+        let view = self.active_pane.read(cx).view_settings();
+        let old = self.active_pane.clone();
+        let pane = self.add_pane(dir, view, window, cx);
+        tile.update(cx, |tile, cx| {
+            let at = tile.list.insert_after_active(pane.clone());
+            tile.list.activate(at);
+            cx.notify();
+        });
+        old.update(cx, |old, cx| old.set_visible(false, cx));
+        self.show_pane(pane, window, cx);
+        cx.notify();
+    }
+
+    fn close_active_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
+        let pane = self.active_pane.clone();
+        self.close_tab(&pane, window, cx);
+    }
+
+    fn next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.step_tab(1, window, cx);
+    }
+
+    fn previous_tab(&mut self, _: &PreviousTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.step_tab(-1, window, cx);
     }
 
     fn activate_in_direction(
@@ -915,14 +1052,18 @@ impl Workspace {
     ) {
         // Geometric, using bounding boxes cached during the previous prepaint. Returns
         // nothing before the first paint, a chord pressed at startup does nothing.
+        let Some(source) = self.tile_of(&self.active_pane.clone(), cx) else {
+            return;
+        };
         let Some(target) = self
             .center
-            .find_pane_in_direction(&self.active_pane, direction)
+            .find_pane_in_direction(&source, direction)
             .cloned()
         else {
             return;
         };
-        window.focus(&target.focus_handle(cx), cx);
+        let shown = target.read(cx).shown().clone();
+        window.focus(&shown.focus_handle(cx), cx);
     }
 
     // ---- clipboard + jobs -------------------------------------------------
@@ -2304,7 +2445,7 @@ impl Workspace {
         if crate::probe::path().is_none() {
             return;
         }
-        let panes: Vec<_> = self.panes.clone();
+        let tiles: Vec<_> = self.tiles.clone();
         let jobs: Vec<_> = self
             .jobs
             .iter()
@@ -2340,11 +2481,34 @@ impl Workspace {
             // One reading for every pane, so two cannot disagree about how long
             // ago a file was written.
             let now = std::time::SystemTime::now();
+            let shown: Vec<_> = tiles
+                .iter()
+                .map(|tile| tile.read(cx).shown().clone())
+                .collect();
             crate::probe::write(&mut crate::probe::Probe {
-                panes: panes
+                panes: shown
                     .iter()
                     .map(|pane| pane.read(cx).probe(now, cx))
                     .collect(),
+                tabs: tiles
+                    .iter()
+                    .map(|tile| {
+                        let list = &tile.read(cx).list;
+                        crate::probe::TabsProbe {
+                            titles: list
+                                .items()
+                                .iter()
+                                .map(|pane| tab_title(pane.read(cx).location()))
+                                .collect(),
+                            active: list.active(),
+                        }
+                    })
+                    .collect(),
+                hidden_watching: tiles
+                    .iter()
+                    .flat_map(|tile| tile.read(cx).list.items().to_vec())
+                    .filter(|pane| !shown.contains(pane) && pane.read(cx).watching())
+                    .count(),
                 jobs,
                 modal,
                 notice,
@@ -2948,24 +3112,27 @@ impl Workspace {
     /// to be predictable and reversible, which this is: `activate_in_direction`
     /// is what answers "the one to the left of this".
     fn cycle_focus(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.panes.len() < 2 {
+        // Tiles, not tabs: a hidden tab is not on screen to move to.
+        if self.tiles.len() < 2 {
             return;
         }
+        let active = self.active_pane.clone();
         let current = self
-            .panes
+            .tiles
             .iter()
-            .position(|pane| pane == &self.active_pane)
+            .position(|tile| tile.read(cx).shown() == &active)
             .unwrap_or(0) as isize;
-        let next = (current + delta).rem_euclid(self.panes.len() as isize) as usize;
-        let pane = self.panes[next].clone();
+        let next = (current + delta).rem_euclid(self.tiles.len() as isize) as usize;
+        let pane = self.tiles[next].read(cx).shown().clone();
         // Focusing is enough: a pane emits Focus and the workspace makes it
         // active in response.
         window.focus(&pane.focus_handle(cx), cx);
     }
 
     fn close_pane(&mut self, _: &ClosePane, window: &mut Window, cx: &mut Context<Self>) {
-        let pane = self.active_pane.clone();
-        self.remove_pane(&pane, window, cx);
+        if let Some(tile) = self.tile_of(&self.active_pane.clone(), cx) {
+            self.close_tile(&tile, window, cx);
+        }
     }
 }
 
@@ -2995,6 +3162,11 @@ fn parent_dirs(paths: &[PathBuf]) -> Vec<PathBuf> {
     dirs.sort();
     dirs.dedup();
     dirs
+}
+
+/// What a tab is called: the last name in its location, as the window title.
+fn tab_title(location: &Location) -> String {
+    file_label(&location.key())
 }
 
 fn file_label(path: &std::path::Path) -> String {
@@ -3053,6 +3225,23 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::focus_next))
             .on_action(cx.listener(Self::focus_previous))
             .on_action(cx.listener(Self::close_pane))
+            .on_action(cx.listener(Self::new_tab))
+            .on_action(cx.listener(Self::close_active_tab))
+            .on_action(cx.listener(Self::next_tab))
+            .on_action(cx.listener(Self::previous_tab))
+            .on_action(cx.listener(|this, _: &ActivateTab1, w, cx| this.activate_tab(0, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivateTab2, w, cx| this.activate_tab(1, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivateTab3, w, cx| this.activate_tab(2, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivateTab4, w, cx| this.activate_tab(3, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivateTab5, w, cx| this.activate_tab(4, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivateTab6, w, cx| this.activate_tab(5, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivateTab7, w, cx| this.activate_tab(6, w, cx)))
+            .on_action(cx.listener(|this, _: &ActivateTab8, w, cx| this.activate_tab(7, w, cx)))
+            // Nine is the last tab however many there are, as in Zed and
+            // in browsers.
+            .on_action(
+                cx.listener(|this, _: &ActivateTab9, w, cx| this.activate_tab(usize::MAX, w, cx)),
+            )
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::paste))
@@ -3063,7 +3252,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::toggle_palette))
             .on_action(cx.listener(Self::toggle_places))
-            .child(self.center.render(&self.active_pane, window, cx))
+            .when_some(self.tile_of(&self.active_pane, cx), |el, tile| {
+                el.child(self.center.render(&tile, window, cx))
+            })
             // Search progress moved into the pane footer, where it belongs to
             // the pane doing the searching, a background pane's used to be
             // invisible. The strip is now transfers and notices only.

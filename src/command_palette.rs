@@ -66,6 +66,16 @@ const HIDDEN: &[&str] = &[
     "pane::CursorLeft",
     "pane::CursorRight",
     "pane::ToggleSelection",
+    // Nine of them, one per key: "activate tab 4" from a list is noise.
+    "pane::ActivateTab1",
+    "pane::ActivateTab2",
+    "pane::ActivateTab3",
+    "pane::ActivateTab4",
+    "pane::ActivateTab5",
+    "pane::ActivateTab6",
+    "pane::ActivateTab7",
+    "pane::ActivateTab8",
+    "pane::ActivateTab9",
 ];
 
 fn is_hidden(name: &str) -> bool {

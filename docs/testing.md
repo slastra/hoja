@@ -31,7 +31,7 @@ the window is, and everything after it is keystrokes sent somewhere unverified.
 An earlier version carried on, walked a pane up to the root of the filesystem
 and pressed paste there; nothing was written only because root is not writable.
 
-There are thirteen suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
+There are twenty-four suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
 `archive.sh` and `tar.sh` need fixtures, which `scripts/tests/setup-archives.sh`
 builds and prints the path of:
 
@@ -85,6 +85,15 @@ cursor, the selection and the first row in view are where they were.
 
 ```sh
 scripts/sway-harness.sh "$(scripts/tests/setup-history.sh)" scripts/tests/history.sh
+```
+
+`tabs.sh` needs `setup-tabs.sh`, which makes two folders. The suite opens tabs,
+moves between them by key, closes them, and checks three things: a hidden tab
+holds no watch, a file written while its tab is hidden shows when the tab is
+shown, and Tab between panes passes over hidden tabs.
+
+```sh
+scripts/sway-harness.sh "$(scripts/tests/setup-tabs.sh)" scripts/tests/tabs.sh
 ```
 
 `drag-external.sh` needs `setup-drag-external.sh` and nemo. It starts nemo in

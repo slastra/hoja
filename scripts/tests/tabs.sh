@@ -1,0 +1,69 @@
+# Tabs: several folders in one pane, one of them shown.
+#
+#   FIX=$(scripts/tests/setup-tabs.sh)
+#   scripts/sway-harness.sh "$FIX" scripts/tests/tabs.sh
+
+wait_for 'p[0]["row_count"] == 2'
+ROOT=$(probe 'p[0]["dir"]')
+
+key -M ctrl -k t -m ctrl
+wait_for 'len(d["tabs"][0]["titles"]) == 2 and d["tabs"][0]["active"] == 1'
+expect "p[0]['dir'] == '$ROOT'" "a new tab opens where the last one was"
+expect 'len(p) == 1' "a tab is not a pane"
+expect 'd["hidden_watching"] == 0' "the hidden tab watches nothing"
+
+# Somewhere else in the new tab, and the first tab stays where it was.
+key -k Down
+wait_for 'p[0]["cursor"] == 0'
+key -k Return
+wait_for 'p[0]["dir"].endswith("/alpha")'
+expect 'd["tabs"][0]["titles"][1] == "alpha"' "a tab is named for its folder"
+key -M ctrl -k Page_Up -m ctrl
+wait_for 'd["tabs"][0]["active"] == 0'
+expect "p[0]['dir'] == '$ROOT'" "the first tab kept its folder"
+expect 'd["hidden_watching"] == 0' "the tab now hidden stopped watching"
+
+# Written while its tab is hidden, so no watch sees it: showing the tab must.
+: > "$START_DIR/alpha/new.txt"
+sleep 1
+key -M alt -k 2 -m alt
+wait_for 'd["tabs"][0]["active"] == 1'
+wait_for '"new.txt" in p[0]["rows"]'
+expect '"new.txt" in p[0]["rows"]' "a tab shown again reads its folder"
+
+key -M ctrl -k Tab -m ctrl
+wait_for 'd["tabs"][0]["active"] == 0'
+expect 'd["tabs"][0]["active"] == 0' "ctrl-tab wraps to the first tab"
+
+# A third, then the ends by number: nine is the last however many there are.
+key -M ctrl -k t -m ctrl
+wait_for 'len(d["tabs"][0]["titles"]) == 3 and d["tabs"][0]["active"] == 1'
+expect 'd["tabs"][0]["titles"][2] == "alpha"' "a new tab goes after the shown one"
+key -M alt -k 9 -m alt
+wait_for 'd["tabs"][0]["active"] == 2'
+key -M alt -k 1 -m alt
+wait_for 'd["tabs"][0]["active"] == 0'
+expect 'd["hidden_watching"] == 0' "two hidden tabs watch nothing"
+
+# Tab between panes passes over the hidden tabs: two panes, two stops.
+key -k F3
+wait_for 'len(p) == 2 and p[1]["active"]'
+key -k Tab
+wait_for 'p[0]["active"]'
+key -k Tab
+wait_for 'p[1]["active"]'
+expect 'p[1]["active"] and not p[0]["active"]' "tab steps over hidden tabs"
+
+# ctrl-w closes a tab, and with the last one its pane.
+key -M ctrl -k w -m ctrl
+wait_for 'len(p) == 1 and p[0]["active"]'
+expect 'len(d["tabs"][0]["titles"]) == 3' "closing a one-tab pane leaves the other's tabs"
+key -M ctrl -k w -m ctrl
+wait_for 'len(d["tabs"][0]["titles"]) == 2'
+expect 'd["tabs"][0]["active"] == 0' "the next tab takes the closed one's place"
+expect "p[0]['dir'] == '$ROOT'" "and shows its own folder"
+key -M ctrl -k w -m ctrl
+wait_for 'len(d["tabs"][0]["titles"]) == 1'
+key -M ctrl -k w -m ctrl
+sleep 0.5
+expect 'len(p) == 1 and len(d["tabs"][0]["titles"]) == 1' "the last tab of the last pane stays"

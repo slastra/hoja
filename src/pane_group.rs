@@ -22,7 +22,7 @@ use parking_lot::Mutex;
 use smallvec::SmallVec;
 use theme::ActiveTheme;
 
-use crate::dir_pane::DirPane;
+use crate::tabs::Tabs;
 
 /// Width of the draggable hit area straddling a divider.
 pub const HANDLE_HITBOX_SIZE: f32 = 4.0;
@@ -63,7 +63,7 @@ pub struct PaneGroup {
 }
 
 impl PaneGroup {
-    pub fn new(pane: Entity<DirPane>) -> Self {
+    pub fn new(pane: Entity<Tabs>) -> Self {
         Self {
             root: Member::Pane(pane),
         }
@@ -73,8 +73,8 @@ impl PaneGroup {
     /// somehow not in the tree we split the first pane instead, matching Zed.
     pub fn split(
         &mut self,
-        old_pane: &Entity<DirPane>,
-        new_pane: &Entity<DirPane>,
+        old_pane: &Entity<Tabs>,
+        new_pane: &Entity<Tabs>,
         direction: SplitDirection,
     ) {
         let found = match &mut self.root {
@@ -104,7 +104,7 @@ impl PaneGroup {
 
     /// Remove a pane. Returns `Ok(false)` when this is the last pane in the window,
     /// which is refused rather than leaving an empty tree.
-    pub fn remove(&mut self, pane: &Entity<DirPane>) -> Result<bool> {
+    pub fn remove(&mut self, pane: &Entity<Tabs>) -> Result<bool> {
         match &mut self.root {
             Member::Pane(_) => Ok(false),
             Member::Axis(axis) => {
@@ -116,7 +116,7 @@ impl PaneGroup {
         }
     }
 
-    pub fn contains(&self, pane: &Entity<DirPane>) -> bool {
+    pub fn contains(&self, pane: &Entity<Tabs>) -> bool {
         self.root.contains(pane)
     }
 
@@ -132,14 +132,14 @@ impl PaneGroup {
         self.root.shape()
     }
 
-    fn bounding_box_for_pane(&self, pane: &Entity<DirPane>) -> Option<Bounds<Pixels>> {
+    fn bounding_box_for_pane(&self, pane: &Entity<Tabs>) -> Option<Bounds<Pixels>> {
         match &self.root {
             Member::Pane(_) => None,
             Member::Axis(axis) => axis.bounding_box_for_pane(pane),
         }
     }
 
-    fn pane_at_pixel_position(&self, coordinate: Point<Pixels>) -> Option<&Entity<DirPane>> {
+    fn pane_at_pixel_position(&self, coordinate: Point<Pixels>) -> Option<&Entity<Tabs>> {
         match &self.root {
             Member::Pane(pane) => Some(pane),
             Member::Axis(axis) => axis.pane_at_pixel_position(coordinate),
@@ -153,9 +153,9 @@ impl PaneGroup {
     /// boxes yet, a directional keybinding pressed at startup does nothing.
     pub fn find_pane_in_direction(
         &self,
-        active_pane: &Entity<DirPane>,
+        active_pane: &Entity<Tabs>,
         direction: SplitDirection,
-    ) -> Option<&Entity<DirPane>> {
+    ) -> Option<&Entity<Tabs>> {
         let bounding_box = self.bounding_box_for_pane(active_pane)?;
         let center = bounding_box.center();
         let distance = px(HANDLE_HITBOX_SIZE);
@@ -172,7 +172,7 @@ impl PaneGroup {
 
     pub fn render(
         &self,
-        active_pane: &Entity<DirPane>,
+        active_pane: &Entity<Tabs>,
         window: &mut Window,
         cx: &mut App,
     ) -> impl IntoElement + use<> {
@@ -180,10 +180,23 @@ impl PaneGroup {
     }
 }
 
+/// The style a cached view is given to fill its slot: a full-size flex
+/// column. Shared with `Tabs`, which caches the tab it shows the same way.
+pub fn fill_style() -> StyleRefinement {
+    let mut style = StyleRefinement {
+        display: Some(Display::Flex),
+        flex_direction: Some(FlexDirection::Column),
+        ..Default::default()
+    };
+    style.size.width = Some(relative(1.).into());
+    style.size.height = Some(relative(1.).into());
+    style
+}
+
 #[derive(Clone)]
 pub enum Member {
     Axis(PaneAxis),
-    Pane(Entity<DirPane>),
+    Pane(Entity<Tabs>),
 }
 
 pub struct MemberRenderResult {
@@ -192,11 +205,7 @@ pub struct MemberRenderResult {
 }
 
 impl Member {
-    fn new_axis(
-        old_pane: Entity<DirPane>,
-        new_pane: Entity<DirPane>,
-        direction: SplitDirection,
-    ) -> Self {
+    fn new_axis(old_pane: Entity<Tabs>, new_pane: Entity<Tabs>, direction: SplitDirection) -> Self {
         let axis = direction.axis();
         let members = match direction {
             SplitDirection::Up | SplitDirection::Left => {
@@ -210,7 +219,7 @@ impl Member {
         Member::Axis(PaneAxis::new(axis, members))
     }
 
-    fn contains(&self, needle: &Entity<DirPane>) -> bool {
+    fn contains(&self, needle: &Entity<Tabs>) -> bool {
         match self {
             Member::Axis(axis) => axis.members.iter().any(|member| member.contains(needle)),
             Member::Pane(pane) => pane == needle,
@@ -238,7 +247,7 @@ impl Member {
         }
     }
 
-    fn first_pane(&self) -> Entity<DirPane> {
+    fn first_pane(&self) -> Entity<Tabs> {
         match self {
             Member::Axis(axis) => axis.members[0].first_pane(),
             Member::Pane(pane) => pane.clone(),
@@ -248,7 +257,7 @@ impl Member {
     fn render(
         &self,
         basis: usize,
-        active_pane: &Entity<DirPane>,
+        active_pane: &Entity<Tabs>,
         window: &mut Window,
         cx: &mut App,
     ) -> MemberRenderResult {
@@ -256,16 +265,8 @@ impl Member {
             Member::Pane(pane) => {
                 // `cached` recycles the subtree unless the pane called `cx.notify()`.
                 // Without it every pane re-renders on every frame.
-                let mut style = StyleRefinement {
-                    display: Some(Display::Flex),
-                    flex_direction: Some(FlexDirection::Column),
-                    ..Default::default()
-                };
-                style.size.width = Some(relative(1.).into());
-                style.size.height = Some(relative(1.).into());
-
                 MemberRenderResult {
-                    element: pane.clone().cached(style).into_any_element(),
+                    element: pane.clone().cached(fill_style()).into_any_element(),
                     contains_active_pane: pane == active_pane,
                 }
             }
@@ -302,8 +303,8 @@ impl PaneAxis {
 
     fn split(
         &mut self,
-        old_pane: &Entity<DirPane>,
-        new_pane: &Entity<DirPane>,
+        old_pane: &Entity<Tabs>,
+        new_pane: &Entity<Tabs>,
         direction: SplitDirection,
     ) -> bool {
         for (mut idx, member) in self.members.iter_mut().enumerate() {
@@ -341,7 +342,7 @@ impl PaneAxis {
     /// Deliberate deviation from Zed, which resets the whole axis to `vec![1.0; n]` here
     /// and so discards every hand-tuned ratio in the axis. Sibling proportions are
     /// preserved; only the pane actually being split changes size.
-    fn insert_pane(&mut self, idx: usize, split_ix: usize, new_pane: &Entity<DirPane>) {
+    fn insert_pane(&mut self, idx: usize, split_ix: usize, new_pane: &Entity<Tabs>) {
         let mut flexes = self.flexes.lock();
 
         let n = flexes.len() as f32;
@@ -365,7 +366,7 @@ impl PaneAxis {
     ///
     /// `Ok(Some(member))` means "I am down to one child: splice it into my slot and
     /// delete me." Recursion rewrites `*member` on the way back up, so chains collapse.
-    fn remove(&mut self, pane_to_remove: &Entity<DirPane>) -> Result<Option<Member>> {
+    fn remove(&mut self, pane_to_remove: &Entity<Tabs>) -> Result<Option<Member>> {
         let mut found_pane = false;
         let mut remove_member = None;
 
@@ -420,7 +421,7 @@ impl PaneAxis {
         }
     }
 
-    fn bounding_box_for_pane(&self, pane: &Entity<DirPane>) -> Option<Bounds<Pixels>> {
+    fn bounding_box_for_pane(&self, pane: &Entity<Tabs>) -> Option<Bounds<Pixels>> {
         for (idx, member) in self.members.iter().enumerate() {
             match member {
                 Member::Pane(found) => {
@@ -438,7 +439,7 @@ impl PaneAxis {
         None
     }
 
-    fn pane_at_pixel_position(&self, coordinate: Point<Pixels>) -> Option<&Entity<DirPane>> {
+    fn pane_at_pixel_position(&self, coordinate: Point<Pixels>) -> Option<&Entity<Tabs>> {
         // Copied out so the lock is not held while recursing into a child axis.
         let bounding_boxes = self.bounding_boxes.lock().clone();
 
@@ -458,7 +459,7 @@ impl PaneAxis {
     fn render(
         &self,
         basis: usize,
-        active_pane: &Entity<DirPane>,
+        active_pane: &Entity<Tabs>,
         window: &mut Window,
         cx: &mut App,
     ) -> MemberRenderResult {

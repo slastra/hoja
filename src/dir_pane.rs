@@ -391,6 +391,10 @@ pub struct DirPane {
     /// active one while the command palette holds the keyboard, and asking
     /// `contains_focused` would dim every pane the moment a modal opened.
     active: bool,
+    /// Whether this is the tab its pane shows. A hidden tab holds no watch on
+    /// its folder or its repository, and reads its folder again when shown:
+    /// ten tabs open must not mean ten watchers waking every 400 ms.
+    visible: bool,
     dir: Location,
     history: History,
     entries: Vec<DirEntry>,
@@ -535,6 +539,7 @@ impl DirPane {
         let mut this = Self {
             focus_handle,
             active: true,
+            visible: true,
             dir,
             history,
             entries: Vec::new(),
@@ -683,6 +688,35 @@ impl DirPane {
             self.active = active;
             cx.notify();
         }
+    }
+
+    /// Show or hide this tab. See `visible`.
+    ///
+    /// Shown again, it reads its folder, which also arms the watch, since
+    /// nothing told it what changed while it was hidden. A search or an open
+    /// editor is kept instead: a listing read would end the one and lose the
+    /// text in the other. Those only arm the watches again.
+    pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.visible == visible {
+            return;
+        }
+        self.visible = visible;
+        if !visible {
+            self.watch = None;
+            self.git_watch = None;
+            return;
+        }
+        if self.searching() || self.has_inline_editor() {
+            self.watch_dir(cx);
+            self.reload_git(cx);
+        } else {
+            self.reload(cx);
+        }
+    }
+
+    /// Whether this pane holds a watch on its folder or its repository.
+    pub fn watching(&self) -> bool {
+        self.watch.is_some() || self.git_watch.is_some()
     }
 
     /// Where this pane is, which is not always a directory.
@@ -944,7 +978,13 @@ impl DirPane {
     }
 
     /// Re-read the directory (used by the workspace when a job completes here).
+    ///
+    /// A hidden tab reads its folder when it is shown again, so here it does
+    /// nothing. What `select_on_next_load` asked for waits for that read.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        if !self.visible {
+            return;
+        }
         self.reload(cx);
     }
 
@@ -1241,7 +1281,11 @@ impl DirPane {
         if refresh_git {
             self.reload_git(cx);
         }
-        self.watch_dir(cx);
+        // A hidden tab can still read, for one opened in the background, but
+        // it watches nothing until it is shown.
+        if self.visible {
+            self.watch_dir(cx);
+        }
         // A listing read would otherwise land on top of search results. The
         // saved listing is discarded rather than restored: this read replaces
         // it anyway.
@@ -1515,7 +1559,7 @@ impl DirPane {
     /// directory, which is all `watch_dir` sees, so without this the colours
     /// stay as they were until the pane is next re-read.
     fn watch_git(&mut self, git_dir: Option<PathBuf>, cx: &mut Context<Self>) {
-        let Some(git_dir) = git_dir else {
+        let Some(git_dir) = git_dir.filter(|_| self.visible) else {
             self.git_watch = None;
             return;
         };

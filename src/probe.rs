@@ -129,9 +129,24 @@ pub struct JobProbe {
     pub percent: u8,
 }
 
+/// The tabs of one pane, beside its entry in `Probe::panes`.
+#[derive(Serialize, PartialEq, Eq)]
+pub struct TabsProbe {
+    /// Each tab's label, left to right.
+    pub titles: Vec<String>,
+    /// Which one is shown.
+    pub active: usize,
+}
+
 #[derive(Serialize, PartialEq, Eq)]
 pub struct Probe {
+    /// The tab each pane shows, in the order the panes were made. A hidden
+    /// tab is in `tabs` only.
     pub panes: Vec<PaneProbe>,
+    /// One per pane, in the same order.
+    pub tabs: Vec<TabsProbe>,
+    /// Hidden tabs that still watch a folder or a repository: none should.
+    pub hidden_watching: usize,
     pub jobs: Vec<JobProbe>,
     /// `"palette"`, `"places"`, `"failures"`, or absent.
     pub modal: Option<&'static str>,

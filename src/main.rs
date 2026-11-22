@@ -32,6 +32,7 @@ mod scratch;
 #[allow(dead_code)] // not wired into a pane yet; see the module header
 mod scrollbar;
 mod search;
+mod tabs;
 mod theming;
 mod ui;
 mod uri;
@@ -59,8 +60,7 @@ use file_menu::{
 use path_editor as ab;
 use place_finder as places_finder;
 use workspace::{
-    ClosePane, Copy, Cut, DismissJobs, FocusNext, FocusPrevious, Paste, PauseJobs, SplitRight,
-    Undo, Workspace,
+    Copy, Cut, DismissJobs, FocusNext, FocusPrevious, Paste, PauseJobs, SplitRight, Undo, Workspace,
 };
 
 struct Args {
@@ -179,15 +179,88 @@ fn main() {
                 Some("DirPane && !AddressBar"),
             ),
             KeyBinding::new("enter", OpenSelected, Some("DirPane && !AddressBar")),
-            // Tab between panes, F3 to split, ctrl-w to close: the file manager
-            // scheme, which goes back to Norton Commander, rather than the
-            // editor one. The other directions are still actions and still
-            // reachable by name in the palette, that is what the palette is
-            // for, and a command used once a week should not own a chord.
+            // Tab between panes and F3 to split: the file manager scheme,
+            // which goes back to Norton Commander, rather than the editor
+            // one. The other directions are still actions and still reachable
+            // by name in the palette, that is what the palette is for, and a
+            // command used once a week should not own a chord.
             KeyBinding::new("tab", FocusNext, Some("DirPane && !AddressBar")),
             KeyBinding::new("shift-tab", FocusPrevious, Some("DirPane && !AddressBar")),
             KeyBinding::new("f3", SplitRight, Some("DirPane && !AddressBar")),
-            KeyBinding::new("ctrl-w", ClosePane, Some("DirPane && !AddressBar")),
+            // Tabs take the browser keys, which Zed's tabs take too. ctrl-w
+            // closes a tab, and with the last one the pane, so with no tabs
+            // open it does what it did before there were any.
+            KeyBinding::new("ctrl-t", workspace::NewTab, Some("DirPane && !AddressBar")),
+            KeyBinding::new(
+                "ctrl-w",
+                workspace::CloseTab,
+                Some("DirPane && !AddressBar"),
+            ),
+            KeyBinding::new(
+                "ctrl-tab",
+                workspace::NextTab,
+                Some("DirPane && !AddressBar"),
+            ),
+            KeyBinding::new(
+                "ctrl-shift-tab",
+                workspace::PreviousTab,
+                Some("DirPane && !AddressBar"),
+            ),
+            KeyBinding::new(
+                "ctrl-pageup",
+                workspace::PreviousTab,
+                Some("DirPane && !AddressBar"),
+            ),
+            KeyBinding::new(
+                "ctrl-pagedown",
+                workspace::NextTab,
+                Some("DirPane && !AddressBar"),
+            ),
+            KeyBinding::new(
+                "alt-1",
+                workspace::ActivateTab1,
+                Some("DirPane && !AddressBar"),
+            ),
+            KeyBinding::new(
+                "alt-2",
+                workspace::ActivateTab2,
+                Some("DirPane && !AddressBar"),
+            ),
+            KeyBinding::new(
+                "alt-3",
+                workspace::ActivateTab3,
+                Some("DirPane && !AddressBar"),
+            ),
+            KeyBinding::new(
+                "alt-4",
+                workspace::ActivateTab4,
+                Some("DirPane && !AddressBar"),
+            ),
+            KeyBinding::new(
+                "alt-5",
+                workspace::ActivateTab5,
+                Some("DirPane && !AddressBar"),
+            ),
+            KeyBinding::new(
+                "alt-6",
+                workspace::ActivateTab6,
+                Some("DirPane && !AddressBar"),
+            ),
+            KeyBinding::new(
+                "alt-7",
+                workspace::ActivateTab7,
+                Some("DirPane && !AddressBar"),
+            ),
+            KeyBinding::new(
+                "alt-8",
+                workspace::ActivateTab8,
+                Some("DirPane && !AddressBar"),
+            ),
+            KeyBinding::new(
+                "alt-9",
+                workspace::ActivateTab9,
+                Some("DirPane && !AddressBar"),
+            ),
             KeyBinding::new("ctrl-c", Copy, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-x", Cut, Some("DirPane && !AddressBar")),
             KeyBinding::new("ctrl-v", Paste, Some("DirPane && !AddressBar")),

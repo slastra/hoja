@@ -49,13 +49,18 @@ a selection of entries that are not next to each other.
 
 To split in another direction, or to move to the pane above or to the left,
 open the command palette and type the name. These commands are not on a key
-because they are rare.
+because they are rare. "pane: close pane" closes a pane and all of its tabs.
 
 | Keys | Action |
 | :-- | :-- |
 | <kbd>Tab</kbd> / <kbd>Shift</kbd> + <kbd>Tab</kbd> | Move to the next or the previous pane |
 | <kbd>F3</kbd> | Split the active pane |
-| <kbd>Ctrl</kbd> + <kbd>W</kbd> | Close the active pane |
+| <kbd>Ctrl</kbd> + <kbd>T</kbd> | Open a new tab on the same folder |
+| <kbd>Ctrl</kbd> + <kbd>W</kbd> | Close the tab. With the last tab, close the pane |
+| <kbd>Ctrl</kbd> + <kbd>Tab</kbd> / <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Tab</kbd> | Show the next or the previous tab |
+| <kbd>Ctrl</kbd> + <kbd>Page Down</kbd> / <kbd>Ctrl</kbd> + <kbd>Page Up</kbd> | The same |
+| <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>Alt</kbd> + <kbd>8</kbd> | Show that tab |
+| <kbd>Alt</kbd> + <kbd>9</kbd> | Show the last tab |
 | <kbd>Ctrl</kbd> + <kbd>H</kbd> | Show or hide hidden files |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd> | Dismiss finished transfers |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> | Pause or resume every transfer |
