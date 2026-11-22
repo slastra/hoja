@@ -616,6 +616,11 @@ pub fn forget(path: &Path) {
 /// milliseconds and arrives as a single piece; a `.tar.bz2` of a gigabyte takes
 /// a minute, and its rows appear in the first few hundred of them.
 pub struct Reading {
+    /// The whole answer, when the archive was already read and has not
+    /// changed since. Handed over as it is: sending its members one at a time
+    /// only for the reader to arrange them again cost a tenth of a second of
+    /// the interface's time on every folder opened inside a large archive.
+    known: Option<Arc<Index>>,
     members: std::sync::mpsc::Receiver<Member>,
     cancel: Cancel,
     done: Arc<AtomicBool>,
@@ -637,6 +642,11 @@ impl Reading {
             found.push(member);
         }
         found
+    }
+
+    /// See `known`.
+    pub fn known(&self) -> Option<Arc<Index>> {
+        self.known.clone()
     }
 
     pub fn is_done(&self) -> bool {
@@ -675,7 +685,8 @@ pub fn spawn_read(archive: &Path, cancel: Cancel) -> Reading {
     let progress = Arc::new(Progress::default());
     let fault: Arc<parking_lot::Mutex<Option<String>>> = Arc::new(parking_lot::Mutex::new(None));
 
-    let reading = Reading {
+    let mut reading = Reading {
+        known: None,
         members: rx,
         cancel: cancel.clone(),
         done: Arc::clone(&done),
@@ -686,11 +697,9 @@ pub fn spawn_read(archive: &Path, cancel: Cancel) -> Reading {
 
     // Already known: hand it over and finish, without a thread.
     if let Some(index) = cached(archive) {
-        for member in &index.listing.members {
-            let _ = tx.send(member.clone());
-        }
         skipped.store(index.skipped(), Ordering::Relaxed);
         done.store(true, Ordering::Relaxed);
+        reading.known = Some(index);
         return reading;
     }
 

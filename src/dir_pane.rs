@@ -1415,8 +1415,12 @@ impl DirPane {
         // file that used to be there. `watch_settings` does the same thing for
         // the same reason.
         //
-        // The cost is that any change in that directory wakes this, and a
-        // wasted re-list is cheap next to a listing that quietly goes wrong.
+        // So any change in that directory wakes this, and for an archive a
+        // re-list is no longer cheap: it is a whole decompression, five
+        // seconds for a gigabyte of zstd. The wake-up therefore looks at the
+        // archive itself and goes back to sleep when its length and date have
+        // not moved. A download landing beside a slow tarball restarted the
+        // read every time it wrote, so the read never finished.
         let archive = (!self.dir.is_disk()).then(|| anchor.to_path_buf());
         let dir = match &archive {
             Some(file) => match file.parent() {
@@ -1429,6 +1433,12 @@ impl DirPane {
         let Some(watch) = crate::config::DirWatch::new(&dir, "directory") else {
             return;
         };
+        let stamp = |file: &Path| {
+            std::fs::metadata(file)
+                .ok()
+                .map(|meta| (meta.len(), meta.modified().ok()))
+        };
+        let mut last = archive.as_deref().map(stamp);
         let task = cx.spawn(async move |this, cx| {
             loop {
                 // A copy or an extract emits one event per file. The settle
@@ -1443,6 +1453,11 @@ impl DirPane {
                 // forgetting them is what makes the re-list read the file again
                 // rather than hand back what it said before it changed.
                 if let Some(file) = &archive {
+                    let now = Some(stamp(file));
+                    if now == last {
+                        continue;
+                    }
+                    last = now;
                     crate::archive::forget(file);
                 }
 
@@ -1606,39 +1621,71 @@ impl DirPane {
             let mut cleared = false;
 
             loop {
-                cx.background_executor().timer(ARCHIVE_POLL).await;
+                // A known archive is answered at once, whole, with the
+                // arrangement it was given when it was read.
+                let known = reading.known();
+                let (index, finished) = match known {
+                    Some(index) => (index, true),
+                    None => {
+                        cx.background_executor().timer(ARCHIVE_POLL).await;
 
-                let batch = reading.drain();
-                let finished = reading.is_done();
-                members.extend(batch);
+                        let batch = reading.drain();
+                        let finished = reading.is_done();
+                        members.extend(batch);
 
-                // Rearranged only when there is meaningfully more to arrange,
-                // because a rebuild is a pass over everything read so far.
-                let grown = members.len() > arranged_at + arranged_at / 4;
-                if !grown && !finished {
-                    // Nothing new to show, but the read has moved on, and a
-                    // figure that stops climbing while it grinds through a
-                    // three hundred megabyte member reads as a hang. This is
-                    // the common case for a CUDA package: thirty members, and
-                    // ten seconds between two of them.
-                    let alive = this.update(cx, |this, cx| {
-                        this.reading_bytes = Some(reading.bytes());
-                        cx.notify();
-                    });
-                    if alive.is_err() {
-                        break;
+                        // Rearranged only when there is meaningfully more to
+                        // arrange, because a rebuild is a pass over everything
+                        // read so far.
+                        let grown = members.len() > arranged_at + arranged_at / 4;
+                        if !grown && !finished {
+                            // Nothing new to show, but the read has moved on,
+                            // and a figure that stops climbing while it grinds
+                            // through a three hundred megabyte member reads as
+                            // a hang. This is the common case for a CUDA
+                            // package: thirty members, and ten seconds between
+                            // two of them.
+                            let alive = this.update(cx, |this, cx| {
+                                this.reading_bytes = Some(reading.bytes());
+                                cx.notify();
+                            });
+                            if alive.is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+                        arranged_at = members.len();
+
+                        // On the last tick the reader has already put the same
+                        // arrangement in the cache, on purpose, before saying
+                        // it is done. Taken from there, so it is not built
+                        // twice and the two do not become two copies.
+                        let index = match finished
+                            .then(|| crate::archive::remembered(&archive))
+                            .flatten()
+                        {
+                            Some(index) => index,
+                            None => {
+                                // Off the interface's thread: an arrangement
+                                // is a pass over every member, and the clone it
+                                // needs another. Both together were a tenth of
+                                // a second at seventy thousand members.
+                                let skipped = reading.skipped();
+                                let (back, index) = cx
+                                    .background_spawn(async move {
+                                        let listing = crate::archive::Listing {
+                                            members: members.clone(),
+                                            skipped,
+                                        };
+                                        (members, crate::archive::Index::build(listing))
+                                    })
+                                    .await;
+                                members = back;
+                                Arc::new(index)
+                            }
+                        };
+                        (index, finished)
                     }
-                    continue;
-                }
-                arranged_at = members.len();
-
-                // Cloned because the index owns what it arranges, and the
-                // accumulation has to survive for the next rebuild.
-                let listing = crate::archive::Listing {
-                    members: members.clone(),
-                    skipped: reading.skipped(),
                 };
-                let index = Arc::new(crate::archive::Index::build(listing));
 
                 let alive = this.update(cx, |this, cx| {
                     if let Some(fault) = reading.fault() {
@@ -1658,15 +1705,7 @@ impl DirPane {
                     // about the part that has arrived.
                     this.held = Some(HeldIndex {
                         archive: archive.clone(),
-                        // On the last tick, the reader has already put an
-                        // identical arrangement in the cache — it does that
-                        // before saying it is done, on purpose — so this holds
-                        // that one instead and the two stop being two.
-                        index: if finished {
-                            crate::archive::remembered(&archive).unwrap_or_else(|| index.clone())
-                        } else {
-                            index.clone()
-                        },
+                        index: index.clone(),
                     });
 
                     // Read fresh on every tick, for the same reason the sort
