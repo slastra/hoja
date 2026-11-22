@@ -421,6 +421,10 @@ pub fn tab(
                     .flex_none()
                     .size(px(14.))
                     .flex()
+                    // Zed's `h_flex`, which centers both ways: the close
+                    // button is 18 pixels in this 14 pixel slot, and without
+                    // it the button hangs 2 pixels low.
+                    .items_center()
                     .justify_center()
                     .children(end),
             ),
