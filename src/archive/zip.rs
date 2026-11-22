@@ -137,6 +137,7 @@ impl Format for Zip {
                     }),
                     mode: file.unix_mode(),
                     readable: readable(file.compression()),
+                    entry: Some(ix),
                 })
             }) else {
                 continue;
@@ -210,10 +211,13 @@ impl Format for Zip {
                 continue;
             }
 
-            // Looked up by name rather than by index: `wanted` indexes the
-            // listing, and the listing has had refused and repeated names
-            // dropped out of it, so the two are not the same numbering.
-            let Some(at) = self.archive.index_for_name(&member.path) else {
+            // By the entry the listing kept, not by name: see `Member::entry`.
+            // The listing numbers its own members, having dropped refused and
+            // repeated names, so `wanted` is no index into the archive.
+            let Some(at) = member
+                .entry
+                .or_else(|| self.archive.index_for_name(&member.path))
+            else {
                 failures.push(Failure {
                     path: member.path.clone(),
                     reason: "no longer in the archive".to_string(),
@@ -407,6 +411,37 @@ mod tests {
             .map(|r| (r.name.as_str(), r.is_dir, r.size))
             .collect();
         assert_eq!(root, [("README", false, 5), ("ttf", true, 9)]);
+    }
+
+    #[test]
+    fn a_name_given_twice_copies_out_the_entry_it_lists() {
+        // Two names in the archive that `tidy` makes one. The zip crate keeps
+        // both, since their bytes differ, and answered the clean name with
+        // the second, while the listing shows the first.
+        let file = write_with(
+            &[("a//twice", b"first"), ("a/twice", b"second, longer")],
+            CompressionMethod::Stored,
+        );
+        let listing = listing_of(file.path());
+        let index = Index::build(listing);
+        let rows = index.rows(Path::new("a")).unwrap();
+        assert_eq!(rows.len(), 1, "one name, one row");
+        assert_eq!(rows[0].size, 5, "the row is the first entry");
+
+        let listing = index.listing();
+        let wanted: BTreeSet<usize> = (0..listing.members.len()).collect();
+        let mut sink = Collect::default();
+        Zip::open(file.path(), Use::Read)
+            .unwrap()
+            .extract(
+                listing,
+                &wanted,
+                &mut sink,
+                &Progress::default(),
+                &Cancel::new(),
+            )
+            .unwrap();
+        assert_eq!(sink.files, [("a/twice".to_string(), b"first".to_vec())]);
     }
 
     #[test]

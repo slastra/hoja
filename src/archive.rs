@@ -31,7 +31,7 @@
 pub mod tar;
 pub mod zip;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -65,6 +65,12 @@ pub struct Member {
     /// its name and its real size. Refusing to show it would be a worse answer
     /// than showing it and saying so when someone asks for it.
     pub readable: bool,
+    /// Its place in the archive's own table of contents, for a format that
+    /// has one: a zip's central directory. Extraction takes the entry by
+    /// this, not by its name, because a zip can name one path twice and the
+    /// zip crate answers a name with the *last* entry, while the listing keeps
+    /// the first. A row then showed one file and copied out another.
+    pub entry: Option<usize>,
 }
 
 /// Where a link points, and which sort of link it is.
@@ -902,9 +908,97 @@ fn members_under(listing: &Listing, roots: &[String]) -> BTreeSet<usize> {
 struct Extract {
     dest: PathBuf,
     strip: String,
+    /// Folders below `dest` known to be real folders, either made by this
+    /// extraction or checked by it. So the walk in `parent_of` stats each
+    /// folder once, not once for every file in it.
+    safe: HashSet<PathBuf>,
+    /// The modes and dates folder members carry, set once everything is
+    /// written. A file written into a folder moves its date again, and a mode
+    /// without the owner's write bit would refuse the files that follow.
+    folders: Vec<(PathBuf, Option<u32>, Option<SystemTime>)>,
+    /// The permission bits the user's umask leaves, as `tar -x` applies them
+    /// for anybody but root.
+    mode_mask: u32,
 }
 
 impl Extract {
+    fn new(dest: &Path, strip: String) -> Self {
+        Self {
+            dest: dest.to_path_buf(),
+            strip,
+            safe: HashSet::new(),
+            folders: Vec::new(),
+            mode_mask: 0o777 & !umask(),
+        }
+    }
+
+    /// Make sure every folder between `dest` and `at` is a real folder, and
+    /// make the ones that are missing.
+    ///
+    /// Never through a link. An archive can hold `pkg/out -> /home/you` and
+    /// then `pkg/out/.bashrc`, and `create_dir_all` and `File::create` both
+    /// follow the link the first member just made, so the second one was
+    /// written over a file outside the destination. `tidy` cannot see this:
+    /// both names are clean, and the danger is in what is on the disk.
+    ///
+    /// `make` is false for a hard link's source, which must already exist.
+    fn folders_to(&mut self, at: &Path, make: bool) -> io::Result<()> {
+        let Ok(relative) = at.strip_prefix(&self.dest) else {
+            return Err(outside(at));
+        };
+        let mut folder = self.dest.clone();
+        let mut parts = relative.components().peekable();
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                break;
+            }
+            folder.push(part);
+            if self.safe.contains(&folder) {
+                continue;
+            }
+            match std::fs::symlink_metadata(&folder) {
+                Ok(meta) if meta.is_dir() => {}
+                Ok(_) => return Err(outside(at)),
+                Err(err) if make && err.kind() == io::ErrorKind::NotFound => {
+                    std::fs::create_dir(&folder)?
+                }
+                Err(err) => return Err(err),
+            }
+            self.safe.insert(folder.clone());
+        }
+        Ok(())
+    }
+
+    /// Give the folder members their modes and dates, once nothing more will
+    /// be written into them. Deepest first, so a folder that loses its write
+    /// bit has already had its own folders seen to.
+    fn finish_folders(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut folders = std::mem::take(&mut self.folders);
+        folders.sort_by_key(|(path, ..)| std::cmp::Reverse(path.components().count()));
+        for (folder, mode, modified) in folders {
+            // Through a handle opened without following a link, so a link
+            // that took the folder's name since cannot pass the change on.
+            let Ok(handle) = rustix::fs::open(
+                &folder,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::DIRECTORY
+                    | rustix::fs::OFlags::NOFOLLOW,
+                rustix::fs::Mode::empty(),
+            ) else {
+                continue;
+            };
+            let handle = std::fs::File::from(handle);
+            if let Some(modified) = modified {
+                let _ = handle.set_modified(modified);
+            }
+            if let Some(mode) = mode {
+                let _ =
+                    handle.set_permissions(std::fs::Permissions::from_mode(mode & self.mode_mask));
+            }
+        }
+    }
+
     /// Where a member lands, and `None` when it is not under `strip` at all.
     ///
     /// Both halves are already safe by construction: `tidy` refused every name
@@ -937,10 +1031,16 @@ fn under_strip<'a>(path: &'a str, strip: &str) -> Option<&'a str> {
 
 impl Sink for Extract {
     fn dir(&mut self, member: &Member) -> io::Result<()> {
-        match self.target(member) {
-            Some(at) => std::fs::create_dir_all(at),
-            None => Ok(()),
+        let Some(at) = self.target(member) else {
+            return Ok(());
+        };
+        // The folder itself goes through the same check as its parents, by
+        // treating it as the parent of a name inside it.
+        self.folders_to(&at.join("_"), true)?;
+        if member.mode.is_some() || member.modified.is_some() {
+            self.folders.push((at, member.mode, member.modified));
         }
+        Ok(())
     }
 
     fn file(&mut self, member: &Member, body: &mut dyn Read) -> io::Result<()> {
@@ -950,17 +1050,21 @@ impl Sink for Extract {
         // The archive may not name the folders its files sit in, so every file
         // makes its own way rather than relying on a directory member having
         // come first.
-        if let Some(parent) = at.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut out = std::fs::File::create(&at)?;
+        self.folders_to(&at, true)?;
+        let mut out = create_beneath(&at)?;
         io::copy(body, &mut out)?;
         // What the archive recorded, where it recorded anything. The execute
         // bit is the one that matters: a script that comes out unrunnable is a
-        // file that did not survive the trip.
+        // file that did not survive the trip. Set-user-ID and the other high
+        // bits are not kept, and the umask applies, as `tar -x` does for
+        // anybody but root: an archive does not get to make a file that runs
+        // as its owner, or one that anybody can write.
         if let Some(mode) = member.mode {
             use std::os::unix::fs::PermissionsExt;
-            let _ = out.set_permissions(std::fs::Permissions::from_mode(mode & 0o7777));
+            let _ = out.set_permissions(std::fs::Permissions::from_mode(mode & self.mode_mask));
+        }
+        if let Some(modified) = member.modified {
+            let _ = out.set_modified(modified);
         }
         Ok(())
     }
@@ -976,9 +1080,7 @@ impl Sink for Extract {
         let Some(at) = self.target(member) else {
             return Ok(());
         };
-        if let Some(parent) = at.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        self.folders_to(&at, true)?;
         match link {
             Link::Sym(target) => std::os::unix::fs::symlink(target, at),
             Link::Hard(target) => {
@@ -994,6 +1096,10 @@ impl Sink for Extract {
                 let from = self
                     .dest
                     .join(under_strip(target, &self.strip).unwrap_or(target));
+                // Through no link either: a link in the source's folders made
+                // a second name, inside the destination, for a file outside
+                // it, and writing to the one wrote to the other.
+                self.folders_to(&from, false)?;
                 std::fs::hard_link(from, at)
             }
         }
@@ -1030,11 +1136,63 @@ pub fn extract(
         return Ok(Vec::new());
     }
 
-    let mut sink = Extract {
-        dest: dest.to_path_buf(),
-        strip: key(inside),
-    };
-    open(archive, Use::Read)?.extract(index.listing(), &wanted, &mut sink, progress, cancel)
+    let mut sink = Extract::new(dest, key(inside));
+    let failures =
+        open(archive, Use::Read)?.extract(index.listing(), &wanted, &mut sink, progress, cancel)?;
+    sink.finish_folders();
+    Ok(failures)
+}
+
+/// A file at `at`, made new or emptied, and never reached through a link.
+///
+/// `O_NOFOLLOW` covers the name itself; `folders_to` has covered the folders
+/// above it. A link already at the name, from an earlier member of the same
+/// name, is replaced rather than written through, which is what `tar -x`
+/// does with a member that names something already extracted.
+fn create_beneath(at: &Path) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    if std::fs::symlink_metadata(at).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        std::fs::remove_file(at)?;
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(at)
+}
+
+fn outside(at: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "{} would be written outside the destination, through a link",
+            at.display()
+        ),
+    )
+}
+
+/// What the umask lets through, for the tests to check modes against.
+#[cfg(test)]
+pub fn tests_umask_mask() -> u32 {
+    0o777 & !umask()
+}
+
+/// The process's umask, read without changing it.
+///
+/// `umask(2)` only reads by setting, which another thread could see halfway.
+/// Linux reports it in `/proc/self/status`; 022, the usual one, where it
+/// does not.
+fn umask() -> u32 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix("Umask:"))
+                .and_then(|mask| u32::from_str_radix(mask.trim(), 8).ok())
+        })
+        .unwrap_or(0o022)
 }
 
 #[cfg(test)]
@@ -1050,6 +1208,7 @@ mod tests {
             modified: None,
             mode: None,
             readable: true,
+            entry: None,
         }
     }
 
@@ -1282,10 +1441,7 @@ mod tests {
         // Copying `sub` out of `pack.zip/ttf` puts `sub` in the destination,
         // the way copying a folder anywhere else does. Without the strip it
         // would arrive as `ttf/sub`.
-        let sink = Extract {
-            dest: PathBuf::from("/dest"),
-            strip: "ttf".to_string(),
-        };
+        let sink = Extract::new(Path::new("/dest"), "ttf".to_string());
         assert_eq!(
             sink.target(&file("ttf/sub/Mono.ttf", 0)),
             Some(PathBuf::from("/dest/sub/Mono.ttf"))
@@ -1293,10 +1449,7 @@ mod tests {
         // From the archive's root there is nothing to strip, so selecting
         // `ttf` there and pasting gives `ttf` in the destination, folder and
         // all. Which is what copying a folder does anywhere else.
-        let root = Extract {
-            dest: PathBuf::from("/dest"),
-            strip: String::new(),
-        };
+        let root = Extract::new(Path::new("/dest"), String::new());
         assert_eq!(
             root.target(&file("ttf/Inter.ttf", 0)),
             Some(PathBuf::from("/dest/ttf/Inter.ttf"))
@@ -1388,6 +1541,7 @@ mod search_tests {
             modified: None,
             mode: None,
             readable: true,
+            entry: None,
         }
     }
 

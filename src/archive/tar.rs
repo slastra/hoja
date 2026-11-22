@@ -271,6 +271,8 @@ fn member_of<R: Read>(entry: &tar::Entry<'_, R>) -> Option<Member> {
         // Every entry in a tarball is readable if the stream is: there is no
         // per-member codec the way a zip has.
         readable: true,
+        // A tarball has no table: it is found by reading the stream again.
+        entry: None,
     })
 }
 
@@ -982,6 +984,102 @@ mod tests {
             std::fs::read_link(dest.path().join("bin/soft")).unwrap(),
             Path::new("real")
         );
+    }
+
+    /// A tarball that first makes `pkg/out`, a link to `outside`, and then
+    /// names members through it: a file, and a hard link to a file beyond it.
+    fn escaping(outside: &Path) -> tempfile::NamedTempFile {
+        let file = tempfile::Builder::new().suffix(".tar").tempfile().unwrap();
+        let mut out = file.reopen().unwrap();
+        {
+            let mut builder = tar::Builder::new(&mut out);
+            let mut sym = tar::Header::new_gnu();
+            sym.set_entry_type(tar::EntryType::Symlink);
+            sym.set_size(0);
+            sym.set_cksum();
+            builder.append_link(&mut sym, "pkg/out", outside).unwrap();
+
+            let mut header = tar::Header::new_gnu();
+            header.set_size(5);
+            header.set_mode(0o4777);
+            header.set_mtime(1_000_000_000);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "pkg/out/pwned", &b"owned"[..])
+                .unwrap();
+            builder
+                .append_data(&mut header.clone(), "pkg/kept", &b"fine!"[..])
+                .unwrap();
+
+            let mut hard = tar::Header::new_gnu();
+            hard.set_entry_type(tar::EntryType::Link);
+            hard.set_size(0);
+            hard.set_cksum();
+            builder
+                .append_link(&mut hard, "pkg/alias", "pkg/out/secret")
+                .unwrap();
+            builder.finish().unwrap();
+        }
+        out.flush().unwrap();
+        file
+    }
+
+    #[test]
+    fn nothing_is_written_through_a_link_the_archive_made() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), b"mine").unwrap();
+        let file = escaping(outside.path());
+        let dest = tempfile::tempdir().unwrap();
+        let failures = crate::archive::extract(
+            file.path(),
+            Path::new(""),
+            &["pkg".to_string()],
+            dest.path(),
+            &Progress::default(),
+            &Cancel::new(),
+        )
+        .unwrap();
+
+        assert!(
+            !outside.path().join("pwned").exists(),
+            "a member was written outside the destination"
+        );
+        let refused: Vec<_> = failures.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(refused, ["pkg/out/pwned", "pkg/alias"]);
+        // The link itself is still made, as `tar -x` makes it: it is only a
+        // name, and the archive is entitled to hold it.
+        assert!(
+            std::fs::symlink_metadata(dest.path().join("pkg/out"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(!dest.path().join("pkg/alias").exists());
+    }
+
+    #[test]
+    fn a_file_keeps_its_date_and_loses_the_bits_tar_drops() {
+        use std::os::unix::fs::PermissionsExt;
+        let outside = tempfile::tempdir().unwrap();
+        let file = escaping(outside.path());
+        let dest = tempfile::tempdir().unwrap();
+        crate::archive::extract(
+            file.path(),
+            Path::new(""),
+            &["pkg/kept".to_string()],
+            dest.path(),
+            &Progress::default(),
+            &Cancel::new(),
+        )
+        .unwrap();
+        let meta = std::fs::metadata(dest.path().join("pkg/kept")).unwrap();
+        assert_eq!(
+            meta.modified().unwrap(),
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000)
+        );
+        let mode = meta.permissions().mode() & 0o7777;
+        assert_eq!(mode & 0o7000, 0, "set-user-ID came through: {mode:o}");
+        assert_eq!(mode & !crate::archive::tests_umask_mask(), 0, "{mode:o}");
     }
 
     #[test]
