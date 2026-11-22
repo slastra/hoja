@@ -359,6 +359,24 @@ fn metadata_is_preserved() {
 }
 
 #[test]
+fn set_user_and_group_id_survive_the_copy() {
+    // Linux clears both on any chown, including one that changes nothing, so
+    // the mode has to be set after the owner, never before. `cp -a` keeps
+    // them.
+    let src_dir = ext4_dir();
+    let dst_dir = ext4_dir();
+    let src = write_file(src_dir.path(), "tool", b"#!/bin/sh\n");
+    std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o6755)).unwrap();
+
+    let handle = spawn_job(copy_spec(vec![src], dst_dir.path())).unwrap();
+    let (_, summary) = drain(&handle, never_conflict);
+    assert_eq!(summary.outcome, Outcome::Completed);
+
+    let meta = std::fs::metadata(dst_dir.path().join("tool")).unwrap();
+    assert_eq!(meta.permissions().mode() & 0o7777, 0o6755);
+}
+
+#[test]
 fn an_xattr_list_too_long_for_the_stack_buffer_still_copies() {
     // copy_xattrs reads the name list into a 512-byte stack buffer, because
     // nearly every file has no xattrs and a heap allocation per file is pure
@@ -449,6 +467,36 @@ fn hardlinks_preserved_within_job() {
     let b = std::fs::metadata(dst_dir.path().join("tree/second.bin")).unwrap();
     assert_eq!(a.ino(), b.ino(), "dest files must share an inode");
     assert_eq!(a.nlink(), 2);
+}
+
+#[test]
+fn hardlinks_survive_a_move_that_flushes_between_them() {
+    // A move across filesystems removes each source once a sync has made its
+    // copy safe. The flush between the two names here is forced by a sparse
+    // file whose length, not its blocks, passes the byte threshold. After it,
+    // `c.bin` is the only name its inode has left, so its link count is one,
+    // and it used to be copied as a file of its own.
+    let src_dir = ext4_dir();
+    let dst_dir = tmpfs_dir();
+    let tree = src_dir.path().join("tree");
+    std::fs::create_dir(&tree).unwrap();
+    let first = write_file(&tree, "a.bin", &[7u8; 10_000]);
+    let big = std::fs::File::create(tree.join("b.bin")).unwrap();
+    big.set_len(300 * 1024 * 1024).unwrap();
+    drop(big);
+    std::fs::hard_link(&first, tree.join("c.bin")).unwrap();
+
+    let handle = spawn_job(move_spec(vec![tree], dst_dir.path())).unwrap();
+    let (_, summary) = drain(&handle, never_conflict);
+
+    assert_eq!(summary.outcome, Outcome::Completed);
+    let a = std::fs::metadata(dst_dir.path().join("tree/a.bin")).unwrap();
+    let c = std::fs::metadata(dst_dir.path().join("tree/c.bin")).unwrap();
+    assert_eq!(a.ino(), c.ino(), "the two names must still be one file");
+    assert!(
+        !src_dir.path().join("tree").exists(),
+        "the move left its source"
+    );
 }
 
 #[test]

@@ -20,19 +20,23 @@ pub struct MetaOutcome {
 pub fn apply_file_meta(src: &File, src_meta: &std::fs::Metadata, dest: &File) -> MetaOutcome {
     let mut warnings = Vec::new();
 
-    // Permission bits (setuid/setgid/sticky included; file-type bits masked off).
-    let mode = Mode::from_bits_truncate(src_meta.mode() & 0o7777);
-    if let Err(err) = rustix::fs::fchmod(dest, mode) {
-        warnings.push(format!("mode not preserved: {err}"));
-    }
-
-    // Ownership: only meaningful when running with the privilege to change it;
-    // EPERM for a regular user copying someone else's file is the normal case.
+    // Ownership first. Linux clears set-user-ID and set-group-ID on any
+    // chown, even one that changes nothing, so with the mode set first a
+    // 4755 file arrived as 0755. `cp -a` keeps them, and so must this.
+    //
+    // Only meaningful with the privilege to change it: EPERM for a regular
+    // user copying someone else's file is the normal case.
     let _ = rustix::fs::fchown(
         dest,
         Some(rustix::fs::Uid::from_raw(src_meta.uid())),
         Some(rustix::fs::Gid::from_raw(src_meta.gid())),
     );
+
+    // Permission bits (setuid/setgid/sticky included; file-type bits masked off).
+    let mode = Mode::from_bits_truncate(src_meta.mode() & 0o7777);
+    if let Err(err) = rustix::fs::fchmod(dest, mode) {
+        warnings.push(format!("mode not preserved: {err}"));
+    }
 
     if let Err(detail) = copy_xattrs(src, dest) {
         warnings.push(detail);

@@ -383,8 +383,17 @@ struct Worker {
     pause: Arc<AtomicBool>,
     caps: MountPairCache,
     conflicts: ConflictState,
-    /// (dev, ino) of multi-link sources → first destination written.
-    hardlinks: HashMap<(u64, u64), PathBuf>,
+    /// (dev, ino) of multi-link sources → first destination written, and how
+    /// many more names of it the walk can still meet.
+    ///
+    /// Looked up for every file, not only one whose link count says it has
+    /// company. A move across filesystems removes each source once its copy
+    /// is safe, so the later names of a file count fewer links than the first
+    /// did, down to one, and were copied as files of their own: a tree of 257
+    /// hard links came out with 50. The count retires an entry once every
+    /// name has been met, so an inode number the filesystem hands out again
+    /// cannot be mistaken for the file that had it.
+    hardlinks: HashMap<(u64, u64), (PathBuf, u64)>,
     stats: TierStats,
     errors: Vec<(PathBuf, TransferError)>,
     files_copied: u64,
@@ -1296,41 +1305,45 @@ impl Worker {
     ) -> Step {
         // Hardlink preservation: second and later links to an inode we already
         // copied become hardlinks to the first copy.
-        if src_meta.nlink() > 1 {
-            let key = (src_meta.dev(), src_meta.ino());
-            if let Some(first) = self.hardlinks.get(&key).cloned() {
-                // On failure (cross-device, fs without hardlinks, or an
-                // occupied name) fall through to a full copy instead.
-                if rustix::fs::linkat(
-                    rustix::fs::CWD,
-                    &first,
-                    rustix::fs::CWD,
-                    dest,
-                    rustix::fs::AtFlags::empty(),
-                )
-                .is_ok()
-                {
-                    self.stats.hardlinks += 1;
-                    // A link to something this job already wrote. Undoing it
-                    // is removing the name, not the inode, so it needs no
-                    // identity of its own beyond where it points.
-                    let from = self.origin(src, delete_source);
-                    self.record_created(dest, None, from);
-                    self.files_copied += 1;
-                    self.progress.files_done.fetch_add(1, Ordering::Relaxed);
-                    // Bytes for this file were already counted in totals;
-                    // count them done so the bar completes.
-                    self.progress
-                        .bytes_done
-                        .fetch_add(src_meta.len(), Ordering::Relaxed);
-                    if delete_source {
-                        self.release_source(src, dest, 0);
-                    }
-                    return Step::Ok;
-                }
-            } else {
-                self.hardlinks.insert(key, dest.to_path_buf());
+        let key = (src_meta.dev(), src_meta.ino());
+        if let Some((first, left)) = self.hardlinks.get_mut(&key) {
+            let first = first.clone();
+            *left -= 1;
+            if *left == 0 {
+                self.hardlinks.remove(&key);
             }
+            // On failure (cross-device, fs without hardlinks, or an occupied
+            // name) fall through to a full copy instead.
+            if rustix::fs::linkat(
+                rustix::fs::CWD,
+                &first,
+                rustix::fs::CWD,
+                dest,
+                rustix::fs::AtFlags::empty(),
+            )
+            .is_ok()
+            {
+                self.stats.hardlinks += 1;
+                // A link to something this job already wrote. Undoing it is
+                // removing the name, not the inode, so it needs no identity of
+                // its own beyond where it points.
+                let from = self.origin(src, delete_source);
+                self.record_created(dest, None, from);
+                self.files_copied += 1;
+                self.progress.files_done.fetch_add(1, Ordering::Relaxed);
+                // Bytes for this file were already counted in totals; count
+                // them done so the bar completes.
+                self.progress
+                    .bytes_done
+                    .fetch_add(src_meta.len(), Ordering::Relaxed);
+                if delete_source {
+                    self.release_source(src, dest, 0);
+                }
+                return Step::Ok;
+            }
+        } else if src_meta.nlink() > 1 {
+            self.hardlinks
+                .insert(key, (dest.to_path_buf(), src_meta.nlink() - 1));
         }
 
         let src_file = match File::open(src) {
