@@ -223,16 +223,11 @@ impl Render for FailureReport {
             LINE_HEIGHT * (self.lines.len() as f32).min(MAX_VISIBLE_LINES)
         ));
 
-        div()
+        crate::ui::elevation_3(div(), cx)
             .occlude()
             .flex()
             .flex_col()
             .w(px(MODAL_W))
-            .rounded_lg()
-            .border_1()
-            .border_color(colors.border)
-            .bg(colors.elevated_surface_background)
-            .shadow_lg()
             .track_focus(&self.focus_handle)
             .key_context(KEY_CONTEXT)
             .on_action(cx.listener(Self::dismiss))
@@ -246,9 +241,9 @@ impl Render for FailureReport {
                     .items_start()
                     .gap_2()
                     .border_b_1()
-                    .border_color(colors.border)
+                    .border_color(colors.border_variant)
                     .child(div().flex_none().pt_0p5().child(Icon::from_path(
-                        "icons/file_icons/warning.svg",
+                        "icons/file_icons/x_circle.svg",
                         cx.theme().status().error,
                     )))
                     .child(
@@ -281,7 +276,7 @@ impl Render for FailureReport {
                         .flex_row()
                         .gap_2()
                         .border_t_1()
-                        .border_color(colors.border)
+                        .border_color(colors.border_variant)
                         .text_xs()
                         .text_color(colors.text_muted)
                         // Said once here, since every path above had it cut.

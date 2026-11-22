@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use gpui::{
     App, Context, DismissEvent, Entity, EntityId, FocusHandle, Focusable, Subscription, Task,
-    Window, actions, div, hsla, prelude::*, px, relative,
+    Window, actions, div, prelude::*, px,
 };
 use hoja_transfer::{
     ConflictDecision, Event as JobEvent, JobHandle, JobId, JobPolicy, JobSpec, JobSummary,
@@ -27,6 +27,7 @@ use crate::notifications;
 use crate::open_prompt::{OpenPrompt, OpenPromptEvent};
 use crate::pane_group::{PaneGroup, SplitDirection};
 use crate::place_finder::{self, PlaceEvent, PlaceFinder};
+use crate::ui::{self, ButtonStyle};
 
 actions!(
     pane,
@@ -394,9 +395,12 @@ const SIZE_W: f32 = VALUE_W + SIZE_UNIT_W + SEP_W + TOTAL_W + TIGHT_GAP * 3.;
 /// The pause toggle's cell: a 16px icon and the padding either side of it.
 ///
 /// Reserved whether or not there is a control in it. A finished job has
-/// nothing to pause, and letting the button vanish would slide the ✕ leftwards
+/// nothing to pause, and letting the button vanish would slide the close button
+/// leftwards
 /// at the moment someone is reaching for it.
 const PAUSE_W: f32 = 24.;
+/// A row of the strip: an 18 pixel icon button with room round it.
+const STRIP_ROW_H: f32 = 26.;
 /// Reserved for the failure badge, which is wider the more files failed.
 /// Holds the icon, a gap, and "2,619 failed", a five-figure count would
 /// overflow it, and a job that fails ten thousand times has said enough.
@@ -2263,12 +2267,13 @@ impl Workspace {
         });
     }
 
+    /// The layer a modal sits in: Zed's modal layer, which takes the clicks
+    /// round the modal and does not shade the window behind it.
     fn modal_scrim(&self, child: gpui::AnyElement, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .occlude()
             .absolute()
             .inset_0()
-            .bg(hsla(0., 0., 0., 0.45))
             .flex()
             .justify_center()
             // Without this the modal stretches to the full height of the scrim
@@ -2396,32 +2401,28 @@ impl Workspace {
             .iter()
             .enumerate()
             .map(|(ix, entry)| {
-                let button = |id: &'static str, text: &'static str| {
-                    div()
-                        .id((id, ix))
-                        .flex_none()
-                        .px_1p5()
-                        .rounded_sm()
-                        .cursor_pointer()
-                        .hover(|s| s.bg(colors.element_hover))
-                        .child(text)
-                };
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .h(px(26.))
-                    .text_xs()
+                strip_row()
                     .text_color(colors.text)
                     .child(div().flex_1().truncate().child(entry.label.clone()))
-                    .child(button("finish-interrupted", "Finish").on_click(cx.listener(
-                        move |this, _, window, cx| this.finish_interrupted(ix, window, cx),
-                    )))
-                    .child(button("drop-interrupted", "✕").on_click(
-                        cx.listener(move |this, _, _, cx| this.dismiss_interrupted(ix, cx)),
-                    ))
+                    .child(
+                        ui::text_button(
+                            ("finish-interrupted", ix),
+                            "Finish",
+                            ButtonStyle::Subtle,
+                            cx,
+                        )
+                        .text_xs()
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| this.finish_interrupted(ix, window, cx),
+                        )),
+                    )
+                    .child(
+                        ui::icon_button(("drop-interrupted", ix), "icons/file_icons/close.svg", cx)
+                            .tooltip(ui::tooltip("Forget This Transfer"))
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.dismiss_interrupted(ix, cx)),
+                            ),
+                    )
                     .into_any_element()
             })
             .collect()
@@ -2432,13 +2433,6 @@ impl Workspace {
         let text = colors.text;
         let muted = colors.text_muted;
         let error_color = cx.theme().status().error;
-        let bar_bg = colors.element_background;
-        // border_selected against element_background is two muted darks in most
-        // themes, the bar was drawn correctly and simply could not be seen.
-        // The bar says how much got through and nothing else, a job that
-        // failed still copied whatever it copied. Failure is the badge's to
-        // report, in one place rather than smeared across the row.
-        let bar_fill = colors.text_accent;
 
         let rows: Vec<_> = self
             .jobs
@@ -2492,14 +2486,7 @@ impl Workspace {
                 // the bar does not draw.
                 let fraction = job.fraction();
 
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .h(px(26.))
-                    .text_xs()
+                strip_row()
                     .text_color(text)
                     .child(
                         div()
@@ -2508,15 +2495,16 @@ impl Workspace {
                             .truncate()
                             .child(job.handle.label().to_string()),
                     )
-                    .child(
-                        div().flex_1().h(px(6.)).rounded_sm().bg(bar_bg).child(
-                            div()
-                                .h_full()
-                                .rounded_sm()
-                                .bg(bar_fill)
-                                .w(relative(fraction)),
-                        ),
-                    )
+                    // The bar says how much got through and nothing else: a
+                    // job that failed still copied whatever it copied.
+                    // Failure is the badge's to report, in one place rather
+                    // than smeared across the row.
+                    .child(div().flex_1().child(ui::progress_bar(
+                        ("job-bar", ix),
+                        fraction,
+                        colors.element_background,
+                        cx,
+                    )))
                     .child({
                         // A number grows leftwards into its own cell; the unit
                         // beside it starts at a fixed edge and so never moves.
@@ -2616,31 +2604,19 @@ impl Workspace {
                                 .flex_row()
                                 .justify_end()
                                 .child(
-                                    div()
-                                        .id(("job-errors", ix))
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .gap_1()
-                                        .px_1p5()
-                                        .py_0p5()
-                                        .rounded_sm()
-                                        .bg(gpui::Hsla {
-                                            a: 0.15,
-                                            ..error_color
-                                        })
-                                        .text_color(error_color)
-                                        .cursor_pointer()
-                                        .hover(|s| {
-                                            s.bg(gpui::Hsla {
-                                                a: 0.28,
-                                                ..error_color
-                                            })
-                                        })
-                                        .child(Icon::from_path(
-                                            "icons/file_icons/warning.svg",
-                                            error_color,
-                                        ))
+                                    // As Zed's diagnostics count: a quiet
+                                    // button, the icon in the error color and
+                                    // the count beside it in plain text.
+                                    ui::button(("job-errors", ix), ButtonStyle::Subtle, cx)
+                                        .text_xs()
+                                        .tooltip(ui::tooltip("Show What Failed"))
+                                        .child(
+                                            Icon::from_path(
+                                                "icons/file_icons/x_circle.svg",
+                                                error_color,
+                                            )
+                                            .size(px(14.)),
+                                        )
                                         .child(if job.errors == 1 {
                                             "1 failed".to_string()
                                         } else {
@@ -2670,20 +2646,18 @@ impl Workspace {
                                 // reports the state.
                                 let resume = state.parked_or_parking();
                                 el.child(
-                                    div()
-                                        .id(("job-pause", ix))
-                                        .px_1()
-                                        .cursor_pointer()
-                                        .hover(|s| s.bg(colors.element_hover))
-                                        .child(Icon::from_path(
-                                            if resume {
-                                                "icons/file_icons/play.svg"
-                                            } else {
-                                                "icons/file_icons/pause.svg"
-                                            },
-                                            muted,
-                                        ))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                    ui::icon_button(
+                                        ("job-pause", ix),
+                                        if resume {
+                                            "icons/file_icons/play.svg"
+                                        } else {
+                                            "icons/file_icons/pause.svg"
+                                        },
+                                        cx,
+                                    )
+                                    .tooltip(ui::tooltip(if resume { "Resume" } else { "Pause" }))
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
                                             let Some(at) = this
                                                 .jobs
                                                 .iter()
@@ -2697,18 +2671,18 @@ impl Workspace {
                                             let asked = this.jobs[at].pause_requested;
                                             this.jobs[at].set_paused(!asked);
                                             cx.notify();
-                                        })),
+                                        },
+                                    )),
                                 )
                             }),
                     )
                     .child(
-                        div()
-                            .id(("job-x", ix))
-                            .flex_none()
-                            .px_1()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(colors.element_hover))
-                            .child("✕")
+                        ui::icon_button(("job-x", ix), "icons/file_icons/close.svg", cx)
+                            .tooltip(ui::tooltip(if job.done.is_some() {
+                                "Dismiss"
+                            } else {
+                                "Cancel Transfer"
+                            }))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let Some(at) =
                                     this.jobs.iter().position(|j| j.handle.id() == job_id)
@@ -2732,7 +2706,7 @@ impl Workspace {
             .flex_none()
             .flex()
             .flex_col()
-            .bg(colors.title_bar_background)
+            .bg(colors.status_bar_background)
             .border_t_1()
             .border_color(colors.border)
             // Above the running jobs: these are from a previous session and
@@ -2745,14 +2719,7 @@ impl Workspace {
                     muted
                 };
                 el.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .px_2()
-                        .h(px(26.))
-                        .text_xs()
+                    strip_row()
                         .child(
                             div()
                                 .flex_1()
@@ -2761,14 +2728,8 @@ impl Workspace {
                                 .child(notice.text().to_string()),
                         )
                         .child(
-                            div()
-                                .id("notice-x")
-                                .flex_none()
-                                .px_1()
-                                .text_color(muted)
-                                .cursor_pointer()
-                                .hover(|s| s.bg(colors.element_hover))
-                                .child("dismiss")
+                            ui::icon_button("notice-x", "icons/file_icons/close.svg", cx)
+                                .tooltip(ui::tooltip("Dismiss"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.notice = None;
                                     cx.notify();
@@ -2841,6 +2802,19 @@ impl Workspace {
         let pane = self.active_pane.clone();
         self.remove_pane(&pane, window, cx);
     }
+}
+
+/// One row of the strip at the foot of the window, spaced as Zed's status bar
+/// spaces its items: six pixels in from the sides, eight between.
+fn strip_row() -> gpui::Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .px(px(6.))
+        .h(px(STRIP_ROW_H))
+        .text_xs()
 }
 
 fn parent_dirs(paths: &[PathBuf]) -> Vec<PathBuf> {
@@ -2931,30 +2905,10 @@ impl Render for Workspace {
                 el.child(self.modal_scrim(modal, cx))
             })
             .when_some(self.conflict_dialog.clone(), |el, dialog| {
-                el.child(
-                    div()
-                        .occlude()
-                        .absolute()
-                        .inset_0()
-                        .bg(hsla(0., 0., 0., 0.45))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(dialog),
-                )
+                el.child(crate::ui::prompt_scrim(dialog.into_any_element()))
             })
             .when_some(self.open_prompt.clone(), |el, dialog| {
-                el.child(
-                    div()
-                        .occlude()
-                        .absolute()
-                        .inset_0()
-                        .bg(hsla(0., 0., 0., 0.45))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(dialog),
-                )
+                el.child(crate::ui::prompt_scrim(dialog.into_any_element()))
             })
     }
 }

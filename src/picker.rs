@@ -13,8 +13,8 @@
 
 use fuzzy_nucleo::{Case, LengthPenalty, StringMatch, StringMatchCandidate, match_strings};
 use gpui::{
-    AnyElement, App, BoxShadow, Div, Entity, HighlightStyle, Pixels, SharedString, StyledText,
-    TextStyle, UniformList, UniformListScrollHandle, Window, actions, div, hsla, prelude::*, px,
+    AnyElement, App, Div, Entity, HighlightStyle, Pixels, SharedString, StyledText, TextStyle,
+    UniformList, UniformListScrollHandle, Window, actions, div, prelude::*, px,
 };
 use theme::ActiveTheme;
 
@@ -154,19 +154,6 @@ pub fn results<T: 'static>(
         .into_any_element()
 }
 
-/// Zed's modal elevation (`elevation_3`): its surface, the variant border,
-/// and the layered shadow it gives a modal.
-fn modal_shadow(cx: &App) -> Vec<BoxShadow> {
-    let light = cx.theme().appearance == theme::Appearance::Light;
-    let black = |alpha: f32| hsla(0., 0., 0., alpha);
-    vec![
-        BoxShadow::new(px(0.), px(2.), black(if light { 0.06 } else { 0.12 })).blur_radius(px(3.)),
-        BoxShadow::new(px(0.), px(3.), black(if light { 0.06 } else { 0.08 })).blur_radius(px(6.)),
-        BoxShadow::new(px(0.), px(6.), black(0.04)).blur_radius(px(12.)),
-        BoxShadow::new(px(0.), px(1.), black(if light { 0.04 } else { 0.12 })),
-    ]
-}
-
 /// The modal, laid out as Zed's picker is: the query on a 36 pixel row with a
 /// rule under it, then the rows, or a muted line when nothing matches, then
 /// the footer when there is one.
@@ -182,16 +169,11 @@ pub fn shell(
     let colors = cx.theme().colors();
     let count = state.matches.len();
 
-    div()
+    crate::ui::elevation_3(div(), cx)
         .occlude()
         .flex()
         .flex_col()
         .w(px(WIDTH))
-        .rounded_lg()
-        .border_1()
-        .border_color(colors.border_variant)
-        .bg(colors.elevated_surface_background)
-        .shadow(modal_shadow(cx))
         .child(
             div()
                 .flex_none()

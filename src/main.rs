@@ -33,6 +33,7 @@ mod scratch;
 mod scrollbar;
 mod search;
 mod theming;
+mod ui;
 mod uri;
 mod workspace;
 
@@ -295,9 +296,17 @@ fn main() {
             KeyBinding::new("ctrl-v", ab::Paste, Some("AddressBar")),
             KeyBinding::new("enter", ab::Confirm, Some("AddressBar")),
             KeyBinding::new("escape", ab::CancelEdit, Some("AddressBar")),
-            // Modal dialogs: their own context, so menu navigation cannot leak in.
-            KeyBinding::new("escape", conflict_dialog::Cancel, Some("dialog")),
-            KeyBinding::new("enter", conflict_dialog::Confirm, Some("dialog")),
+            // Prompts: their own context, so menu navigation cannot leak in.
+            // The keys are Zed's for its prompt: the arrows and Tab move
+            // between the answers, Enter takes the lit one.
+            KeyBinding::new("escape", ui::Cancel, Some(ui::PROMPT_CONTEXT)),
+            KeyBinding::new("enter", ui::Confirm, Some(ui::PROMPT_CONTEXT)),
+            KeyBinding::new("down", ui::SelectNext, Some(ui::PROMPT_CONTEXT)),
+            KeyBinding::new("right", ui::SelectNext, Some(ui::PROMPT_CONTEXT)),
+            KeyBinding::new("tab", ui::SelectNext, Some(ui::PROMPT_CONTEXT)),
+            KeyBinding::new("up", ui::SelectPrevious, Some(ui::PROMPT_CONTEXT)),
+            KeyBinding::new("left", ui::SelectPrevious, Some(ui::PROMPT_CONTEXT)),
+            KeyBinding::new("shift-tab", ui::SelectPrevious, Some(ui::PROMPT_CONTEXT)),
             // Context-menu navigation, scoped to the "menu" key context.
             KeyBinding::new("escape", MenuCancel, Some("menu")),
             KeyBinding::new(

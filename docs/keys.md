@@ -95,4 +95,5 @@ because they are rare.
 | Keys | Action |
 | :-- | :-- |
 | <kbd>↑</kbd> / <kbd>↓</kbd> | Move the highlight |
+| <kbd>Tab</kbd> / <kbd>Shift</kbd> + <kbd>Tab</kbd>, <kbd>←</kbd> / <kbd>→</kbd> | Move the highlight, in a dialog |
 | <kbd>Enter</kbd> / <kbd>Escape</kbd> | Choose, or close |

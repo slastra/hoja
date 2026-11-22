@@ -6,12 +6,12 @@ expect 'd["interrupted"] == 1' "the interrupted transfer is offered back"
 expect 'not any(r.startswith(".hoja-") for r in p[0]["rows"])' "and its partial files were reaped"
 
 # Accept it. The offer is the only row in the strip, so it sits on the bottom
-# edge, and Finish is the button left of the ✕ — measured from a screenshot
-# found by sweeping rather than derived, because the two are laid out by their
-# text and a screenshot measured it wrong. If the
+# edge, and Finish is the button left of the close button: 6 pixels of
+# padding, the 18 pixel close button and an 8 pixel gap from the right edge,
+# then Finish, about 42 pixels wide. Its middle is 53 pixels in. If the
 # layout moves, this misses and the wait below fails loudly; it cannot pass by
 # hitting the wrong thing, since dismissing would leave no job behind.
-at $((WW - 40)) $((WH - 13))
+at $((WW - 53)) $((WH - 13))
 wait_for 'len(d["jobs"]) == 1' 20
 expect 'd["interrupted"] == 0' "accepting the offer takes it off the strip"
 
