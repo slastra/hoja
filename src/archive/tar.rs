@@ -23,7 +23,7 @@
 
 use std::collections::BTreeSet;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -106,17 +106,36 @@ impl Tar {
     /// `read` counts the *compressed* bytes taken off the file, which is the
     /// only figure that climbs smoothly whatever the archive holds: the members
     /// can be thirty enormous ones and the file is still consumed steadily.
-    fn stream(&self, read: Option<&Arc<Progress>>) -> anyhow::Result<Box<dyn Read + Send>> {
+    ///
+    /// Seekable, so the `tar` crate passes over a member nobody wants with a
+    /// seek rather than by reading it. A plain tarball really seeks, and
+    /// listing a 1.4 GB one went from reading all of it to reading its
+    /// headers. A compressed one can only read its way forward, which
+    /// `Forward` does, and which is what happened before.
+    ///
+    /// Every read checks `cancel`. The checks between members came too late
+    /// for a member being passed over: cancelling while the stream skipped a
+    /// 1.2 GB member waited five seconds for the skip to end.
+    fn stream(
+        &self,
+        read: Option<&Arc<Progress>>,
+        cancel: &Cancel,
+    ) -> anyhow::Result<Box<dyn ReadSeek>> {
         let file = Counting {
             inner: File::open(&self.path)?,
             read: read.cloned(),
+            at: 0,
         };
         // 64 KiB, because every one of these reads straight through. There is
         // no seeking here for a small buffer to save, which is the trade the
         // zip backend has to make.
         let buffered = BufReader::with_capacity(64 * 1024, file);
-        Ok(match self.codec {
-            Codec::Plain => Box::new(buffered),
+        let stop = |inner| Stoppable {
+            inner,
+            cancel: cancel.clone(),
+        };
+        let decoded: Box<dyn Read + Send> = match self.codec {
+            Codec::Plain => return Ok(Box::new(stop(buffered))),
             Codec::Gz => Box::new(flate2::read::GzDecoder::new(buffered)),
             Codec::Bz2 => Box::new(bzip2::read::BzDecoder::new(buffered)),
             Codec::Zst => Box::new(
@@ -124,7 +143,14 @@ impl Tar {
                     .map_err(|err| anyhow::anyhow!("{err}"))?,
             ),
             Codec::Xz => Box::new(piped(self.path.clone(), read.cloned())?),
-        })
+        };
+        Ok(Box::new(Forward {
+            inner: Stoppable {
+                inner: decoded,
+                cancel: cancel.clone(),
+            },
+            at: 0,
+        }))
     }
 }
 
@@ -153,8 +179,14 @@ fn piped(path: std::path::PathBuf, read: Option<Arc<Progress>>) -> anyhow::Resul
             let result = File::open(&path)
                 .map_err(|err| err.to_string())
                 .and_then(|file| {
-                    let mut input =
-                        BufReader::with_capacity(64 * 1024, Counting { inner: file, read });
+                    let mut input = BufReader::with_capacity(
+                        64 * 1024,
+                        Counting {
+                            inner: file,
+                            read,
+                            at: 0,
+                        },
+                    );
                     lzma_rs::xz_decompress(&mut input, &mut writer).map_err(|err| err.to_string())
                 });
             if let Err(err) = result
@@ -192,19 +224,102 @@ impl Read for PipedDecoder {
     }
 }
 
-/// A reader that says how much has come off the file behind it.
+/// A reader that says how much has come off the file behind it. A seek past
+/// a member counts as having come off, so the figure still climbs as the
+/// headers of a plain tarball are visited.
 struct Counting<R> {
     inner: R,
     read: Option<Arc<Progress>>,
+    at: u64,
 }
 
 impl<R: Read> Read for Counting<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let read = self.inner.read(buf)?;
+        self.at += read as u64;
         if let Some(progress) = &self.read {
             progress.bytes.fetch_add(read as u64, Ordering::Relaxed);
         }
         Ok(read)
+    }
+}
+
+impl<R: Seek> Seek for Counting<R> {
+    fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+        let at = self.inner.seek(to)?;
+        if let Some(progress) = &self.read
+            && at > self.at
+        {
+            progress.bytes.fetch_add(at - self.at, Ordering::Relaxed);
+        }
+        self.at = at;
+        Ok(at)
+    }
+}
+
+/// What `stream` hands out: something the `tar` crate can seek past members
+/// in, really or by reading.
+trait ReadSeek: Read + Seek + Send {}
+impl<T: Read + Seek + Send> ReadSeek for T {}
+
+/// A reader that fails once `cancel` says stop.
+struct Stoppable<R> {
+    inner: R,
+    cancel: Cancel,
+}
+
+impl<R: Read> Read for Stoppable<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.cancel.stopped() {
+            return Err(std::io::Error::other("cancelled"));
+        }
+        self.inner.read(buf)
+    }
+}
+
+impl<R: Seek> Seek for Stoppable<R> {
+    fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+        if self.cancel.stopped() {
+            return Err(std::io::Error::other("cancelled"));
+        }
+        self.inner.seek(to)
+    }
+}
+
+/// A seek forward through a stream that cannot seek, by reading what it
+/// passes over. Backward is refused; the `tar` crate never asks for it.
+struct Forward<R> {
+    inner: R,
+    at: u64,
+}
+
+impl<R: Read> Read for Forward<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buf)?;
+        self.at += read as u64;
+        Ok(read)
+    }
+}
+
+impl<R: Read> Seek for Forward<R> {
+    fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+        let ahead = match to {
+            SeekFrom::Current(by) => u64::try_from(by).ok(),
+            SeekFrom::Start(at) => at.checked_sub(self.at),
+            SeekFrom::End(_) => None,
+        };
+        let Some(ahead) = ahead else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "a compressed stream only reads forward",
+            ));
+        };
+        let passed = std::io::copy(&mut (&mut self.inner).take(ahead), &mut std::io::sink())?;
+        self.at += passed;
+        if passed < ahead {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        Ok(self.at)
     }
 }
 
@@ -283,10 +398,10 @@ impl Format for Tar {
         progress: &Arc<Progress>,
         found: &mut dyn FnMut(Member),
     ) -> anyhow::Result<usize> {
-        let mut archive = tar::Archive::new(self.stream(Some(progress))?);
+        let mut archive = tar::Archive::new(self.stream(Some(progress), cancel)?);
         let mut skipped = 0;
 
-        for entry in archive.entries()? {
+        for entry in archive.entries_with_seek()? {
             if cancel.stopped() {
                 anyhow::bail!("cancelled");
             }
@@ -334,9 +449,9 @@ impl Format for Tar {
         }
 
         let mut failures = Vec::new();
-        let mut archive = tar::Archive::new(self.stream(None)?);
+        let mut archive = tar::Archive::new(self.stream(None, cancel)?);
 
-        for entry in archive.entries()? {
+        for entry in archive.entries_with_seek()? {
             if cancel.stopped() {
                 anyhow::bail!("cancelled");
             }
@@ -873,6 +988,59 @@ mod tests {
                 ("ttf/sub/Mono.ttf".to_string(), b"mono".to_vec()),
                 ("README".to_string(), b"hello".to_vec()),
             ]
+        );
+    }
+
+    #[test]
+    fn a_skip_through_a_compressed_member_stops_when_asked() {
+        // A stream that asks to stop on its third read, as a user would part
+        // of the way through a gigabyte nobody wanted.
+        struct Endless {
+            reads: usize,
+            cancel: Cancel,
+        }
+        impl Read for Endless {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.reads += 1;
+                if self.reads == 3 {
+                    self.cancel.stop();
+                }
+                buf.fill(0);
+                Ok(buf.len())
+            }
+        }
+        let cancel = Cancel::new();
+        let mut stream = Forward {
+            inner: Stoppable {
+                inner: Endless {
+                    reads: 0,
+                    cancel: cancel.clone(),
+                },
+                cancel: cancel.clone(),
+            },
+            at: 0,
+        };
+        let err = stream.seek(SeekFrom::Current(1 << 40)).unwrap_err();
+        assert_eq!(err.to_string(), "cancelled");
+        assert!(stream.inner.inner.reads < 10, "it read on after the stop");
+    }
+
+    #[test]
+    fn a_compressed_stream_seeks_forward_only() {
+        let data: Vec<u8> = (0..=255).collect();
+        let mut stream = Forward {
+            inner: &data[..],
+            at: 0,
+        };
+        assert_eq!(stream.seek(SeekFrom::Current(10)).unwrap(), 10);
+        let mut byte = [0u8; 1];
+        stream.read_exact(&mut byte).unwrap();
+        assert_eq!(byte[0], 10);
+        assert_eq!(stream.seek(SeekFrom::Start(100)).unwrap(), 100);
+        assert!(stream.seek(SeekFrom::Start(5)).is_err());
+        assert!(
+            stream.seek(SeekFrom::Current(1000)).is_err(),
+            "past the end"
         );
     }
 

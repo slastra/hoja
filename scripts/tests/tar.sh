@@ -32,7 +32,9 @@ for name in fonts.tar fonts.tar.bz2 fonts.tar.gz fonts.tar.xz fonts.tar.zst; do
     expect 'p[0]["footer"] == "2 items · 14 B"' "$name totals the same"
 
     key -k BackSpace
-    wait_for "p[0][\"dir\"] == \"$START_DIR\""
+    # The rows as well as the path: the path changes first, and the next
+    # `named` would otherwise look its name up in the archive's rows.
+    wait_for "p[0][\"dir\"] == \"$START_DIR\" and p[0][\"row_count\"] == 9"
 done
 
 # --- inside one of them ------------------------------------------------

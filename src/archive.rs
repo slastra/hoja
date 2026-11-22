@@ -31,7 +31,7 @@
 pub mod tar;
 pub mod zip;
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -245,11 +245,14 @@ pub fn open(path: &Path, using: Use) -> anyhow::Result<Box<dyn Format>> {
     anyhow::bail!("not an archive hoja can read")
 }
 
+/// `PATH_MAX` on Linux, in bytes.
+const PATH_MAX: usize = 4096;
+
 /// Make a member's name safe to show and safe to join onto a directory, or
 /// refuse it.
 ///
 /// Refused: an absolute path, any `..` component, a `.` component, an embedded
-/// NUL, and an empty name. Refused rather than repaired, because a repaired
+/// NUL, an empty name, and one longer than `PATH_MAX`. Refused rather than repaired, because a repaired
 /// `../../etc/passwd` is still a name somebody chose on purpose, and the
 /// repaired version would sit in the listing looking ordinary.
 ///
@@ -258,7 +261,10 @@ pub fn open(path: &Path, using: Use) -> anyhow::Result<Box<dyn Format>> {
 /// a separator would split a legitimate Unix filename into directories. Info-ZIP
 /// makes the same choice: on Unix a backslash is a character in a name.
 pub fn tidy(raw: &str) -> Option<String> {
-    if raw.is_empty() || raw.contains('\0') {
+    // Longer than any path Linux will open, so it could never be extracted,
+    // and a name thousands of folders deep is how an archive makes arranging
+    // it slow on purpose.
+    if raw.is_empty() || raw.len() > PATH_MAX || raw.contains('\0') {
         return None;
     }
     let trimmed = raw.trim_end_matches('/');
@@ -335,36 +341,56 @@ impl Index {
             if member.is_dir {
                 dirs.insert(member.path.clone(), Some(ix));
             }
-            for parent in ancestors(&member.path) {
-                dirs.entry(parent).or_insert(None);
+            // Nearest first, stopping at the first one already known: the
+            // ones above it were added along with it. Every ancestor of every
+            // member, each its own string, cost the square of the depth, and
+            // a zip 8,000 folders deep took sixteen seconds to arrange.
+            for (at, _) in member.path.rmatch_indices('/') {
+                let parent = &member.path[..at];
+                if dirs.contains_key(parent) {
+                    break;
+                }
+                dirs.insert(parent.to_string(), None);
             }
         }
 
         // What each directory holds, all the way down, and the newest thing in
-        // it. One pass over the files: each one adds its size to every
-        // directory above it.
+        // it. Each file counts towards its own folder, and then each folder
+        // towards the one above it, deepest first: a pass per folder rather
+        // than one per file for every folder above it.
         //
         // The date is for the folders an archive never named, which have no
         // date of their own. A blank Modified column beside a folder that
         // plainly contains something reads as a bug, and the newest thing
         // inside is what a directory's own timestamp would have said anyway.
-        let mut totals: BTreeMap<&str, u64> = BTreeMap::new();
-        let mut newest: BTreeMap<&str, SystemTime> = BTreeMap::new();
+        let mut totals: HashMap<&str, u64> = HashMap::new();
+        let mut newest: HashMap<&str, SystemTime> = HashMap::new();
         for member in listing.members.iter().filter(|m| !m.is_dir) {
-            let mut at = member.path.as_str();
-            loop {
-                let parent = at.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
-                *totals.entry(parent).or_default() += member.size;
-                if let Some(when) = member.modified {
-                    newest
-                        .entry(parent)
-                        .and_modify(|held| *held = (*held).max(when))
-                        .or_insert(when);
-                }
-                if parent.is_empty() {
-                    break;
-                }
-                at = parent;
+            let parent = split(&member.path).0;
+            *totals.entry(parent).or_default() += member.size;
+            if let Some(when) = member.modified {
+                newest
+                    .entry(parent)
+                    .and_modify(|held| *held = (*held).max(when))
+                    .or_insert(when);
+            }
+        }
+        let mut deepest_first: Vec<&str> = dirs
+            .keys()
+            .map(String::as_str)
+            .filter(|dir| !dir.is_empty())
+            .collect();
+        deepest_first.sort_by_key(|dir| std::cmp::Reverse(dir.matches('/').count()));
+        for dir in deepest_first {
+            let parent = split(dir).0;
+            if let Some(size) = totals.get(dir).copied() {
+                *totals.entry(parent).or_default() += size;
+            }
+            if let Some(when) = newest.get(dir).copied() {
+                newest
+                    .entry(parent)
+                    .and_modify(|held| *held = (*held).max(when))
+                    .or_insert(when);
             }
         }
 
@@ -455,12 +481,6 @@ fn split(path: &str) -> (&str, &str) {
         Some((parent, name)) => (parent, name),
         None => ("", path),
     }
-}
-
-/// Every directory above `path`, nearest last, not including the root.
-fn ancestors(path: &str) -> impl Iterator<Item = String> + '_ {
-    path.match_indices('/')
-        .map(|(at, _)| path[..at].to_string())
 }
 
 /// A reader that counts what passes through it and stops when told to.
@@ -895,13 +915,20 @@ pub struct Rows {
 /// three of twelve real zip files name no folders at all, so a folder's
 /// contents cannot be found by looking up the folder.
 fn members_under(listing: &Listing, roots: &[String]) -> BTreeSet<usize> {
+    // A member is under a root when it is one, or when one of the folders
+    // above it is. Looked up by name, one folder at a time, rather than
+    // comparing every member with every root: selecting 20,000 files took a
+    // second that way.
+    let roots: HashSet<&str> = roots.iter().map(String::as_str).collect();
     let mut wanted = BTreeSet::new();
     for (ix, member) in listing.members.iter().enumerate() {
-        let under = roots.iter().any(|root| {
-            member.path == *root
-                // The `/` matters: `ttf` must not take in `ttfx/a`.
-                || member.path.starts_with(root) && member.path.as_bytes().get(root.len()) == Some(&b'/')
-        });
+        let path = member.path.as_str();
+        // The `/` matters: `ttf` must not take in `ttfx/a`, and cutting at a
+        // separator never offers it.
+        let under = roots.contains(path)
+            || path
+                .match_indices('/')
+                .any(|(at, _)| roots.contains(&path[..at]));
         if under {
             wanted.insert(ix);
         }
@@ -1289,6 +1316,39 @@ mod tests {
         ] {
             assert_eq!(tidy(bad), None, "{bad:?} must be refused");
         }
+    }
+
+    #[test]
+    fn a_name_longer_than_linux_can_open_is_refused() {
+        let deep = "a/".repeat(PATH_MAX / 2) + "f";
+        assert_eq!(tidy(&deep), None);
+        let fits = "a/".repeat(100) + "f";
+        assert_eq!(tidy(&fits).as_deref(), Some(fits.as_str()));
+    }
+
+    #[test]
+    fn a_deep_archive_is_arranged_in_one_pass_per_folder() {
+        // 400 files, each 2,000 folders down: the shape that took the old
+        // arrangement seconds. Correct totals all the way up are what show
+        // the folder-by-folder sums agree with the old per-file ones.
+        let spine = vec!["d"; 2000].join("/");
+        let members: Vec<Member> = (0..400)
+            .map(|n| file(&format!("{spine}/f{n}"), 1))
+            .collect();
+        let started = std::time::Instant::now();
+        let index = Index::build(Listing {
+            members,
+            skipped: 0,
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        let top = index.rows(Path::new("")).unwrap();
+        assert_eq!((top[0].name.as_str(), top[0].size), ("d", 400));
+        let inner = vec!["d"; 1999].join("/");
+        assert_eq!(index.rows(Path::new(&inner)).unwrap()[0].size, 400);
     }
 
     #[test]

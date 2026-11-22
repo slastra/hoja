@@ -77,7 +77,10 @@ expect 'p[0]["row_count"] == 2' "and nothing left the listing"
 
 # Enter on a file asks before extracting a temp copy to open, rather than
 # either refusing outright or doing it without asking. See `open_prompt`.
-before=$(find /tmp -maxdepth 1 -name 'hoja-open-*' 2>/dev/null | wc -l)
+# The copies go in hoja's own scratch space under the harness's cache, one
+# folder each, beside the lock file that keeps them for the session.
+opened() { find "$XDG_CACHE_HOME/hoja/open" -mindepth 2 -maxdepth 2 -type d 2>/dev/null; }
+before=$(opened | wc -l)
 
 key -k Down
 wait_for 'p[0]["cursor"] == 1'
@@ -88,7 +91,7 @@ expect 'p[0]["dir"].endswith("/fonts.zip/ttf")' "and the pane stayed put"
 # Cancelling leaves nothing extracted.
 key -k Escape
 wait_for 'd["modal"] is None'
-after_cancel=$(find /tmp -maxdepth 1 -name 'hoja-open-*' 2>/dev/null | wc -l)
+after_cancel=$(opened | wc -l)
 if [ "$after_cancel" -eq "$before" ]; then
     echo "  ok   cancelling the prompt extracts nothing"
 else
@@ -101,7 +104,11 @@ key -k Return
 wait_for 'd["modal"] == "open-prompt"'
 key -k Return
 wait_for 'd["modal"] is None'
-extracted=$(ls -td /tmp/hoja-open-* 2>/dev/null | head -1)
+for _ in $(seq 1 40); do
+    extracted=$(opened | head -1)
+    [ -n "$extracted" ] && [ -f "$extracted/Inter.ttf" ] && break
+    sleep 0.25
+done
 if [ -n "$extracted" ] && [ -f "$extracted/Inter.ttf" ]; then
     echo "  ok   confirming extracts the file to a temp copy"
 else
@@ -157,7 +164,9 @@ key -M ctrl -P v -m ctrl
 # The listing gains it once the extraction and the move behind it are done.
 wait_for '"ttf" in p[0]["rows"]' 20
 expect 'p[0]["row_count"] == 10' "the folder arrives beside the archive"
-wait_for 'p[0]["counting"] == []' 15
+# Waited for by its figure, not by `counting` going empty: that is also true
+# in the moment before the size walk starts, and the check raced it.
+wait_for 'p[0]["counting"] == [] and p[0]["sizes"][p[0]["rows"].index("ttf")] == "6.0 KB"' 15
 expect 'p[0]["sizes"][p[0]["rows"].index("ttf")] == "6.0 KB"' "with everything that was under it"
 
 # The staging directory is named the way a part-written file is, so it is

@@ -1205,9 +1205,19 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        static SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dest = std::env::temp_dir().join(format!("hoja-open-{}-{n}", std::process::id()));
+        // Kept for as long as this hoja runs, since the application that
+        // opens the copy may read it again at any time, and swept by the next
+        // hoja after that. These used to go to the system temp folder and
+        // were never removed, and on most machines that folder is memory.
+        let Some(dest) = OPENED.next_path("") else {
+            self.set_notice(
+                Some(Notice::Problem(
+                    "Nowhere to put a copy of that file".to_string(),
+                )),
+                cx,
+            );
+            return;
+        };
 
         self.set_notice(Some(Notice::Info("Extracting…".to_string())), cx);
 
@@ -2816,6 +2826,11 @@ fn strip_row() -> gpui::Div {
         .h(px(STRIP_ROW_H))
         .text_xs()
 }
+
+/// Copies of archive members made to be opened, under
+/// `$XDG_CACHE_HOME/hoja/open/<pid>/`. See `extract_and_open`.
+static OPENED: crate::scratch::Scratch =
+    crate::scratch::Scratch::new(|| Some(crate::config::cache_home()?.join("hoja").join("open")));
 
 fn parent_dirs(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = paths
