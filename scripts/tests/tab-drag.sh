@@ -57,3 +57,121 @@ expect 'd["hidden_watching"] == 0' "hidden tabs still watch nothing"
 drag $(tabat 2) $((WW / 2)) $((WH / 2))
 sleep 0.5
 expect 'len(d["tabs"][0]["titles"]) == 3 and d["tabs"][0]["active"] == 2' "a tab dropped on its own pane stays"
+
+# --- splitting at an edge ----------------------------------------------------
+
+# slow_drag X1 Y1 X2 Y2: a drag in window coordinates, left running in the
+# background with the button held at the end, so a check can read the
+# highlight before the drop. `wait "$DRAG"` lets it finish.
+slow_drag() {
+    drag_at "$((WX + $1))" "$((WY + $2))" "$((WX + $3))" "$((WY + $4))" --hold-ms 1500 &
+    DRAG=$!
+}
+# home: drop the tab of the second pane at the end of the first pane's bar,
+# which leaves one pane again.
+home() {
+    local end
+    end=$(probe "f'{d[\"tabs\"][0][\"rects\"][-1][0] + d[\"tabs\"][0][\"rects\"][-1][2] + 40} {d[\"tabs\"][0][\"rects\"][-1][1] + 16}'")
+    # shellcheck disable=SC2046,SC2086
+    drag $(tabat 0 0 1) $end
+    wait_for 'len(p) == 1'
+}
+
+# Back to two tabs in one pane: the root, and alpha shown.
+for _ in 1 2 3 4; do
+    [ "$(probe 'len(d["tabs"][0]["titles"]) > 1')" = "True" ] || break
+    key -M ctrl -k w -m ctrl
+    sleep 0.3
+done
+wait_for 'len(d["tabs"][0]["titles"]) == 1'
+key -M alt -k Up -m alt
+wait_for "d['tabs'][0]['titles'] == ['$ROOT']"
+key -M ctrl -k t -m ctrl
+wait_for 'len(d["tabs"][0]["rects"]) == 2'
+goto "$((WX + 150))" "$(row "$(named alpha)")"
+key -k Home
+wait_for 'p[0]["cursor"] == 0'
+key -k Return
+wait_for 'p[0]["dir"].endswith("/alpha")'
+
+# Near the right edge, the right half lights, and the drop splits it off there.
+# shellcheck disable=SC2046
+set -- $(tabat 1)
+slow_drag "$1" "$2" $((WW - 10)) $((WH / 2))
+wait_for 'd["tabs"][0]["drag_split"] == "right"'
+shot drag-right
+wait "$DRAG"
+wait_for 'len(p) == 2'
+expect "d['tabs'][0]['titles'] == ['$ROOT'] and d['tabs'][1]['titles'] == ['alpha']" "a tab dropped at an edge gets a pane of its own"
+expect 'd["tabs"][1]["rects"][0][0] > d["tabs"][0]["rects"][0][0] + 100' "on the side it was dropped"
+expect 'p[1]["active"] and p[1]["dir"].endswith("/alpha")' "and that pane has the keys"
+expect 'd["tabs"][0]["drag_split"] is None and d["tabs"][1]["drag_split"] is None' "the highlight goes with the drop"
+home
+
+# The other three sides.
+# shellcheck disable=SC2046
+set -- $(tabat 1)
+slow_drag "$1" "$2" 10 $((WH / 2))
+wait_for 'd["tabs"][0]["drag_split"] == "left"'
+shot drag-left
+wait "$DRAG"
+wait_for 'len(p) == 2'
+expect 'd["tabs"][1]["rects"][0][0] + 100 < d["tabs"][0]["rects"][0][0]' "a drop at the left edge splits to the left"
+home
+
+# shellcheck disable=SC2046
+set -- $(tabat 1)
+slow_drag "$1" "$2" $((WW / 2)) $((WH - 10))
+wait_for 'd["tabs"][0]["drag_split"] == "down"'
+shot drag-down
+wait "$DRAG"
+wait_for 'len(p) == 2'
+expect 'd["tabs"][1]["rects"][0][1] > d["tabs"][0]["rects"][0][1] + 100' "a drop at the bottom edge splits below"
+home
+
+# shellcheck disable=SC2046
+set -- $(tabat 1)
+slow_drag "$1" "$2" $((WW / 2)) 45
+wait_for 'd["tabs"][0]["drag_split"] == "up"'
+shot drag-up
+wait "$DRAG"
+wait_for 'len(p) == 2'
+expect 'd["tabs"][1]["rects"][0][1] + 100 < d["tabs"][0]["rects"][0][1]' "a drop at the top edge splits above"
+home
+expect 'd["hidden_watching"] == 0' "after all that, hidden tabs watch nothing"
+
+# In the middle, the whole pane lights and nothing splits.
+# shellcheck disable=SC2046
+set -- $(tabat 1)
+slow_drag "$1" "$2" $((WW / 2)) $((WH / 2))
+# Once the drag is on, the time the pointer takes to get there.
+wait_for 'd["dragging"]'
+sleep 0.8
+shot drag-center
+expect 'd["dragging"] and d["tabs"][0]["drag_split"] is None' "in the middle of a pane, no side is lit"
+wait "$DRAG"
+sleep 0.5
+expect 'len(p) == 1 and len(d["tabs"][0]["titles"]) == 2' "and a drop there on its own pane changes nothing"
+
+# With ctrl held at the drop, the tab stays and a copy splits off.
+# shellcheck disable=SC2046
+set -- $(tabat 1)
+slow_drag "$1" "$2" $((WW - 10)) $((WH / 2))
+wait_for 'd["tabs"][0]["drag_split"] == "right"'
+wtype -M ctrl -s 4000 -m ctrl &
+CTRL=$!
+wait "$DRAG"
+wait "$CTRL"
+wait_for 'len(p) == 2'
+expect 'len(d["tabs"][0]["titles"]) == 2 and d["tabs"][1]["titles"] == ["alpha"]' "a ctrl drop copies the tab"
+
+# A lone tab over its own pane's edge has nowhere to split off to.
+# shellcheck disable=SC2046
+set -- $(tabat 0 0 1)
+slow_drag "$1" "$2" $((WW - 10)) $((WH / 2))
+wait_for 'd["dragging"]'
+sleep 0.8
+expect 'd["dragging"] and d["tabs"][1]["drag_split"] is None' "a lone tab does not split from its own pane"
+wait "$DRAG"
+sleep 0.5
+expect 'len(p) == 2' "and dropping it there changes nothing"

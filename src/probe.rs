@@ -140,6 +140,9 @@ pub struct TabsProbe {
     pub rects: Vec<[i32; 4]>,
     /// Whether the bar is drawn: with a second tab, or in a split.
     pub bar: bool,
+    /// While a tab is dragged over this pane near an edge, the side a new
+    /// pane would split off on: `up`, `down`, `left` or `right`.
+    pub drag_split: Option<&'static str>,
 }
 
 #[derive(Serialize, PartialEq, Eq)]
@@ -151,6 +154,9 @@ pub struct Probe {
     pub tabs: Vec<TabsProbe>,
     /// Hidden tabs that still watch a folder or a repository: none should.
     pub hidden_watching: usize,
+    /// Whether something is being dragged inside the window, so a test can
+    /// wait for a drag to start before it checks what the drag shows.
+    pub dragging: bool,
     pub jobs: Vec<JobProbe>,
     /// `"palette"`, `"places"`, `"failures"`, or absent.
     pub modal: Option<&'static str>,

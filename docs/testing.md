@@ -31,7 +31,7 @@ the window is, and everything after it is keystrokes sent somewhere unverified.
 An earlier version carried on, walked a pane up to the root of the filesystem
 and pressed paste there; nothing was written only because root is not writable.
 
-There are twenty-four suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
+There are twenty-five suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
 `archive.sh` and `tar.sh` need fixtures, which `scripts/tests/setup-archives.sh`
 builds and prints the path of:
 
@@ -96,6 +96,17 @@ finds a tab from the probe: `tab N`, `mtab N` and `tabclose N`.
 
 ```sh
 scripts/sway-harness.sh "$(scripts/tests/setup-tabs.sh)" scripts/tests/tabs.sh
+```
+
+`tab-drag.sh` uses the same fixture. It drags tabs along a bar, to another
+pane's bar, onto another pane, and to each edge of a pane to split. For each
+edge, it holds the button down and reads the side that is highlighted from the
+probe (`drag_split`) before it drops. It also does a ctrl drop, which copies.
+The drags are slow and in the background, so a check can run during one; the
+probe's `dragging` tells the test when the drag has started.
+
+```sh
+scripts/sway-harness.sh "$(scripts/tests/setup-tabs.sh)" scripts/tests/tab-drag.sh
 ```
 
 `drag-external.sh` needs `setup-drag-external.sh` and nemo. It starts nemo in

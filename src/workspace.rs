@@ -641,6 +641,14 @@ impl JobState {
     }
 }
 
+/// A tab dropped on a tile, as `drop_tab` takes it: see `TabsEvent::Drop`.
+struct TabDrop {
+    pane: Entity<DirPane>,
+    at: Option<usize>,
+    split: Option<SplitDirection>,
+    copy: bool,
+}
+
 /// Owns the pane tree and the notion of which pane is active.
 ///
 /// Following Zed: the tree is *not* the source of truth for activation. A separate
@@ -878,9 +886,19 @@ impl Workspace {
                 this.show_pane(shown, window, cx);
                 this.new_tab(&NewTab, window, cx);
             }
-            TabsEvent::Drop { dragged, at } => {
-                let (tile, pane, at) = (tile.clone(), dragged.pane.clone(), *at);
-                this.drop_tab(&tile, pane, at, window, cx);
+            TabsEvent::Drop {
+                dragged,
+                at,
+                split,
+                copy,
+            } => {
+                let drop = TabDrop {
+                    pane: dragged.pane.clone(),
+                    at: *at,
+                    split: *split,
+                    copy: *copy,
+                };
+                this.drop_tab(&tile.clone(), drop, window, cx);
             }
         })
     }
@@ -922,34 +940,59 @@ impl Workspace {
         true
     }
 
-    /// Move a dragged tab into `target`: at `at` along its bar, or after its
-    /// shown tab when dropped on the pane. The tile the tab left closes when
-    /// the tab was its last, as in Zed.
+    /// Put a dragged tab in `target`, as Zed's `handle_tab_drop`.
+    ///
+    /// It goes at `at` along the bar, or after the shown tab when dropped on
+    /// the pane, or into a new pane on the `split` side of it. A move takes
+    /// the tab from where it was, and the pane it left closes when that was
+    /// its last tab. A `copy` leaves it there and places a new tab on the same
+    /// folder.
     fn drop_tab(
         &mut self,
         target: &Entity<Tabs>,
-        pane: Entity<DirPane>,
-        at: Option<usize>,
+        drop: TabDrop,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let TabDrop { pane, at, split, copy } = drop;
         // Looked up now, not taken from the drag: the tab may have moved or
         // closed since the drag began.
         let Some(source) = self.tile_of(&pane, cx) else {
             return;
         };
-        if &source == target {
-            // On its own pane there is nowhere to go; along its own bar it
-            // changes places.
-            let (Some(to), Some(from)) = (at, source.read(cx).list.index_of(&pane)) else {
-                return;
-            };
-            source.update(cx, |tile, _| tile.list.move_to(from, to));
-            let ix = source.read(cx).list.index_of(&pane).unwrap_or(0);
-            self.activate_tab_in(&source, ix, window, cx);
+
+        if copy {
+            let place = pane.read(cx).location().clone();
+            let view = pane.read(cx).view_settings();
+            let new = self.add_pane(place, view, window, cx);
+            self.place_tab(target, new, at, split, window, cx);
             return;
         }
 
+        if &source == target {
+            let alone = source.read(cx).list.items().len() == 1;
+            match (at, split) {
+                // Split off from its own pane: the pane must keep a tab.
+                (_, Some(_)) if alone => return,
+                (_, Some(_)) => {}
+                // Along its own bar, it changes places.
+                (Some(to), None) => {
+                    let Some(from) = source.read(cx).list.index_of(&pane) else {
+                        return;
+                    };
+                    source.update(cx, |tile, _| tile.list.move_to(from, to));
+                    let ix = source.read(cx).list.index_of(&pane).unwrap_or(0);
+                    self.activate_tab_in(&source, ix, window, cx);
+                    return;
+                }
+                // Onto its own pane, it is already there.
+                (None, None) => return,
+            }
+        }
+
+        // Out of the old tile first, then into the new place. The source is
+        // never the target here unless it keeps other tabs, so the target is
+        // still in the tree.
         if source.read(cx).list.items().len() > 1 {
             let was_shown = source.read(cx).shown() == &pane;
             source.update(cx, |tile, cx| {
@@ -963,16 +1006,38 @@ impl Workspace {
         } else if !self.remove_tile(&source, cx) {
             return;
         }
+        self.place_tab(target, pane, at, split, window, cx);
+    }
 
-        let old = target.read(cx).shown().clone();
-        target.update(cx, |tile, cx| {
-            let at = at.unwrap_or(tile.list.active() + 1);
-            let at = tile.list.insert(at, pane.clone());
-            tile.list.activate(at);
-            tile.reveal_shown();
-            cx.notify();
-        });
-        old.update(cx, |old, cx| old.set_visible(false, cx));
+    /// Show `pane`, which no tile holds, in `target` or in a new tile beside
+    /// it, and give it the keys.
+    fn place_tab(
+        &mut self,
+        target: &Entity<Tabs>,
+        pane: Entity<DirPane>,
+        at: Option<usize>,
+        split: Option<SplitDirection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(direction) = split {
+            let tile = self.make_tile(pane.clone(), window, cx);
+            self.center.split(target, &tile, direction);
+            #[cfg(debug_assertions)]
+            eprintln!("[hoja] split {direction:?} -> {}", self.center.shape());
+        } else {
+            let old = target.read(cx).shown().clone();
+            target.update(cx, |tile, cx| {
+                let at = at.unwrap_or(tile.list.active() + 1);
+                let at = tile.list.insert(at, pane.clone());
+                tile.list.activate(at);
+                tile.reveal_shown();
+                cx.notify();
+            });
+            if old != pane {
+                old.update(cx, |old, cx| old.set_visible(false, cx));
+            }
+        }
         pane.update(cx, |pane, cx| pane.set_visible(true, cx));
         self.show_pane(pane, window, cx);
         cx.notify();
@@ -2670,9 +2735,22 @@ impl Workspace {
                             active: list.active(),
                             rects: tile.read(cx).rects(),
                             bar: tile.read(cx).has_bar(),
+                            // Only while a drag is on: a drag that ended
+                            // anywhere but this pane leaves its last side.
+                            drag_split: cx
+                                .has_active_drag()
+                                .then(|| tile.read(cx).drag_split())
+                                .flatten()
+                                .map(|side| match side {
+                                    SplitDirection::Up => "up",
+                                    SplitDirection::Down => "down",
+                                    SplitDirection::Left => "left",
+                                    SplitDirection::Right => "right",
+                                }),
                         }
                     })
                     .collect(),
+                dragging: cx.has_active_drag(),
                 hidden_watching: tiles
                     .iter()
                     .flat_map(|tile| tile.read(cx).list.items().to_vec())

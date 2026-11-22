@@ -86,6 +86,10 @@ because they are rare. "pane: close pane" closes a pane and all of its tabs.
 | Middle-click a folder | Open it in a new tab, and stay where you are |
 | Click a tab / middle-click a tab | Show the tab / close the tab |
 | Double-click the empty end of the tab bar | Open a new tab |
+| Drag a tab along its bar | Move the tab |
+| Drag a tab to another pane's bar, or onto another pane | Move the tab to that pane. A pane whose last tab goes closes |
+| Drag a tab near the edge of a pane | Split a new pane off on that side for the tab. The half it will take is highlighted |
+| <kbd>Ctrl</kbd> + Drag a tab | Copy the tab: a new tab on the same folder goes where you drop |
 | Back and forward buttons | Go back and forward in the history |
 
 ## While you edit a path

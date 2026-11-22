@@ -6,9 +6,9 @@
 //! active pane and of which panes watch their folders.
 
 use gpui::{
-    AnyElement, App, AppContext, ClickEvent, Context, Entity, EventEmitter, Focusable, InteractiveElement,
+    AnyElement, App, AppContext, Bounds, ClickEvent, DragMoveEvent, Pixels, Point, Context, Entity, EventEmitter, Focusable, InteractiveElement,
     IntoElement, ParentElement, Render, ScrollHandle, StatefulInteractiveElement, Styled, Window,
-    div, prelude::FluentBuilder, px,
+    div, prelude::FluentBuilder, px, relative,
 };
 use theme::ActiveTheme;
 
@@ -17,6 +17,7 @@ use std::path::Path;
 use crate::dir_pane::{DirPane, folder_drop_target};
 use crate::icon::Icon;
 use crate::location::Location;
+use crate::pane_group::SplitDirection;
 use crate::ui::{self, TabPosition};
 
 /// The list itself, with no gpui in it, so its rules can be tested alone.
@@ -120,6 +121,12 @@ pub struct Tabs {
     /// Set by the workspace while the window has more than one pane: then
     /// every pane shows its bar, so even a lone tab can be dragged.
     split_bar: bool,
+    /// Where a tab dragged over the pane below would split off, or `None`
+    /// to join this pane. Read from the pointer, as Zed's
+    /// `drag_split_direction`.
+    drag_split: Option<SplitDirection>,
+    /// Where the pane below the bar was drawn, as the last drag over it saw.
+    body: Option<Bounds<Pixels>>,
 }
 
 /// A tab on its way somewhere, as Zed's `DraggedTab`: what is moving, and
@@ -148,9 +155,15 @@ pub enum TabsEvent {
     New,
     /// A tab dropped on this tile: on a tab or the end of the bar to go at
     /// `Some(ix)`, or on the pane below (`None`) to go after the shown tab.
+    ///
+    /// `split` makes a new pane on that side of this one for the tab instead.
+    /// `copy` (ctrl held) leaves the tab where it was and drops a new one on
+    /// the same folder, as Zed clones an item.
     Drop {
         dragged: DraggedTab,
         at: Option<usize>,
+        split: Option<SplitDirection>,
+        copy: bool,
     },
 }
 
@@ -162,7 +175,73 @@ impl Tabs {
             list: TabList::new(first),
             scroll: ScrollHandle::new(),
             split_bar: false,
+            drag_split: None,
+            body: None,
         }
+    }
+
+    /// The side a dragged tab would split off on, for the probe.
+    pub fn drag_split(&self) -> Option<SplitDirection> {
+        self.drag_split
+    }
+
+    /// Follow a dragged tab over the pane, as Zed's `handle_drag_move`.
+    fn track_drag(&mut self, event: &DragMoveEvent<DraggedTab>, cx: &mut Context<Self>) {
+        self.body = Some(event.bounds);
+        let split = self.split_at(event.event.position, &event.drag(cx).pane);
+        if split != self.drag_split {
+            self.drag_split = split;
+            cx.notify();
+        }
+    }
+
+    /// The side a tab dragged to `at` would split off on, from where the pane
+    /// was last drawn.
+    fn split_at(&self, at: Point<Pixels>, pane: &Entity<DirPane>) -> Option<SplitDirection> {
+        let bounds = self.body?;
+        // A tab alone in its pane has nowhere to split off to: the pane it
+        // would leave is the one it would split.
+        let alone = self.list.items().len() == 1 && self.list.shown() == pane;
+        if alone || !bounds.contains(&at) {
+            return None;
+        }
+        split_side(
+            f32::from(at.x - bounds.left()),
+            f32::from(at.y - bounds.top()),
+            f32::from(bounds.size.width),
+            f32::from(bounds.size.height),
+        )
+    }
+
+    /// What a drop asks for, read when it lands.
+    fn emit_drop(
+        &mut self,
+        dragged: &DraggedTab,
+        at: Option<usize>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        // From where the pointer is now, not from the last move: the drop is
+        // what counts, and the highlight could trail it.
+        let split = match at {
+            None => self.split_at(window.mouse_position(), &dragged.pane),
+            Some(_) => None,
+        };
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[hoja] tab drop at {:?} on {:?}: shown {:?}, dropped {split:?}",
+            window.mouse_position(),
+            self.body,
+            self.drag_split,
+        );
+        self.drag_split = None;
+        cx.emit(TabsEvent::Drop {
+            dragged: dragged.clone(),
+            at,
+            split,
+            copy: window.modifiers().control,
+        });
+        cx.notify();
     }
 
     /// Whether the bar is drawn: with a second tab, or in a split.
@@ -270,11 +349,8 @@ impl Tabs {
                         el
                     }
                 })
-                .on_drop(cx.listener(move |_, dragged: &DraggedTab, _, cx| {
-                    cx.emit(TabsEvent::Drop {
-                        dragged: dragged.clone(),
-                        at: Some(ix),
-                    });
+                .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
+                    this.emit_drop(dragged, Some(ix), window, cx);
                 }))
                 // Middle click closes a tab, as in Zed and in browsers.
                 .on_aux_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
@@ -301,11 +377,8 @@ impl Tabs {
                 .drag_over::<DraggedTab>(|el, _, _, cx| {
                     el.bg(cx.theme().colors().drop_target_background)
                 })
-                .on_drop(cx.listener(move |_, dragged: &DraggedTab, _, cx| {
-                    cx.emit(TabsEvent::Drop {
-                        dragged: dragged.clone(),
-                        at: Some(count),
-                    });
+                .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
+                    this.emit_drop(dragged, Some(count), window, cx);
                 }))
                 .into_any_element(),
         );
@@ -353,8 +426,28 @@ pub fn title(location: &Location) -> String {
         .unwrap_or_else(|| key.display().to_string())
 }
 
-/// The group the pane's drop target answers to.
-const BODY_GROUP: &str = "tab-body";
+/// How far in from a pane's edge a dragged tab splits rather than joins, as a
+/// share of the pane's shorter side: Zed's `drop_target_size` default.
+const SPLIT_ZONE: f32 = 0.2;
+
+/// Zed's rule for where a tab dragged to `(x, y)` in a pane of `width` by
+/// `height` would split off: near an edge, the nearest edge; further in,
+/// nowhere, and the tab joins the pane.
+fn split_side(x: f32, y: f32, width: f32, height: f32) -> Option<SplitDirection> {
+    let zone = width.min(height) * SPLIT_ZONE;
+    if x >= zone && x <= width - zone && y >= zone && y <= height - zone {
+        return None;
+    }
+    [
+        (SplitDirection::Up, y),
+        (SplitDirection::Right, width - x),
+        (SplitDirection::Down, height - y),
+        (SplitDirection::Left, x),
+    ]
+    .into_iter()
+    .min_by(|a, b| a.1.total_cmp(&b.1))
+    .map(|(side, _)| side)
+}
 
 impl Render for Tabs {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -371,28 +464,47 @@ impl Render for Tabs {
                     .relative()
                     .flex_1()
                     .min_h_0()
-                    .group(BODY_GROUP)
+                    .on_drag_move::<DraggedTab>(cx.listener(|this, event, _, cx| {
+                        this.track_drag(event, cx);
+                    }))
                     // Cached as the tree caches a leaf, so a tab re-renders
                     // only when it notifies, not each time the bar above it
                     // does.
                     .child(self.shown().clone().cached(crate::pane_group::fill_style()))
-                    // Zed's drop target over the pane: hidden until a tab is
-                    // dragged over it, so drags of files reach the rows below.
+                    // Zed's drop target over the pane, clear until a tab is
+                    // dragged over it. Zed hides it until its pane is under a
+                    // drag, but a hidden element takes no drop, and the
+                    // scrollbar along a pane's right edge blocks the pane
+                    // from being under anything: a drop at that edge, the one
+                    // a split to the right is made at, was lost. Drawn last,
+                    // it is above the scrollbar; its hitbox blocks nothing,
+                    // so the rows under it still take clicks and file drops.
                     .child(
                         div()
                             .id("tab-drop-target")
-                            .invisible()
                             .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full()
-                            .bg(cx.theme().colors().drop_target_background)
-                            .group_drag_over::<DraggedTab>(BODY_GROUP, |s| s.visible())
-                            .on_drop(cx.listener(move |_, dragged: &DraggedTab, _, cx| {
-                                cx.emit(TabsEvent::Drop {
-                                    dragged: dragged.clone(),
-                                    at: None,
-                                });
+                            // The whole pane to join it, or the half the new
+                            // pane would take, as in Zed.
+                            .map(|el| match self.drag_split {
+                                None => el.top_0().left_0().size_full(),
+                                Some(SplitDirection::Up) => {
+                                    el.top_0().left_0().w_full().h(relative(0.5))
+                                }
+                                Some(SplitDirection::Down) => {
+                                    el.bottom_0().left_0().w_full().h(relative(0.5))
+                                }
+                                Some(SplitDirection::Left) => {
+                                    el.top_0().left_0().h_full().w(relative(0.5))
+                                }
+                                Some(SplitDirection::Right) => {
+                                    el.top_0().right_0().h_full().w(relative(0.5))
+                                }
+                            })
+                            .drag_over::<DraggedTab>(|el, _, _, cx| {
+                                el.bg(cx.theme().colors().drop_target_background)
+                            })
+                            .on_drop(cx.listener(|this, dragged: &DraggedTab, window, cx| {
+                                this.emit_drop(dragged, None, window, cx);
                             })),
                     ),
             )
@@ -480,6 +592,20 @@ mod tests {
         // The end of the bar is past the last tab.
         tabs.move_to(0, 3);
         assert_eq!(tabs.items(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn a_tab_near_an_edge_splits_toward_it() {
+        // 400 by 200: the zone is 40 pixels in from each edge.
+        assert_eq!(split_side(200., 5., 400., 200.), Some(SplitDirection::Up));
+        assert_eq!(split_side(390., 100., 400., 200.), Some(SplitDirection::Right));
+        assert_eq!(split_side(200., 170., 400., 200.), Some(SplitDirection::Down));
+        assert_eq!(split_side(30., 100., 400., 200.), Some(SplitDirection::Left));
+        assert_eq!(split_side(200., 100., 400., 200.), None);
+        assert_eq!(split_side(41., 41., 400., 200.), None);
+        // In a corner, the nearer edge.
+        assert_eq!(split_side(10., 5., 400., 200.), Some(SplitDirection::Up));
+        assert_eq!(split_side(5., 10., 400., 200.), Some(SplitDirection::Left));
     }
 
     #[test]

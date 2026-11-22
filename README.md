@@ -28,9 +28,11 @@ updates, and archive browsing that feels like working with ordinary folders.
 - **Recursive pane layout.** Split the window into panes. Each pane shows one
   directory, and panes can be split recursively into any layout.
 - **Tabs.** Each pane can hold tabs, as Zed's panes do, and each tab has its
-  own folder and history. The tab bar shows when a pane has a second tab.
-  Middle-click a folder to open it in a tab, and drop files on a tab to put
-  them in its folder. A tab that is not shown stops watching its folder and
+  own folder and history. The tab bar shows when a pane has a second tab, or
+  when the window has more than one pane. Drag a tab to another pane, or to
+  the edge of a pane to split a new pane off there, as in Zed. Middle-click a
+  folder to open it in a tab, and drop files on a tab to put them in its
+  folder. A tab that is not shown stops watching its folder and
   reads it again when you show it.
 - **Fast directory listings.** Rows are virtualized, so even very large
   directories stay smooth while scrolling.
