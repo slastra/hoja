@@ -30,6 +30,7 @@ mod menus;
 
 use self::columns::*;
 pub use self::columns::{Column, ColumnLayout};
+pub(crate) use self::drag::folder_drop_target;
 use self::drag::*;
 use self::list::*;
 use crate::location::Location;
@@ -136,6 +137,9 @@ pub enum PaneEvent {
         sources: Vec<PathBuf>,
         dest: PathBuf,
     },
+    /// A middle click on a folder: open it in a new tab beside this one,
+    /// without showing it.
+    OpenInTab(Location),
     /// A file inside an archive was activated. Opening it means extracting a
     /// temporary copy first, which needs the user's say-so: the workspace owns
     /// the dialog that asks.
@@ -3031,66 +3035,42 @@ impl DirPane {
     /// double-click tested `is_dir` and did nothing at all when the answer was
     /// no, so a file opened from the keyboard and not from the mouse.
     fn activate(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if let Some(place) = self.destination_of(ix) {
+            self.navigate_to(place, cx);
+            return;
+        }
         let Some(entry) = self.entries.get(ix) else {
             return;
         };
-        // Inside an archive already: a folder is somewhere to go, a file is
-        // not. `xdg-open` needs a path and there is none, so opening one means
-        // extracting a temporary copy first, and that needs the user's say-so:
-        // see `open_prompt`, and why it asks rather than just doing it.
+        // A file inside an archive. `xdg-open` needs a path and there is none,
+        // so opening one means extracting a temporary copy first, and that
+        // needs the user's say-so: see `open_prompt`, and why it asks rather
+        // than just doing it.
         if entry.member().is_some() {
             let Location::Archive { archive, .. } = &self.dir else {
                 return;
             };
-            // Where this row sits in the archive, from the archive's own root.
-            // Not the pane's directory joined to the name: a row does not have
-            // to have come from the directory being shown, and once a search
-            // can return one from further down, `dir.join(name)` names a place
-            // that does not exist.
             let Some(member) = entry.key().strip_prefix(archive).ok() else {
                 return;
             };
             let (archive, member) = (archive.clone(), member.to_path_buf());
-            if entry.is_dir {
-                self.navigate_to(
-                    Location::Archive {
-                        archive,
-                        inside: member,
-                    },
-                    cx,
-                );
-            } else {
-                // The member's *own* directory, not the pane's. `extract`
-                // strips this off what it writes, so the temp copy lands as a
-                // bare file and `extract_and_open` opens the file rather than
-                // the first directory on the way down to it.
-                let inside = member.parent().unwrap_or(Path::new("")).to_path_buf();
-                cx.emit(PaneEvent::ConfirmExtractAndOpen {
-                    archive,
-                    inside,
-                    member: member.to_string_lossy().into_owned(),
-                    name: entry.name.clone(),
-                });
-            }
+            // The member's *own* directory, not the pane's. `extract` strips
+            // this off what it writes, so the temp copy lands as a bare file
+            // and `extract_and_open` opens the file rather than the first
+            // directory on the way down to it.
+            let inside = member.parent().unwrap_or(Path::new("")).to_path_buf();
+            cx.emit(PaneEvent::ConfirmExtractAndOpen {
+                archive,
+                inside,
+                member: member.to_string_lossy().into_owned(),
+                name: entry.name.clone(),
+            });
             return;
         }
 
-        // Both branches below need a real path: one to list, one to hand to
-        // the desktop.
         let Some(path) = entry.on_disk().map(Path::to_path_buf) else {
             return;
         };
-        if entry.is_dir {
-            self.navigate_to(Location::Disk(path), cx);
-            return;
-        }
-        // An archive is a folder as far as this is concerned. Only `.zip`, and
-        // deliberately not the many document formats that are zip files
-        // underneath: see `archive::is_archive`.
-        if crate::archive::is_archive(&path) {
-            self.navigate_to(Location::in_archive(path), cx);
-            return;
-        }
         if let Err(err) = crate::opener::open(&path) {
             // On the strip rather than only on stderr: a double-click that
             // silently does nothing reads as the click not registering, and
@@ -3101,6 +3081,40 @@ impl DirPane {
                 problem: true,
             });
         }
+    }
+
+    /// Where row `ix` leads, when it is somewhere to go: a folder, on the disk
+    /// or in an archive, or an archive file, which is a folder as far as this
+    /// is concerned. `None` for a file to open.
+    ///
+    /// Enter and double-click go there; a middle click opens it in a new tab.
+    fn destination_of(&self, ix: usize) -> Option<Location> {
+        let entry = self.entries.get(ix)?;
+        if entry.member().is_some() {
+            let Location::Archive { archive, .. } = &self.dir else {
+                return None;
+            };
+            if !entry.is_dir {
+                return None;
+            }
+            // Where this row sits in the archive, from the archive's own root.
+            // Not the pane's directory joined to the name: a row does not have
+            // to have come from the directory being shown, and once a search
+            // can return one from further down, `dir.join(name)` names a place
+            // that does not exist.
+            let member = entry.key().strip_prefix(archive).ok()?;
+            return Some(Location::Archive {
+                archive: archive.clone(),
+                inside: member.to_path_buf(),
+            });
+        }
+        let path = entry.on_disk()?.to_path_buf();
+        if entry.is_dir {
+            return Some(Location::Disk(path));
+        }
+        // Only `.zip` and the tarballs, and deliberately not the many document
+        // formats that are zip files underneath: see `archive::is_archive`.
+        crate::archive::is_archive(&path).then(|| Location::in_archive(path))
     }
 
     fn render_body(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {

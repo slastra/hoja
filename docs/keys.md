@@ -82,7 +82,10 @@ because they are rare. "pane: close pane" closes a pane and all of its tabs.
 | Click the magnifier | Start or stop a search |
 | Drag rows | Move them. Across filesystems, Hoja copies them. |
 | <kbd>Ctrl</kbd> + Drag / <kbd>Shift</kbd> + Drag | Always copy / always move |
-| Drop on a folder row | Put the files in that folder |
+| Drop on a folder row or a tab | Put the files in that folder |
+| Middle-click a folder | Open it in a new tab, and stay where you are |
+| Click a tab / middle-click a tab | Show the tab / close the tab |
+| Double-click the empty end of the tab bar | Open a new tab |
 | Back and forward buttons | Go back and forward in the history |
 
 ## While you edit a path

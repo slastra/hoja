@@ -100,3 +100,33 @@ expect 'd["tabs"][0]["active"] == 2' "a double click on the bar opens a tab"
 tabclose 0
 wait_for 'len(d["tabs"][0]["titles"]) == 2'
 expect 'd["tabs"][0]["active"] == 1' "the close button closes its own tab, not the shown one"
+
+# Back to one tab at the top of the fixture.
+for _ in 1 2 3 4; do
+    [ "$(probe 'len(d["tabs"][0]["titles"]) > 1')" = "True" ] || break
+    key -M ctrl -k w -m ctrl
+    sleep 0.3
+done
+wait_for 'len(d["tabs"][0]["titles"]) == 1'
+key -M alt -k Up -m alt
+wait_for "p[0]['dir'] == '$ROOT' and p[0]['rows'] == ['alpha', 'beta']"
+
+# A middle click on a folder opens it in a tab and stays where it is.
+goto "$((WX + 150))" "$(row "$(named beta)")"
+wlrctl pointer click middle >/dev/null 2>&1
+wait_for 'len(d["tabs"][0]["titles"]) == 2'
+expect 'd["tabs"][0]["titles"][1] == "beta"' "a middle click opens a folder in a tab"
+expect "d['tabs'][0]['active'] == 0 and p[0]['dir'] == '$ROOT'" "and the shown tab stays"
+expect 'd["hidden_watching"] == 0' "the new tab, hidden, watches nothing"
+
+# A file dropped on a tab goes into that tab's folder.
+dbl "$(named alpha)"
+wait_for 'p[0]["dir"].endswith("/alpha") and "one.txt" in p[0]["rows"]'
+FROM_Y=$(( $(row "$(named one.txt)") - WY ))
+# shellcheck disable=SC2046  # two words, x and y
+drag 150 "$FROM_Y" $(tabat 1)
+wait_for '"one.txt" not in p[0]["rows"]'
+expect "$([ -e "$START_DIR/beta/one.txt" ] && echo True || echo False)" "a file dropped on a tab lands in its folder"
+tab 1
+wait_for '"one.txt" in p[0]["rows"]'
+expect 'p[0]["dir"].endswith("/beta")' "and the tab shows it there"

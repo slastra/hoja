@@ -147,6 +147,73 @@ pub(super) fn cursor_follows_drops<E: InteractiveElement>(el: E, target: Option<
     })
 }
 
+/// Make `el` a place to drop on that means the folder `target`: a folder
+/// row, or a tab. The drop goes through `pane`, so the move or copy rules are
+/// the ones a row has, whichever of the two it was.
+///
+/// A tint either way rather than a border: a row has none, and adding one
+/// would resize it as the pointer passed over.
+///
+/// `can_drop` is not the gate any more. It used to refuse, which suppressed
+/// the highlight and left the cursor to say why, but a compositor drag owns
+/// the cursor and we cannot set it. So every drop is taken and the style says
+/// whether it will do anything; `accept_drop` already discards an invalid one
+/// through `is_valid_drop`, so a refused drop lands on a handler that returns
+/// immediately, exactly as it was consumed before.
+pub(crate) fn folder_drop_target(
+    el: gpui::Stateful<gpui::Div>,
+    pane: Entity<DirPane>,
+    target: PathBuf,
+    cx: &App,
+) -> gpui::Stateful<gpui::Div> {
+    let highlight = cx.theme().colors().drop_target_background;
+    let refused = cx.theme().status().error_background;
+    cursor_follows_drops(el, Some(target.clone()))
+        .can_drop(|_, _, _| true)
+        .drag_over::<DraggedPaths>({
+            let target = target.clone();
+            move |style, dragged, _, _| {
+                style.bg(tint(drop_allowed(dragged, &target), highlight, refused))
+            }
+        })
+        .drag_over::<ExternalPaths>({
+            let target = target.clone();
+            move |style, dragged, _, _| {
+                style.bg(tint(drop_allowed(dragged, &target), highlight, refused))
+            }
+        })
+        .drag_over::<DraggedMembers>(move |style, _, _, _| style.bg(highlight))
+        .on_drop({
+            let (pane, target) = (pane.clone(), target.clone());
+            move |dragged: &DraggedPaths, window, cx| {
+                let sources = dragged.paths();
+                let from = dragged.source_dir.clone();
+                pane.update(cx, |this, cx| {
+                    this.accept_drop(sources, Some(&from), target.clone(), window, cx)
+                });
+            }
+        })
+        .on_drop({
+            let (pane, target) = (pane.clone(), target.clone());
+            move |paths: &ExternalPaths, window, cx| {
+                let sources = paths.paths().to_vec();
+                pane.update(cx, |this, cx| {
+                    this.accept_drop(sources, None, target.clone(), window, cx)
+                });
+            }
+        })
+        .on_drop(move |dragged: &DraggedMembers, _window, cx| {
+            let (archive, inside, roots) = (
+                dragged.archive.clone(),
+                dragged.inside.clone(),
+                dragged.roots(),
+            );
+            pane.update(cx, |this, cx| {
+                this.accept_extract_drop(archive, inside, roots, target.clone(), cx)
+            });
+        })
+}
+
 /// Rows being dragged, and where they came from so a drop back onto their own
 /// directory can be refused.
 ///
@@ -467,72 +534,22 @@ impl DirPane {
         row
             // A folder is a place to drop things only when it is a folder on
             // the disk. There is nowhere to put a file inside an archive.
+            // A folder is a place to drop things only when it is a folder on
+            // the disk. There is nowhere to put a file inside an archive.
             .when_some(on_disk.clone().filter(|_| is_dir), |row, target| {
-                let highlight = colors.drop_target_background;
-                let refused = cx.theme().status().error_background;
-                // A tint either way rather than a border: a row has none, and
-                // adding one would resize it as the pointer passed over.
-                //
-                // `can_drop` is not the gate any more. It used to refuse, which
-                // suppressed the highlight and left the cursor to say why, but a
-                // compositor drag owns the cursor and we cannot set it. So every
-                // drop is taken and the style says whether it will do anything;
-                // `accept_drop` already discards an invalid one through
-                // `is_valid_drop`, so a refused drop lands on a handler that
-                // returns immediately, exactly as it was consumed before.
-                cursor_follows_drops(row, Some(target.clone()))
-                    .can_drop(|_, _, _| true)
-                    .drag_over::<DraggedPaths>({
-                        let target = target.clone();
-                        move |style, dragged, _, _| {
-                            style.bg(tint(drop_allowed(dragged, &target), highlight, refused))
-                        }
-                    })
-                    .drag_over::<ExternalPaths>({
-                        let target = target.clone();
-                        move |style, dragged, _, _| {
-                            style.bg(tint(drop_allowed(dragged, &target), highlight, refused))
-                        }
-                    })
-                    .drag_over::<DraggedMembers>(move |style, _, _, _| style.bg(highlight))
-                    .on_drop(cx.listener({
-                        let target = target.clone();
-                        move |this, dragged: &DraggedPaths, window, cx| {
-                            let sources = dragged.paths();
-                            this.accept_drop(
-                                sources,
-                                Some(&dragged.source_dir.clone()),
-                                target.clone(),
-                                window,
-                                cx,
-                            );
-                        }
-                    }))
-                    .on_drop(cx.listener({
-                        let target = target.clone();
-                        move |this, paths: &ExternalPaths, window, cx| {
-                            this.accept_drop(
-                                paths.paths().to_vec(),
-                                None,
-                                target.clone(),
-                                window,
-                                cx,
-                            );
-                        }
-                    }))
-                    .on_drop(cx.listener({
-                        let target = target.clone();
-                        move |this, dragged: &DraggedMembers, _window, cx| {
-                            this.accept_extract_drop(
-                                dragged.archive.clone(),
-                                dragged.inside.clone(),
-                                dragged.roots(),
-                                target.clone(),
-                                cx,
-                            );
-                        }
-                    }))
+                folder_drop_target(row, cx.entity(), target, cx)
             })
+            // A middle click opens a folder in a new tab, as a browser opens a
+            // link, and leaves this tab shown.
+            .on_aux_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                if !event.is_middle_click() {
+                    return;
+                }
+                if let Some(place) = this.destination_of(ix) {
+                    cx.stop_propagation();
+                    cx.emit(PaneEvent::OpenInTab(place));
+                }
+            }))
             .when_some(dragged, |row, dragged| {
                 // Also where the payload settles what it carries: see `resolve`.
                 let spec = chip_spec.clone();

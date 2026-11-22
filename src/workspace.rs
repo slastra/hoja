@@ -825,6 +825,9 @@ impl Workspace {
             PaneEvent::Transfer { op, sources, dest } => {
                 this.spawn_transfer(*op, sources.clone(), dest.clone(), window, cx)
             }
+            PaneEvent::OpenInTab(place) => {
+                this.open_background_tab(&pane.clone(), place.clone(), window, cx)
+            }
             PaneEvent::ConfirmExtractAndOpen {
                 archive,
                 inside,
@@ -1084,6 +1087,31 @@ impl Workspace {
         });
         old.update(cx, |old, cx| old.set_visible(false, cx));
         self.show_pane(pane, window, cx);
+        cx.notify();
+    }
+
+    /// A tab on `place` after `source`'s, in the same tile, left hidden: a
+    /// middle click opens a folder for later and stays where it is.
+    fn open_background_tab(
+        &mut self,
+        source: &Entity<DirPane>,
+        place: Location,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tile) = self.tile_of(source, cx) else {
+            return;
+        };
+        let view = source.read(cx).view_settings();
+        // A new pane takes focus as it is made. Given straight back, in the
+        // same update, so no focus event is sent for either.
+        let pane = self.add_pane(place, view, window, cx);
+        window.focus(&source.focus_handle(cx), cx);
+        pane.update(cx, |pane, cx| pane.set_visible(false, cx));
+        tile.update(cx, |tile, cx| {
+            tile.list.insert_after_active(pane);
+            cx.notify();
+        });
         cx.notify();
     }
 

@@ -88,9 +88,11 @@ scripts/sway-harness.sh "$(scripts/tests/setup-history.sh)" scripts/tests/histor
 ```
 
 `tabs.sh` needs `setup-tabs.sh`, which makes two folders. The suite opens tabs,
-moves between them by key, closes them, and checks three things: a hidden tab
-holds no watch, a file written while its tab is hidden shows when the tab is
-shown, and Tab between panes passes over hidden tabs.
+moves between them by key and by the bar, closes them, opens a folder in a tab
+with a middle click, and drops a file on a tab. It also checks that a hidden
+tab holds no watch, that a file written while its tab is hidden shows when the
+tab is shown, and that Tab between panes passes over hidden tabs. The harness
+finds a tab from the probe: `tab N`, `mtab N` and `tabclose N`.
 
 ```sh
 scripts/sway-harness.sh "$(scripts/tests/setup-tabs.sh)" scripts/tests/tabs.sh

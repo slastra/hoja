@@ -12,7 +12,9 @@ use gpui::{
 };
 use theme::ActiveTheme;
 
-use crate::dir_pane::DirPane;
+use std::path::Path;
+
+use crate::dir_pane::{DirPane, folder_drop_target};
 use crate::icon::Icon;
 use crate::location::Location;
 use crate::ui::{self, TabPosition};
@@ -185,6 +187,11 @@ impl Tabs {
                     cx,
                 )
                 .tooltip(ui::tooltip(location.to_string()))
+                // Something dropped on a tab goes into its folder, as onto a
+                // folder row. A tab in an archive takes nothing.
+                .when_some(location.disk().map(Path::to_path_buf), |el, target| {
+                    folder_drop_target(el, pane.clone(), target, cx)
+                })
                 .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                     cx.emit(TabsEvent::Activate(ix));
                 }))
