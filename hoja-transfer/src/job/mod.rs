@@ -404,6 +404,10 @@ struct Worker {
     scanned: bool,
     /// Reused by every read/write fallback in the job: see `copy_extent`.
     copy_buf: Vec<u8>,
+    /// Whether the destination still takes `O_TMPFILE`. Cleared by the first
+    /// refusal (FAT, exFAT and some network filesystems have no such thing),
+    /// after which every file takes a temporary name instead.
+    anonymous_ok: bool,
     /// `st_dev` → mount key, so the statx behind `mount_key` happens once per
     /// filesystem rather than once per file. Keying on `st_dev` is sound for
     /// what the answer is used for: it decides whether rename and reflink are
@@ -519,6 +523,7 @@ impl Worker {
             dest_mount: None,
             scanned: false,
             copy_buf: Vec::new(),
+            anonymous_ok: true,
             mount_keys: HashMap::new(),
             undone: Vec::new(),
             undoable: true,
@@ -630,15 +635,7 @@ impl Worker {
         }
 
         if meta.is_dir() {
-            let Ok(entries) = std::fs::read_dir(src) else {
-                return Step::Ok;
-            };
-            for entry in entries.filter_map(Result::ok) {
-                if matches!(self.scan(&entry.path()), Step::Cancelled) {
-                    return Step::Cancelled;
-                }
-            }
-            return Step::Ok;
+            return self.scan_dir(src);
         }
 
         if meta.is_file() {
@@ -648,6 +645,41 @@ impl Worker {
                 .fetch_add(meta.len(), Ordering::Relaxed);
         }
         // Special files are neither counted nor copied; the transfer refuses them.
+        Step::Ok
+    }
+
+    /// `scan` for what a directory holds, by the type each entry carries.
+    ///
+    /// The type comes with the directory entry, so a link or a folder costs
+    /// no stat, and a file is stat'ed relative to the open directory rather
+    /// than by its whole path. A quarter of the scan of 50,000 files was the
+    /// path lookups this saves.
+    fn scan_dir(&mut self, dir: &Path) -> Step {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Step::Ok;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            if self.check_pause_cancel() {
+                return Step::Cancelled;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                self.progress.files_total.fetch_add(1, Ordering::Relaxed);
+            } else if kind.is_dir() {
+                if matches!(self.scan_dir(&entry.path()), Step::Cancelled) {
+                    return Step::Cancelled;
+                }
+            } else if kind.is_file()
+                && let Ok(meta) = entry.metadata()
+            {
+                self.progress.files_total.fetch_add(1, Ordering::Relaxed);
+                self.progress
+                    .bytes_total
+                    .fetch_add(meta.len(), Ordering::Relaxed);
+            }
+        }
         Step::Ok
     }
 
@@ -1212,7 +1244,9 @@ impl Worker {
                     // `d_ino` comes with the entry, so this costs no syscall.
                     .filter(|e| !self.made_dirs.contains(&(src_meta.dev(), e.ino())))
                     .collect();
-                v.sort_by_key(|e| e.file_name());
+                // Cached: the key is an allocation, and a plain sort makes
+                // two of them for every comparison.
+                v.sort_by_cached_key(|e| e.file_name());
                 v
             }
             Err(err) => {
@@ -1354,14 +1388,8 @@ impl Worker {
             }
         };
 
-        let tmp_path = sys::partial_path(dest);
-        let tmp = match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp_path)
-        {
-            Ok(f) => f,
+        let (tmp, temp) = match self.open_temp(dest, replacing) {
+            Ok(opened) => opened,
             Err(err) => {
                 self.queue_error(dest, Stage::Open, err);
                 return self.continue_or_fatal();
@@ -1371,13 +1399,11 @@ impl Worker {
         let mechanism = match self.copy_into_tmp(&src_file, &tmp, src, src_meta) {
             Ok(CopyOutcome::Done(mechanism)) => mechanism,
             Ok(CopyOutcome::Cancelled) => {
-                drop(tmp);
-                let _ = std::fs::remove_file(&tmp_path);
+                temp.discard(tmp);
                 return Step::Cancelled;
             }
             Err(err) => {
-                drop(tmp);
-                let _ = std::fs::remove_file(&tmp_path);
+                temp.discard(tmp);
                 self.queue_error(src, Stage::Write, err);
                 return self.continue_or_fatal();
             }
@@ -1400,8 +1426,7 @@ impl Worker {
         // removable kind most likely to be pulled mid-writeback, and
         // skipping the fsync there was the opposite of the intent.
         if replacing && let Err(err) = rustix::fs::fsync(&tmp) {
-            drop(tmp);
-            let _ = std::fs::remove_file(&tmp_path);
+            temp.discard(tmp);
             self.queue_error(dest, Stage::Write, err.into());
             return self.continue_or_fatal();
         }
@@ -1415,11 +1440,11 @@ impl Worker {
         } else {
             None
         };
-        drop(tmp);
 
-        let Some(dest) = self.land(src, &tmp_path, dest, replacing) else {
+        let Some(dest) = self.land(src, &tmp, &temp, dest, replacing) else {
             return self.continue_or_fatal();
         };
+        drop(tmp);
         let dest = match dest {
             Landed::At(path) => path,
             Landed::Skipped => return self.skipped(),
@@ -1457,20 +1482,21 @@ impl Worker {
     fn land(
         &mut self,
         src: &Path,
-        tmp_path: &Path,
+        file: &File,
+        temp: &Temp,
         dest: &Path,
         replacing: bool,
     ) -> Option<Landed> {
         let mut dest = dest.to_path_buf();
         let mut replacing = replacing;
         loop {
-            let renamed = if replacing {
+            let landed = if replacing {
                 self.displace(&dest);
-                std::fs::rename(tmp_path, &dest)
+                temp.replace(file, &dest)
             } else {
-                sys::rename_no_replace(tmp_path, &dest)
+                temp.place(file, &dest)
             };
-            match renamed {
+            match landed {
                 Ok(()) => return Some(Landed::At(dest)),
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && !replacing => {
                     // Somebody else's file arrived while this one copied.
@@ -1479,26 +1505,76 @@ impl Worker {
                             path,
                             replacing: again,
                         } => {
+                            // A replacement wants the data on the disk before
+                            // the old file goes, as it does when it is known
+                            // from the start.
+                            if again && let Err(err) = rustix::fs::fsync(file) {
+                                temp.remove();
+                                self.queue_error(&path, Stage::Write, err.into());
+                                return None;
+                            }
                             dest = path;
                             replacing = again;
                         }
                         DestPlan::Skip => {
-                            let _ = std::fs::remove_file(tmp_path);
+                            temp.remove();
                             return Some(Landed::Skipped);
                         }
                         DestPlan::Cancel => {
-                            let _ = std::fs::remove_file(tmp_path);
+                            temp.remove();
                             return Some(Landed::Cancelled);
                         }
                     }
                 }
                 Err(err) => {
-                    let _ = std::fs::remove_file(tmp_path);
+                    temp.remove();
                     self.queue_error(&dest, Stage::Rename, err);
                     return None;
                 }
             }
         }
+    }
+
+    /// The file a copy is written into before it takes its name.
+    ///
+    /// Anonymous where the filesystem allows it: `O_TMPFILE` makes a file
+    /// with no name at all, and `linkat` gives it one when it is whole. That
+    /// is a create and a rename fewer per file than a temporary name, a tenth
+    /// of the time of a copy of 50,000 small files, and a copy cut off
+    /// halfway leaves nothing behind to find or reap. A replacement takes a
+    /// temporary name from the start, since only a rename can replace.
+    fn open_temp(&mut self, dest: &Path, replacing: bool) -> std::io::Result<(File, Temp)> {
+        if !replacing
+            && self.anonymous_ok
+            && let Some(folder) = dest.parent()
+        {
+            match rustix::fs::open(
+                folder,
+                rustix::fs::OFlags::TMPFILE
+                    | rustix::fs::OFlags::WRONLY
+                    | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::from_raw_mode(0o600),
+            ) {
+                Ok(fd) => return Ok((File::from(fd), Temp::Anonymous)),
+                // No `O_TMPFILE` on this filesystem, or none in this kernel,
+                // which reads the flag as `O_DIRECTORY` and says so.
+                Err(
+                    rustix::io::Errno::OPNOTSUPP
+                    | rustix::io::Errno::ISDIR
+                    | rustix::io::Errno::INVAL,
+                ) => self.anonymous_ok = false,
+                // Anything else, such as a folder that refuses writes, the
+                // named file below meets too, and reports as it always has.
+                Err(_) => {}
+            }
+        }
+        let path = sys::partial_path(dest);
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        Ok((file, Temp::Named(path)))
     }
 
     /// Remove a move's source, once its copy at `dest` is known to be on disk.
@@ -1770,6 +1846,82 @@ impl Worker {
     }
 }
 
+/// Where a copy is until it lands. See `Worker::open_temp`.
+enum Temp {
+    Named(PathBuf),
+    Anonymous,
+}
+
+impl Temp {
+    /// Give the file its name, never over another.
+    fn place(&self, file: &File, dest: &Path) -> std::io::Result<()> {
+        match self {
+            Temp::Named(path) => sys::rename_no_replace(path, dest),
+            Temp::Anonymous => link_anonymous(file, dest),
+        }
+    }
+
+    /// Give the file its name, over whatever has it.
+    fn replace(&self, file: &File, dest: &Path) -> std::io::Result<()> {
+        match self {
+            Temp::Named(path) => std::fs::rename(path, dest),
+            // Only a rename replaces, and only a named file can be renamed.
+            Temp::Anonymous => {
+                let path = sys::partial_path(dest);
+                link_anonymous(file, &path)?;
+                std::fs::rename(&path, dest).inspect_err(|_| {
+                    let _ = std::fs::remove_file(&path);
+                })
+            }
+        }
+    }
+
+    /// Remove what is left of a copy that will not land.
+    fn remove(&self) {
+        if let Temp::Named(path) = self {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    fn discard(self, file: File) {
+        drop(file);
+        self.remove();
+    }
+}
+
+/// Name an `O_TMPFILE` file. `linkat` never replaces, so a name somebody
+/// else has taken meanwhile is an `AlreadyExists`, as it is for a rename with
+/// NOREPLACE.
+///
+/// `AT_EMPTY_PATH` names the descriptor itself. Kernels before 6.10 allow it
+/// only with `CAP_DAC_READ_SEARCH`, and there the descriptor's entry in
+/// `/proc/self/fd` does the same thing for anybody: the recipe in `open(2)`.
+fn link_anonymous(file: &File, dest: &Path) -> std::io::Result<()> {
+    match rustix::fs::linkat(
+        file,
+        "",
+        rustix::fs::CWD,
+        dest,
+        rustix::fs::AtFlags::EMPTY_PATH,
+    ) {
+        Ok(()) => Ok(()),
+        Err(rustix::io::Errno::NOENT | rustix::io::Errno::PERM) => link_through_proc(file, dest),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn link_through_proc(file: &File, dest: &Path) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    rustix::fs::linkat(
+        rustix::fs::CWD,
+        format!("/proc/self/fd/{}", file.as_raw_fd()).as_str(),
+        rustix::fs::CWD,
+        dest,
+        rustix::fs::AtFlags::SYMLINK_FOLLOW,
+    )
+    .map_err(Into::into)
+}
+
 /// Whether `dest` is an earlier run's copy of `src`. See `JobPolicy::resume`.
 fn own_copy(src: &Path, src_meta: &std::fs::Metadata, dest: &Path) -> bool {
     let Ok(dest_meta) = std::fs::symlink_metadata(dest) else {
@@ -1808,3 +1960,62 @@ enum DestPlan {
 }
 
 use std::os::unix::fs::OpenOptionsExt;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn anonymous_in(folder: &Path, body: &[u8]) -> File {
+        let fd = rustix::fs::open(
+            folder,
+            rustix::fs::OFlags::TMPFILE | rustix::fs::OFlags::WRONLY,
+            rustix::fs::Mode::from_raw_mode(0o600),
+        )
+        .expect("O_TMPFILE on the test filesystem");
+        let mut file = File::from(fd);
+        file.write_all(body).unwrap();
+        file
+    }
+
+    #[test]
+    fn an_anonymous_copy_lands_only_on_a_free_name() {
+        let folder = tempfile::tempdir().unwrap();
+        let taken = folder.path().join("taken");
+        std::fs::write(&taken, b"theirs").unwrap();
+        let file = anonymous_in(folder.path(), b"ours");
+
+        let err = Temp::Anonymous.place(&file, &taken).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&taken).unwrap(), b"theirs");
+
+        let free = folder.path().join("free");
+        Temp::Anonymous.place(&file, &free).unwrap();
+        assert_eq!(std::fs::read(&free).unwrap(), b"ours");
+    }
+
+    #[test]
+    fn an_anonymous_copy_replaces_through_a_name_of_its_own() {
+        let folder = tempfile::tempdir().unwrap();
+        let taken = folder.path().join("taken");
+        std::fs::write(&taken, b"theirs").unwrap();
+        let file = anonymous_in(folder.path(), b"ours");
+
+        Temp::Anonymous.replace(&file, &taken).unwrap();
+        assert_eq!(std::fs::read(&taken).unwrap(), b"ours");
+        let names: Vec<_> = std::fs::read_dir(folder.path()).unwrap().collect();
+        assert_eq!(names.len(), 1, "the temporary name was left behind");
+    }
+
+    #[test]
+    fn the_proc_route_names_an_anonymous_file_too() {
+        // What kernels before 6.10 take, without the capability.
+        let folder = tempfile::tempdir().unwrap();
+        let file = anonymous_in(folder.path(), b"ours");
+        let dest = folder.path().join("named");
+        link_through_proc(&file, &dest).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"ours");
+        let err = link_through_proc(&file, &dest).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+    }
+}

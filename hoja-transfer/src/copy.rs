@@ -31,7 +31,8 @@ pub fn try_reflink(src: &File, dest: &File) -> Result<(), Errno> {
 
 /// Tier 2: sparse-aware copy of `len` bytes from `src` into `dest` (an empty
 /// temp file). Holes are preserved by construction: `ftruncate` to full length
-/// first (making trailing holes free), then only data extents are written.
+/// first (making trailing holes free), then only data extents are written. A
+/// file with no holes skips the `ftruncate`, which is one syscall per file.
 ///
 /// `copy_file_range` is preferred per-extent; the first hard failure flips the
 /// whole file to a reusable-buffer read/write loop at the same offsets. Short
@@ -51,7 +52,12 @@ pub fn copy_contents(
     buf: &mut Vec<u8>,
     maybe_sparse: bool,
 ) -> std::io::Result<CopyOutcome> {
-    rustix::fs::ftruncate(dest, len)?;
+    // Only where there may be holes. Every byte of a file without them is
+    // written below, which gives it its length anyway, and a file whose copy
+    // came up short is caught in `Copier::extent`, not by its length.
+    if maybe_sparse {
+        rustix::fs::ftruncate(dest, len)?;
+    }
     let mut copier = Copier {
         src,
         dest,
