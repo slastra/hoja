@@ -138,6 +138,8 @@ pub struct TabsProbe {
     pub active: usize,
     /// Where each tab is drawn, `[x, y, width, height]`, empty with no bar.
     pub rects: Vec<[i32; 4]>,
+    /// Whether the bar is drawn: with a second tab, or in a split.
+    pub bar: bool,
 }
 
 #[derive(Serialize, PartialEq, Eq)]

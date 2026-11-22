@@ -6,7 +6,7 @@
 //! active pane and of which panes watch their folders.
 
 use gpui::{
-    AnyElement, ClickEvent, Context, Entity, EventEmitter, Focusable, InteractiveElement,
+    AnyElement, App, AppContext, ClickEvent, Context, Entity, EventEmitter, Focusable, InteractiveElement,
     IntoElement, ParentElement, Render, ScrollHandle, StatefulInteractiveElement, Styled, Window,
     div, prelude::FluentBuilder, px,
 };
@@ -77,6 +77,30 @@ impl<T: PartialEq + Clone> TabList<T> {
         true
     }
 
+    /// Put `item` at `at`, or at the end when `at` is past it. The shown tab
+    /// does not change.
+    pub fn insert(&mut self, at: usize, item: T) -> usize {
+        let at = at.min(self.items.len());
+        self.items.insert(at, item);
+        if at <= self.active {
+            self.active += 1;
+        }
+        at
+    }
+
+    /// Move the tab at `from` so it lands where the tab at `to` was, as a tab
+    /// dropped on another tab does in Zed. The shown tab stays shown.
+    pub fn move_to(&mut self, from: usize, to: usize) {
+        if from >= self.items.len() {
+            return;
+        }
+        let to = to.min(self.items.len() - 1);
+        let shown = self.items[self.active].clone();
+        let item = self.items.remove(from);
+        self.items.insert(to, item);
+        self.active = self.index_of(&shown).unwrap_or(0);
+    }
+
     /// Show the tab at `ix`, or the last one when there are fewer.
     pub fn activate(&mut self, ix: usize) {
         self.active = ix.min(self.items.len() - 1);
@@ -93,6 +117,27 @@ pub struct Tabs {
     pub list: TabList<Entity<DirPane>>,
     /// The bar's sideways scroll, which also knows where each tab was drawn.
     scroll: ScrollHandle,
+    /// Set by the workspace while the window has more than one pane: then
+    /// every pane shows its bar, so even a lone tab can be dragged.
+    split_bar: bool,
+}
+
+/// A tab on its way somewhere, as Zed's `DraggedTab`: what is moving, and
+/// what the preview under the pointer shows. The tile it leaves is looked up
+/// at the drop.
+#[derive(Clone)]
+pub struct DraggedTab {
+    pub pane: Entity<DirPane>,
+    pub ix: usize,
+    title: String,
+    archive: bool,
+}
+
+impl Render for DraggedTab {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let label = tab_label(&self.title, self.archive, true, cx);
+        ui::tab("dragged-tab", TabPosition::First, true, label, None, cx)
+    }
 }
 
 /// What a press on the bar asks for. The workspace does it, see the module
@@ -101,6 +146,12 @@ pub enum TabsEvent {
     Activate(usize),
     Close(usize),
     New,
+    /// A tab dropped on this tile: on a tab or the end of the bar to go at
+    /// `Some(ix)`, or on the pane below (`None`) to go after the shown tab.
+    Drop {
+        dragged: DraggedTab,
+        at: Option<usize>,
+    },
 }
 
 impl EventEmitter<TabsEvent> for Tabs {}
@@ -110,6 +161,19 @@ impl Tabs {
         Self {
             list: TabList::new(first),
             scroll: ScrollHandle::new(),
+            split_bar: false,
+        }
+    }
+
+    /// Whether the bar is drawn: with a second tab, or in a split.
+    pub fn has_bar(&self) -> bool {
+        self.list.items().len() > 1 || self.split_bar
+    }
+
+    pub fn set_split_bar(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.split_bar != on {
+            self.split_bar = on;
+            cx.notify();
         }
     }
 
@@ -125,7 +189,7 @@ impl Tabs {
     /// Where each tab was last drawn, as `[x, y, width, height]` in window
     /// pixels, for the probe. Empty while there is no bar.
     pub fn rects(&self) -> Vec<[i32; 4]> {
-        if self.list.items().len() < 2 {
+        if !self.has_bar() {
             return Vec::new();
         }
         (0..self.list.items().len())
@@ -142,7 +206,6 @@ impl Tabs {
     }
 
     fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let colors = cx.theme().colors();
         let count = self.list.items().len();
         let active = self.list.active();
         // A pane that is not the focused one dims its tabs, as it dims its
@@ -156,26 +219,14 @@ impl Tabs {
             .map(|(ix, pane)| {
                 let location = pane.read(cx).location();
                 let selected = ix == active;
-                let lit = selected && focused;
-                let label = div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    // Only an archive gets an icon, as Zed shows none: a
-                    // folder inside one is named like any folder on disk.
-                    .when(matches!(location, Location::Archive { .. }), |el| {
-                        el.child(
-                            Icon::from_path("icons/file_icons/archive.svg", colors.text_muted)
-                                .size(px(14.)),
-                        )
-                    })
-                    .child(
-                        div()
-                            .when(!lit, |el| el.text_color(colors.text_muted))
-                            .child(title(location)),
-                    )
-                    .into_any_element();
+                let archive = matches!(location, Location::Archive { .. });
+                let label = tab_label(&title(location), archive, selected && focused, cx);
+                let dragged = DraggedTab {
+                    pane: pane.clone(),
+                    ix,
+                    title: title(location),
+                    archive,
+                };
                 let close = ui::icon_button(("close-tab", ix), "icons/file_icons/close.svg", cx)
                     .invisible()
                     .group_hover(ui::TAB_GROUP, |s| s.visible())
@@ -202,6 +253,29 @@ impl Tabs {
                 .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                     cx.emit(TabsEvent::Activate(ix));
                 }))
+                .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+                // Zed's mark: the tab tinted, with a rule on the side the
+                // dragged tab would land.
+                .drag_over::<DraggedTab>(move |el, dragged, _, cx| {
+                    let colors = cx.theme().colors();
+                    let el = el
+                        .bg(colors.drop_target_background)
+                        .border_color(colors.drop_target_border)
+                        .border_0();
+                    if ix < dragged.ix {
+                        el.border_l_2()
+                    } else if ix > dragged.ix {
+                        el.border_r_2()
+                    } else {
+                        el
+                    }
+                })
+                .on_drop(cx.listener(move |_, dragged: &DraggedTab, _, cx| {
+                    cx.emit(TabsEvent::Drop {
+                        dragged: dragged.clone(),
+                        at: Some(ix),
+                    });
+                }))
                 // Middle click closes a tab, as in Zed and in browsers.
                 .on_aux_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
                     if event.is_middle_click() {
@@ -224,6 +298,15 @@ impl Tabs {
                         cx.emit(TabsEvent::New);
                     }
                 }))
+                .drag_over::<DraggedTab>(|el, _, _, cx| {
+                    el.bg(cx.theme().colors().drop_target_background)
+                })
+                .on_drop(cx.listener(move |_, dragged: &DraggedTab, _, cx| {
+                    cx.emit(TabsEvent::Drop {
+                        dragged: dragged.clone(),
+                        at: Some(count),
+                    });
+                }))
                 .into_any_element(),
         );
         // The bar is outside the pane, so a press on it would give the keys
@@ -239,6 +322,29 @@ impl Tabs {
     }
 }
 
+/// A tab's icon and name. Only an archive gets an icon, as Zed shows none: a
+/// folder inside one is named like any folder on disk. `lit` is the shown tab
+/// of the focused pane; every other label is muted.
+fn tab_label(title: &str, archive: bool, lit: bool, cx: &App) -> AnyElement {
+    let colors = cx.theme().colors();
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .when(archive, |el| {
+            el.child(
+                Icon::from_path("icons/file_icons/archive.svg", colors.text_muted).size(px(14.)),
+            )
+        })
+        .child(
+            div()
+                .when(!lit, |el| el.text_color(colors.text_muted))
+                .child(title.to_string()),
+        )
+        .into_any_element()
+}
+
 /// What a tab is called: the last name in its location, as the window title.
 pub fn title(location: &Location) -> String {
     let key = location.key();
@@ -247,19 +353,49 @@ pub fn title(location: &Location) -> String {
         .unwrap_or_else(|| key.display().to_string())
 }
 
+/// The group the pane's drop target answers to.
+const BODY_GROUP: &str = "tab-body";
+
 impl Render for Tabs {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The bar only once there is a second tab: one tab is a pane as it
         // was before there were tabs.
-        let bar = (self.list.items().len() > 1).then(|| self.render_bar(cx));
+        let bar = self.has_bar().then(|| self.render_bar(cx));
         div()
             .size_full()
             .flex()
             .flex_col()
             .children(bar)
-            // Cached as the tree caches a leaf, so a tab re-renders only when
-            // it notifies, not each time the bar above it does.
-            .child(self.shown().clone().cached(crate::pane_group::fill_style()))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .group(BODY_GROUP)
+                    // Cached as the tree caches a leaf, so a tab re-renders
+                    // only when it notifies, not each time the bar above it
+                    // does.
+                    .child(self.shown().clone().cached(crate::pane_group::fill_style()))
+                    // Zed's drop target over the pane: hidden until a tab is
+                    // dragged over it, so drags of files reach the rows below.
+                    .child(
+                        div()
+                            .id("tab-drop-target")
+                            .invisible()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .bg(cx.theme().colors().drop_target_background)
+                            .group_drag_over::<DraggedTab>(BODY_GROUP, |s| s.visible())
+                            .on_drop(cx.listener(move |_, dragged: &DraggedTab, _, cx| {
+                                cx.emit(TabsEvent::Drop {
+                                    dragged: dragged.clone(),
+                                    at: None,
+                                });
+                            })),
+                    ),
+            )
     }
 }
 
@@ -318,6 +454,32 @@ mod tests {
         let mut tabs = list(&[1, 2, 3], 0);
         tabs.activate(8);
         assert_eq!(*tabs.shown(), 3);
+    }
+
+    #[test]
+    fn inserting_before_the_shown_tab_keeps_it_shown() {
+        let mut tabs = list(&[1, 2, 3], 1);
+        assert_eq!(tabs.insert(0, 9), 0);
+        assert_eq!(tabs.items(), &[9, 1, 2, 3]);
+        assert_eq!(*tabs.shown(), 2);
+        assert_eq!(tabs.insert(99, 8), 4);
+        assert_eq!(*tabs.shown(), 2);
+    }
+
+    #[test]
+    fn a_moved_tab_lands_where_the_other_was_and_the_shown_one_stays() {
+        let mut tabs = list(&[1, 2, 3], 0);
+        tabs.move_to(0, 2);
+        assert_eq!(tabs.items(), &[2, 3, 1]);
+        assert_eq!(*tabs.shown(), 1);
+
+        let mut tabs = list(&[1, 2, 3], 1);
+        tabs.move_to(2, 0);
+        assert_eq!(tabs.items(), &[3, 1, 2]);
+        assert_eq!(*tabs.shown(), 2);
+        // The end of the bar is past the last tab.
+        tabs.move_to(0, 3);
+        assert_eq!(tabs.items(), &[1, 2, 3]);
     }
 
     #[test]

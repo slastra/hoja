@@ -878,6 +878,10 @@ impl Workspace {
                 this.show_pane(shown, window, cx);
                 this.new_tab(&NewTab, window, cx);
             }
+            TabsEvent::Drop { dragged, at } => {
+                let (tile, pane, at) = (tile.clone(), dragged.pane.clone(), *at);
+                this.drop_tab(&tile, pane, at, window, cx);
+            }
         })
     }
 
@@ -893,7 +897,85 @@ impl Workspace {
         self.tile_subscriptions
             .insert(tile.entity_id(), subscription);
         self.tiles.push(tile.clone());
+        self.sync_bars(cx);
         tile
+    }
+
+    /// Every pane shows its bar while there is more than one, so that any tab,
+    /// even a lone one, can be dragged to another pane.
+    fn sync_bars(&self, cx: &mut Context<Self>) {
+        let split = self.tiles.len() > 1;
+        for tile in &self.tiles {
+            tile.update(cx, |tile, cx| tile.set_split_bar(split, cx));
+        }
+    }
+
+    /// Take a tile out of the window without closing its tabs, for a tile
+    /// whose last tab was dragged away. False when it is the last tile.
+    fn remove_tile(&mut self, tile: &Entity<Tabs>, cx: &mut Context<Self>) -> bool {
+        if !matches!(self.center.remove(tile), Ok(true)) {
+            return false;
+        }
+        self.tiles.retain(|t| t != tile);
+        self.tile_subscriptions.remove(&tile.entity_id());
+        self.sync_bars(cx);
+        true
+    }
+
+    /// Move a dragged tab into `target`: at `at` along its bar, or after its
+    /// shown tab when dropped on the pane. The tile the tab left closes when
+    /// the tab was its last, as in Zed.
+    fn drop_tab(
+        &mut self,
+        target: &Entity<Tabs>,
+        pane: Entity<DirPane>,
+        at: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Looked up now, not taken from the drag: the tab may have moved or
+        // closed since the drag began.
+        let Some(source) = self.tile_of(&pane, cx) else {
+            return;
+        };
+        if &source == target {
+            // On its own pane there is nowhere to go; along its own bar it
+            // changes places.
+            let (Some(to), Some(from)) = (at, source.read(cx).list.index_of(&pane)) else {
+                return;
+            };
+            source.update(cx, |tile, _| tile.list.move_to(from, to));
+            let ix = source.read(cx).list.index_of(&pane).unwrap_or(0);
+            self.activate_tab_in(&source, ix, window, cx);
+            return;
+        }
+
+        if source.read(cx).list.items().len() > 1 {
+            let was_shown = source.read(cx).shown() == &pane;
+            source.update(cx, |tile, cx| {
+                tile.list.remove(&pane);
+                cx.notify();
+            });
+            if was_shown {
+                let shown = source.read(cx).shown().clone();
+                shown.update(cx, |shown, cx| shown.set_visible(true, cx));
+            }
+        } else if !self.remove_tile(&source, cx) {
+            return;
+        }
+
+        let old = target.read(cx).shown().clone();
+        target.update(cx, |tile, cx| {
+            let at = at.unwrap_or(tile.list.active() + 1);
+            let at = tile.list.insert(at, pane.clone());
+            tile.list.activate(at);
+            tile.reveal_shown();
+            cx.notify();
+        });
+        old.update(cx, |old, cx| old.set_visible(false, cx));
+        pane.update(cx, |pane, cx| pane.set_visible(true, cx));
+        self.show_pane(pane, window, cx);
+        cx.notify();
     }
 
     fn set_active_pane(&mut self, pane: &Entity<DirPane>, cx: &mut Context<Self>) {
@@ -978,6 +1060,7 @@ impl Workspace {
         self.forget_panes(&gone);
         self.tiles.retain(|t| t != tile);
         self.tile_subscriptions.remove(&tile.entity_id());
+        self.sync_bars(cx);
 
         if was_active && let Some(fallback) = self.tiles.last().cloned() {
             let shown = fallback.read(cx).shown().clone();
@@ -2586,6 +2669,7 @@ impl Workspace {
                                 .collect(),
                             active: list.active(),
                             rects: tile.read(cx).rects(),
+                            bar: tile.read(cx).has_bar(),
                         }
                     })
                     .collect(),
