@@ -33,6 +33,10 @@ use crate::place_finder::{self, PlaceEvent, PlaceFinder};
 use crate::tabs::{Tabs, TabsEvent};
 use crate::ui::{self, ButtonStyle};
 
+// The picker's Open Folder. Handled only in picker mode, so it is not in the
+// palette otherwise.
+actions!(pick, [PickFolder]);
+
 actions!(
     pane,
     [
@@ -3438,6 +3442,17 @@ impl Workspace {
 /// spaces its items: six pixels in from the sides, eight between.
 /// What the picker's accept button would do for `pane`. `None` when this
 /// Hoja is not a picker.
+/// Write the answer and exit, which ends the pick.
+fn pick_answer(paths: &[PathBuf]) -> ! {
+    let line = crate::pick::response(paths, crate::pick::filter());
+    let mut out = std::io::stdout().lock();
+    let written = writeln!(out, "{line}").and_then(|_| out.flush());
+    // Straight out, without the release that saves the state: the picker has
+    // none to save, and a transfer still running keeps its journal record, so
+    // the next Hoja offers to finish it, as after a crash.
+    std::process::exit(if written.is_ok() { 0 } else { 2 });
+}
+
 fn pick_outcome(pane: &DirPane) -> Option<crate::pick::Outcome> {
     let request = crate::pick::request()?;
     let here = pane.location().disk().map(Path::to_path_buf);
@@ -3454,8 +3469,12 @@ fn pick_outcome(pane: &DirPane) -> Option<crate::pick::Outcome> {
 fn pick_probe(pane: &DirPane) -> Option<crate::probe::PickProbe> {
     let request = crate::pick::request()?;
     let outcome = pick_outcome(pane)?;
-    let enabled = !matches!(outcome, crate::pick::Outcome::Nothing(_));
+    let enabled = outcome.enabled();
+    let folder = pick_folder_outcome(pane)
+        .filter(crate::pick::Outcome::enabled)
+        .map(|outcome| outcome.describe());
     Some(crate::probe::PickProbe {
+        folder,
         mode: request.mode().name(),
         filter: crate::pick::filter()
             .and_then(|ix| request.filters.get(ix))
@@ -3465,8 +3484,16 @@ fn pick_probe(pane: &DirPane) -> Option<crate::probe::PickProbe> {
     })
 }
 
-/// The picker's bar: room for 22 pixel buttons with air round them.
-const PICK_BAR_H: f32 = 38.;
+/// What Open Folder would do, or `None` where it is not shown.
+fn pick_folder_outcome(pane: &DirPane) -> Option<crate::pick::Outcome> {
+    let request = crate::pick::request()?;
+    let here = pane.location().disk().map(Path::to_path_buf);
+    let (selected, cursor) = pane.pick_selection();
+    crate::pick::accept_folder(request.mode(), &selected, cursor.as_ref(), here.as_deref())
+}
+
+/// The picker's footer: a 22 pixel button and Zed's `p_1p5` round it.
+const PICK_BAR_H: f32 = 34.;
 
 fn strip_row() -> gpui::Div {
     div()
@@ -3518,15 +3545,8 @@ impl Workspace {
     /// The accept button, enter on a file, or a double-click on one.
     fn pick_accept(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.pick_outcome(cx) {
-            Some(crate::pick::Outcome::Answer(paths)) => {
-                let line = crate::pick::response(&paths, crate::pick::filter());
-                let mut out = std::io::stdout().lock();
-                let written = writeln!(out, "{line}").and_then(|_| out.flush());
-                // Straight out, without the release that saves the state:
-                // the picker has none to save, and a transfer still running
-                // keeps its journal record, so the next Hoja offers to finish
-                // it, as after a crash.
-                std::process::exit(if written.is_ok() { 0 } else { 2 });
+            Some(crate::pick::Outcome::Answer(paths) | crate::pick::Outcome::Folders(paths)) => {
+                pick_answer(&paths)
             }
             Some(crate::pick::Outcome::Enter(dir)) => {
                 self.active_pane
@@ -3535,6 +3555,15 @@ impl Workspace {
                 window.focus(&focus, cx);
             }
             Some(crate::pick::Outcome::Nothing(_)) | None => {}
+        }
+    }
+
+    /// Open Folder, or ctrl-enter.
+    fn pick_folder(&mut self, cx: &mut Context<Self>) {
+        if let Some(crate::pick::Outcome::Folders(paths)) =
+            pick_folder_outcome(self.active_pane.read(cx))
+        {
+            pick_answer(&paths);
         }
     }
 
@@ -3582,16 +3611,21 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The bar along the bottom of a picker: the filter, what the accept
-    /// button would return, Cancel, and the accept button.
-    fn render_pick_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// The picker's footer, as Zed's pickers end: the filter and what Open
+    /// would return on the left, then the actions on the right as subtle
+    /// buttons with their keys. Open Folder is there for a request for files
+    /// (see `pick::accept_folder`).
+    fn render_pick_footer(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let colors = cx.theme().colors();
         let request = crate::pick::request();
-        let outcome = self.pick_outcome(cx);
-        let enabled = matches!(
-            outcome,
-            Some(crate::pick::Outcome::Answer(_) | crate::pick::Outcome::Enter(_))
-        );
+        let pane = self.active_pane.read(cx);
+        let focus = pane.focus_handle(cx);
+        let outcome = pick_outcome(pane);
+        let folder = pick_folder_outcome(pane);
         let note = outcome
             .as_ref()
             .map(crate::pick::Outcome::describe)
@@ -3601,57 +3635,127 @@ impl Workspace {
         let label = request
             .map(crate::pick::Request::accept_label)
             .unwrap_or_default();
+        // The keys as the keymap has them, so a chip never names a key that
+        // does something else.
+        let keys = |action: &dyn gpui::Action| -> Vec<String> {
+            window
+                .highest_precedence_binding_for_action_in(action, &focus)
+                .map(|binding| {
+                    binding
+                        .keystrokes()
+                        .iter()
+                        .map(crate::picker::key_text)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let action_button =
+            |id: &'static str, label: gpui::SharedString, keys: Vec<String>, enabled: bool| {
+                let chips = crate::picker::key_binding(&keys, cx).text_xs();
+                if enabled {
+                    ui::button(id, ButtonStyle::Subtle, cx)
+                        .child(label)
+                        .child(chips)
+                } else {
+                    ui::disabled_button(id, cx)
+                        .child(label)
+                        .child(chips.text_color(colors.text_disabled))
+                }
+            };
+
+        let open_folder = folder.map(|folder| {
+            let enabled = folder.enabled();
+            action_button(
+                "pick-folder",
+                "Open Folder".into(),
+                keys(&PickFolder),
+                enabled,
+            )
+            .tooltip(ui::tooltip(folder.describe()))
+            .when(enabled, |el| {
+                el.on_click(cx.listener(|this, _, _, cx| this.pick_folder(cx)))
+            })
+        });
+        let accept_enabled = outcome.as_ref().is_some_and(crate::pick::Outcome::enabled);
+        let cancel = action_button(
+            "pick-cancel",
+            "Cancel".into(),
+            keys(&crate::dir_pane::ClearSelection),
+            true,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.pick_cancel(cx)));
+        let accept = action_button(
+            "pick-accept",
+            label.into(),
+            keys(&crate::dir_pane::OpenSelected),
+            accept_enabled,
+        )
+        .when(accept_enabled, |el| {
+            el.on_click(cx.listener(|this, _, window, cx| this.pick_accept(window, cx)))
+        });
 
         div()
             .flex_none()
             .flex()
             .flex_row()
             .items_center()
+            .justify_between()
             .gap_2()
             .h(px(PICK_BAR_H))
-            .px_2()
-            .bg(colors.status_bar_background)
+            .p_1p5()
+            // Zed's picker footer sits on the modal's raised surface.
+            .bg(colors.elevated_surface_background)
             .border_t_1()
-            .border_color(colors.border)
-            .when_some(filter, |el, name| {
-                el.child(
-                    ui::button("pick-filter", ButtonStyle::Outlined, cx)
-                        .child(name)
-                        .child(
-                            Icon::from_path("icons/file_icons/chevron_down.svg", colors.text_muted)
-                                .size(px(12.)),
-                        )
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
-                                cx.stop_propagation();
-                                this.open_pick_filters(event.position, window, cx);
-                            }),
-                        ),
-                )
-            })
+            .border_color(colors.border_variant)
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
-                    .truncate()
-                    .text_sm()
-                    .text_color(if enabled {
-                        colors.text
-                    } else {
-                        colors.text_muted
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .when_some(filter, |el, name| {
+                        el.child(
+                            ui::button("pick-filter", ButtonStyle::Subtle, cx)
+                                .child(name)
+                                .child(
+                                    Icon::from_path(
+                                        "icons/file_icons/chevron_down.svg",
+                                        colors.text_muted,
+                                    )
+                                    .size(px(12.)),
+                                )
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(
+                                        |this, event: &gpui::MouseDownEvent, window, cx| {
+                                            cx.stop_propagation();
+                                            this.open_pick_filters(event.position, window, cx);
+                                        },
+                                    ),
+                                ),
+                        )
                     })
-                    .child(note),
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .text_color(colors.text_muted)
+                            .child(note),
+                    ),
             )
             .child(
-                ui::text_button("pick-cancel", "Cancel", ButtonStyle::Outlined, cx)
-                    .on_click(cx.listener(|this, _, _, cx| this.pick_cancel(cx))),
-            )
-            .child(
-                ui::text_button("pick-accept", label, ButtonStyle::Accent, cx)
-                    .px_2()
-                    .when(!enabled, |el| el.opacity(0.5).cursor_default())
-                    .on_click(cx.listener(|this, _, window, cx| this.pick_accept(window, cx))),
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .children(open_folder)
+                    .child(cancel)
+                    .child(accept),
             )
     }
 }
@@ -3742,9 +3846,13 @@ impl Render for Workspace {
                 |el| el.child(self.render_job_strip(cx)),
             )
             .when(crate::pick::active(), |el| {
-                el.child(self.render_pick_bar(cx)).on_action(cx.listener(
-                    |this, _: &crate::dir_pane::ClearSelection, _, cx| this.pick_cancel(cx),
-                ))
+                el.child(self.render_pick_footer(window, cx))
+                    .on_action(
+                        cx.listener(|this, _: &crate::dir_pane::ClearSelection, _, cx| {
+                            this.pick_cancel(cx)
+                        }),
+                    )
+                    .on_action(cx.listener(|this, _: &PickFolder, _, cx| this.pick_folder(cx)))
             })
             .when_some(self.modal.as_ref().map(Modal::element), |el, modal| {
                 el.child(self.modal_scrim(modal, cx))

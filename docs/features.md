@@ -116,9 +116,10 @@ says how to set it up. Each request starts a Hoja of its own, which answers
 and exits.
 
 The picker is all of Hoja: panes, tabs, search, previews and file operations
-work as usual. A bar along the bottom shows the filter, what the accept
-button would return, Cancel, and the accept button, with the label the
-application gave it.
+work as usual. A footer, as Zed's pickers have, shows the filter and what
+the accept button would return on the left. On the right are Open Folder,
+Cancel, and the accept button with the label the application gave it, each
+with its key.
 
 ### What it picks
 
@@ -129,6 +130,12 @@ application gave it.
   folder in it first. A folder picker shows no files.
 - When the selection is one folder, the accept button goes into it, as in the
   GTK dialog.
+- To pick a folder when the application asked for files, press Open Folder
+  or ctrl-enter. It picks the selected folders, or the folder you are in
+  when none is selected. Zed's ctrl-o asks for files only, so this is how to
+  open a project folder from it. Enter and a double-click still go into a
+  folder, so a folder is never picked by accident. A folder picker has no
+  Open Folder, because its accept button picks folders already.
 - An archive is a file to pick. The picker does not go into one, because
   nothing in an archive has a path to give to another application.
 

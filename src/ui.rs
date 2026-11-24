@@ -91,6 +91,24 @@ pub fn button(id: impl Into<ElementId>, style: ButtonStyle, cx: &App) -> Statefu
         .active(move |s| s.bg(active))
 }
 
+/// A button that does nothing now: Zed's disabled `ButtonLike`. The frame of
+/// `button`, in the disabled text color, with no fill, hover or pointer.
+pub fn disabled_button(id: impl Into<ElementId>, cx: &App) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .h(px(BUTTON_HEIGHT))
+        .px_1()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .rounded_sm()
+        .text_sm()
+        .text_color(cx.theme().colors().text_disabled)
+        .cursor_default()
+}
+
 /// A button holding only text.
 pub fn text_button(
     id: impl Into<ElementId>,

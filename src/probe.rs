@@ -156,6 +156,9 @@ pub struct PickProbe {
     pub accept: Option<String>,
     /// The bar's text.
     pub note: String,
+    /// What Open Folder would return, as its tooltip says it, or `None` when
+    /// it is not shown or does nothing.
+    pub folder: Option<String>,
 }
 
 #[derive(Serialize, PartialEq, Eq)]

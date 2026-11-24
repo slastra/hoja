@@ -312,6 +312,8 @@ pub enum Outcome {
     /// Go into this folder, as GTK does when a folder is selected in a file
     /// picker.
     Enter(PathBuf),
+    /// Answer with these folders, from Open Folder in a file picker.
+    Folders(Vec<PathBuf>),
     /// Nothing can be picked here.
     Nothing(Why),
 }
@@ -323,6 +325,8 @@ pub enum Why {
     /// The pane shows the inside of an archive, where nothing has a path that
     /// another program could open.
     Archive,
+    /// The same, said of Open Folder.
+    ArchiveFolder,
 }
 
 /// The accept rules.
@@ -362,7 +366,44 @@ pub fn accept(
     Outcome::Answer(files.into_iter().map(|pick| pick.path.clone()).collect())
 }
 
+/// The Open Folder rules, for a request for files. Zed's ctrl-o asks for
+/// files only, so this is the way to open a project folder from it. `None`
+/// in folder mode, where the accept button already picks folders.
+///
+/// The folders selected, else the folder the pane shows. Picking one, the
+/// cursor's row when it is a folder.
+pub fn accept_folder(
+    mode: Mode,
+    selected: &[Pick],
+    cursor: Option<&Pick>,
+    here: Option<&Path>,
+) -> Option<Outcome> {
+    if mode == Mode::Folder {
+        return None;
+    }
+    let Some(here) = here else {
+        return Some(Outcome::Nothing(Why::ArchiveFolder));
+    };
+    let folders: Vec<&Pick> = selected.iter().filter(|pick| pick.is_dir).collect();
+    let paths = match folders.as_slice() {
+        [] => vec![here.to_path_buf()],
+        [first, ..] if mode == Mode::File => {
+            let one = cursor
+                .filter(|cursor| folders.contains(cursor))
+                .unwrap_or(first);
+            vec![one.path.clone()]
+        }
+        all => all.iter().map(|pick| pick.path.clone()).collect(),
+    };
+    Some(Outcome::Folders(paths))
+}
+
 impl Outcome {
+    /// Whether the button this is for would do something.
+    pub fn enabled(&self) -> bool {
+        !matches!(self, Outcome::Nothing(_))
+    }
+
     /// The bar's text: what the accept button would return, or why it can't.
     pub fn describe(&self) -> String {
         let name = |path: &Path| {
@@ -374,8 +415,13 @@ impl Outcome {
             Outcome::Answer(paths) if paths.len() == 1 => name(&paths[0]),
             Outcome::Answer(paths) => format!("{} files", paths.len()),
             Outcome::Enter(path) => format!("Open {}", name(path)),
+            Outcome::Folders(paths) if paths.len() == 1 => name(&paths[0]),
+            Outcome::Folders(paths) => format!("{} folders", paths.len()),
             Outcome::Nothing(Why::Empty) => "Select a file".to_string(),
             Outcome::Nothing(Why::Archive) => "Files in an archive cannot be picked".to_string(),
+            Outcome::Nothing(Why::ArchiveFolder) => {
+                "Folders in an archive cannot be picked".to_string()
+            }
         }
     }
 }
@@ -549,6 +595,58 @@ mod tests {
         assert_eq!(
             accept(Mode::Folder, &[], None, Some(here)),
             Outcome::Answer(vec![PathBuf::from("/d")])
+        );
+    }
+
+    #[test]
+    fn the_open_folder_rules() {
+        let here = Path::new("/d");
+        let file = pick("/d/a.txt", false);
+        let one = pick("/d/one", true);
+        let two = pick("/d/two", true);
+        let folders =
+            |paths: &[&str]| Some(Outcome::Folders(paths.iter().map(PathBuf::from).collect()));
+
+        // Nothing selected, or only files: the folder the pane shows.
+        assert_eq!(
+            accept_folder(Mode::File, &[], None, Some(here)),
+            folders(&["/d"])
+        );
+        assert_eq!(
+            accept_folder(
+                Mode::Files,
+                std::slice::from_ref(&file),
+                Some(&file),
+                Some(here)
+            ),
+            folders(&["/d"])
+        );
+        // The folders selected, and not the files beside them.
+        let mixed = [file.clone(), one.clone(), two.clone()];
+        assert_eq!(
+            accept_folder(Mode::Files, &mixed, Some(&file), Some(here)),
+            folders(&["/d/one", "/d/two"])
+        );
+        // One folder wanted: the cursor's when it is a folder, else the first.
+        assert_eq!(
+            accept_folder(Mode::File, &mixed, Some(&two), Some(here)),
+            folders(&["/d/two"])
+        );
+        assert_eq!(
+            accept_folder(Mode::File, &mixed, Some(&file), Some(here)),
+            folders(&["/d/one"])
+        );
+        // In an archive, nothing. In folder mode, no button at all.
+        assert_eq!(
+            accept_folder(Mode::File, &[], None, None),
+            Some(Outcome::Nothing(Why::ArchiveFolder))
+        );
+        assert_eq!(accept_folder(Mode::Folder, &[], None, Some(here)), None);
+
+        assert_eq!(folders(&["/d/one"]).unwrap().describe(), "one");
+        assert_eq!(
+            folders(&["/d/one", "/d/two"]).unwrap().describe(),
+            "2 folders"
         );
     }
 

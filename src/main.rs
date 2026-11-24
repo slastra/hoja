@@ -223,6 +223,12 @@ fn main() {
                 Some("DirPane && !AddressBar"),
             ),
             KeyBinding::new("enter", OpenSelected, Some("DirPane && !AddressBar")),
+            // Open Folder in a picker; nothing anywhere else.
+            KeyBinding::new(
+                "ctrl-enter",
+                workspace::PickFolder,
+                Some("DirPane && !AddressBar"),
+            ),
             // Tab between panes and F3 to split: the file manager scheme,
             // which goes back to Norton Commander, rather than the editor
             // one. The other directions are still actions and still reachable

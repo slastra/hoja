@@ -109,3 +109,11 @@ because they are rare. "pane: close pane" closes a pane and all of its tabs.
 | <kbd>↑</kbd> / <kbd>↓</kbd> | Move the highlight |
 | <kbd>Tab</kbd> / <kbd>Shift</kbd> + <kbd>Tab</kbd>, <kbd>←</kbd> / <kbd>→</kbd> | Move the highlight, in a dialog |
 | <kbd>Enter</kbd> / <kbd>Escape</kbd> | Choose, or close |
+
+## In the file picker
+
+| Keys | Action |
+| :-- | :-- |
+| <kbd>Enter</kbd> | Pick the selected file, or go into the selected folder |
+| <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | Open Folder: pick the selected folders, or the folder you are in |
+| <kbd>Escape</kbd> | Clear the selection, or cancel when nothing is selected |

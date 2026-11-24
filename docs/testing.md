@@ -31,7 +31,7 @@ the window is, and everything after it is keystrokes sent somewhere unverified.
 An earlier version carried on, walked a pane up to the root of the filesystem
 and pressed paste there; nothing was written only because root is not writable.
 
-There are thirty-two suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
+There are thirty-three suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
 `archive.sh` and `tar.sh` need fixtures, which `scripts/tests/setup-archives.sh`
 builds and prints the path of:
 
@@ -178,16 +178,19 @@ Hoja exits, its exit status goes to `$OUT/app.status`. `wait_exit [SECS]`
 waits for that and prints it, or prints `running`. `MAPPED_MS` is the time
 the window took to appear.
 
-`picker-open.sh`, `picker-multiple.sh`, `picker-folder.sh` and
-`picker-cancel.sh` test `hoja --pick`. Each has a `.before.sh` that gives the
-request on stdin. They need `setup-picker.sh`, which makes two pictures, a
-text file, a model, a zip and a folder. They check:
+`picker-open.sh`, `picker-multiple.sh`, `picker-folder.sh`,
+`picker-open-folder.sh` and `picker-cancel.sh` test `hoja --pick`. Each has a
+`.before.sh` that gives the request on stdin. They need `setup-picker.sh`,
+which makes two pictures, a text file, a model, a zip and a folder. They
+check:
 
 - what a filter shows, and a filter chosen from the bar's menu;
 - that a picker for one file selects one row;
 - that a double-click goes into a folder and picks a file;
 - the accept button for several files, with a zip picked as a file;
 - that a folder picker shows no files and picks the folder;
+- that Open Folder in a file picker names the folder shown, then the folder
+  selected, and that ctrl-enter picks it;
 - that the first escape clears the selection and the second cancels.
 
 Each one reads the answer from `app.out` and the exit status.

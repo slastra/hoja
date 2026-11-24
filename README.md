@@ -53,8 +53,8 @@ feels like working with ordinary folders.
   G-code files for Hoja and for other file managers
 - Opens `.zip` and tar archives as read-only folders, and shows the members
   of a tar as they stream in
-- Opens files for other applications as their file picker, through the
-  desktop portal, with `hoja-portal`
+- Opens files and folders for other applications as their file picker,
+  through the desktop portal, with `hoja-portal`
 
 ### File operations
 
