@@ -134,15 +134,20 @@ Hoja starts without any of these, and each adds something:
 
 Applications that ask the desktop portal for a file, such as Chrome, Zed,
 Electron applications and Flatpaks, can get Hoja instead of the GTK dialog.
-Install `hoja-portal`, then name it for the file chooser in
-`~/.config/xdg-desktop-portal/hyprland-portals.conf` (or the file for your
-desktop):
+Install `hoja-portal`, then add one line under `[preferred]` in your portal
+config. That is `~/.config/xdg-desktop-portal/portals.conf`, or
+`hyprland-portals.conf` in the same folder (named for your desktop) when you
+have one, because that file wins. Keep the lines already there:
 
 ```ini
 [preferred]
-default=hyprland;gtk
+default=gtk
 org.freedesktop.impl.portal.FileChooser=hoja
 ```
+
+If neither file exists, create `portals.conf` with the lines above, and
+`default=` naming your desktop's backend first, for example
+`default=hyprland;gtk`.
 
 Then restart the portal:
 
