@@ -313,6 +313,13 @@ not the other.
 - [docs/architecture.md](docs/architecture.md): the transfer engine and its tests
 - [docs/roadmap.md](docs/roadmap.md): what is planned
 
+## Acknowledgments
+
+Hoja is built on the work of the [Zed](https://zed.dev/) team: the GPUI
+framework, the `theme` and `file_icons` crates, the icon set, and the theme
+and icon-theme formats it reads. Much of how its panes, tabs and command
+palette behave follows Zed.
+
 ## License
 
 The license of Hoja is GPL-3.0-or-later. See [LICENSE](LICENSE).
