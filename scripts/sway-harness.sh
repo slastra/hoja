@@ -141,6 +141,14 @@ rm -rf "$XDG_CONFIG_HOME"
 mkdir -p "$XDG_CONFIG_HOME/hoja" "$XDG_DATA_HOME"
 printf '{ "theme": "Rosé Pine" }\n' > "$XDG_CONFIG_HOME/hoja/settings.json"
 
+# `NAME.before.sh` beside the test `NAME.sh` runs here, before the app starts,
+# with OUT and the private XDG dirs set. It is for files the app reads once,
+# at its first look at them: a thumbnailer a test installs after the start
+# can lose a race with a tooltip that opens under a pointer resting on a row.
+BEFORE="${BODY%.sh}.before.sh"
+# shellcheck disable=SC1090
+[ -f "$BEFORE" ] && . "$BEFORE"
+
 env -u DISPLAY "$BIN" "$START_DIR" >"$OUT/app.log" 2>&1 &
 APP=$!
 cleanup() { kill -9 "$APP" 2>/dev/null; kill -9 "$SWAY" 2>/dev/null; }

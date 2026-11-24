@@ -1,10 +1,19 @@
 //! Previews in a tooltip: the file under the pointer, without opening it.
 //!
-//! Five kinds of file get one: an image, a video, an audio file, a PDF and a
-//! text file. The picture for the first four comes from the freedesktop
-//! thumbnail cache (see `thumbnail`), the tags of an audio file from `lofty`,
-//! a PDF's page count from `pdfinfo`, and a text file shows its first lines. Every other file, every folder and every member
-//! of an archive shows no tooltip.
+//! Six kinds of file get one: an image, a video, an audio file, a PDF, a text
+//! file, and a file of any other type that an installed thumbnailer takes.
+//! The picture for all but text comes from the freedesktop thumbnail cache
+//! (see `thumbnail`), the tags of an audio file from `lofty`, a PDF's page
+//! count from `pdfinfo`, and a text file shows its first lines. Every other
+//! file, every folder and every member of an archive shows no tooltip.
+//!
+//! # Previews outside hoja
+//!
+//! A thumbnailer is how a type that hoja knows nothing about gets a picture.
+//! It is a program and a `.thumbnailer` file that names the types it takes,
+//! installed apart from hoja, so a new type needs no change here.
+//! `hoja-model-thumbnailer`, in this workspace, is one: hoja never links it
+//! or names it.
 //!
 //! # Lifecycle
 //!

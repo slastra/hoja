@@ -39,6 +39,9 @@ impl Global for OpenTooltip {}
 /// until the work is done.
 fn label(known: &Known, name: &str) -> String {
     match known {
+        Known::Done(preview) if text_instead(&preview.facts, Some(preview)) => {
+            format!("text: {name}")
+        }
         Known::Done(preview) => format!("{}: {name}", preview.facts.kind.name()),
         Known::Facts(facts) => format!("loading {}: {name}", facts.kind.name()),
         Known::Nothing => format!("loading: {name}"),
@@ -176,7 +179,8 @@ impl<'a> Shown<'a> {
 }
 
 impl PreviewTooltip {
-    /// The picture of an image, a video or a PDF's first page, the full width
+    /// The picture of an image, a video, a PDF's first page or a file a
+    /// thumbnailer takes, the full width
     /// of the card, or the place kept for it.
     fn picture_body(
         &self,
@@ -264,6 +268,14 @@ impl PreviewTooltip {
     }
 }
 
+/// A picture that will not come, of a text type, gives way to the text:
+/// G-code with no picture embedded in it.
+fn text_instead(facts: &Facts, preview: Option<&Preview>) -> bool {
+    facts.kind == Kind::Picture
+        && facts.lines.is_some()
+        && matches!(Shown::of(preview), Shown::Missing)
+}
+
 /// A text file's first lines, in the mono font.
 fn text_body(
     facts: &Facts,
@@ -330,7 +342,8 @@ impl Render for PreviewTooltip {
         let syntax = cx.theme().syntax().clone();
 
         let body = match facts.kind {
-            Kind::Image | Kind::Video | Kind::Document => {
+            _ if text_instead(&facts, preview) => text_body(&facts, mono, colors, &syntax),
+            Kind::Image | Kind::Video | Kind::Document | Kind::Picture => {
                 self.picture_body(&facts, preview, colors)
             }
             Kind::Audio => self.audio_body(&facts, preview, colors),
@@ -340,8 +353,10 @@ impl Render for PreviewTooltip {
         // An image or a video fills the card's width with its picture, or
         // with the place kept for it. The card then has a fixed width, and
         // only the facts line under the picture is padded.
-        let full_bleed = matches!(facts.kind, Kind::Image | Kind::Video | Kind::Document)
-            && !matches!(Shown::of(preview), Shown::Missing);
+        let full_bleed = matches!(
+            facts.kind,
+            Kind::Image | Kind::Video | Kind::Document | Kind::Picture
+        ) && !matches!(Shown::of(preview), Shown::Missing);
         let line = self.facts_line(&facts, preview);
 
         // The padding keeps the box clear of the pointer: gpui puts a

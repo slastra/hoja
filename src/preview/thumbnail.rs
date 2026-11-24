@@ -450,6 +450,12 @@ struct Thumbnailer {
     exec: Vec<String>,
 }
 
+/// Whether an installed thumbnailer takes `mime`. The first call reads the
+/// thumbnailers: call it off the UI thread.
+pub fn takes(mime: &str) -> bool {
+    thumbnailers().contains_key(mime)
+}
+
 /// Every installed thumbnailer by the types it takes. Read once: a
 /// thumbnailer installed while hoja runs is found at the next start.
 fn thumbnailers() -> &'static HashMap<String, std::sync::Arc<Thumbnailer>> {

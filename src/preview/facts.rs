@@ -9,6 +9,11 @@ use gpui::RenderImage;
 use super::thumbnail::{self, Size};
 use super::{audio, pdf, syntax, text, video};
 
+/// Types that every file of a family descends from. A thumbnailer that takes
+/// one of these does not make each file of the family a `Picture`: one for
+/// `text/plain` would take every source file away from the text preview.
+const GENERIC: &[&str] = &["text/plain", "application/octet-stream"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
     Image,
@@ -17,12 +22,17 @@ pub(super) enum Kind {
     /// A PDF. Its picture is the first page.
     Document,
     Text,
+    /// A type that an installed thumbnailer takes, and that is none of the
+    /// above: a font, an office document, a 3D model. The picture is all
+    /// hoja knows how to show of it.
+    Picture,
     /// Nothing to show. The tooltip draws nothing at all.
     Other,
 }
 
 impl Kind {
-    pub(super) fn of(mimes: &[String]) -> Kind {
+    /// `takes` says whether an installed thumbnailer takes a type.
+    pub(super) fn of(mimes: &[String], takes: impl Fn(&str) -> bool) -> Kind {
         let Some(mime) = mimes.first() else {
             return Kind::Other;
         };
@@ -34,6 +44,14 @@ impl Kind {
             Kind::Audio
         } else if mimes.iter().any(|m| m == "application/pdf") {
             Kind::Document
+        } else if mimes
+            .iter()
+            .filter(|m| !GENERIC.contains(&m.as_str()))
+            .any(|m| takes(m))
+        {
+            // Before text: G-code and PostScript are text by their ancestry,
+            // but their picture says more than their first lines.
+            Kind::Picture
         } else if mimes.iter().any(|m| m == "text/plain") {
             Kind::Text
         } else {
@@ -48,6 +66,7 @@ impl Kind {
             Kind::Audio => "audio",
             Kind::Document => "document",
             Kind::Text => "text",
+            Kind::Picture => "picture",
             Kind::Other => "none",
         }
     }
@@ -97,7 +116,7 @@ pub(super) struct Preview {
 /// The quick half, off the UI thread.
 pub(super) fn read(path: &Path) -> Facts {
     let mimes = crate::opener::mime_chain(path);
-    let kind = Kind::of(&mimes);
+    let kind = Kind::of(&mimes, thumbnail::takes);
     let mut facts = Facts {
         kind,
         mimes,
@@ -145,16 +164,28 @@ pub(super) fn read(path: &Path) -> Facts {
             // A portrait Letter page when the first page cannot be measured.
             facts.aspect = Some(pdf.and_then(|pdf| pdf.aspect).unwrap_or(8.5 / 11.));
         }
-        Kind::Text => {
-            facts.lines = text::excerpt(path);
-            facts.highlights = facts
-                .lines
-                .as_ref()
-                .and_then(|lines| syntax::highlight(path, lines));
+        Kind::Text => read_lines(&mut facts, path),
+        Kind::Picture => {
+            // Square until the picture says: what a font, a model or an
+            // icon thumbnailer draws.
+            facts.aspect = Some(1.);
+            // A text type keeps its lines, for when the thumbnailer has no
+            // picture to give: G-code with no picture embedded in it.
+            if facts.mimes.iter().any(|m| m == "text/plain") {
+                read_lines(&mut facts, path);
+            }
         }
         Kind::Other => {}
     }
     facts
+}
+
+fn read_lines(facts: &mut Facts, path: &Path) {
+    facts.lines = text::excerpt(path);
+    facts.highlights = facts
+        .lines
+        .as_ref()
+        .and_then(|lines| syntax::highlight(path, lines));
 }
 
 /// The size from the header alone, turned as the photo's EXIF says, which is
@@ -225,23 +256,56 @@ mod tests {
         mimes.iter().map(|m| m.to_string()).collect()
     }
 
+    fn none(_: &str) -> bool {
+        false
+    }
+
     #[test]
     fn kinds_follow_the_type_and_its_ancestors() {
-        assert_eq!(Kind::of(&chain(&["image/png"])), Kind::Image);
-        assert_eq!(Kind::of(&chain(&["video/mp4"])), Kind::Video);
-        assert_eq!(Kind::of(&chain(&["audio/flac"])), Kind::Audio);
-        assert_eq!(Kind::of(&chain(&["text/rust", "text/plain"])), Kind::Text);
+        assert_eq!(Kind::of(&chain(&["image/png"]), none), Kind::Image);
+        assert_eq!(Kind::of(&chain(&["video/mp4"]), none), Kind::Video);
+        assert_eq!(Kind::of(&chain(&["audio/flac"]), none), Kind::Audio);
+        assert_eq!(Kind::of(&chain(&["text/rust", "text/plain"]), none), Kind::Text);
         assert_eq!(
             Kind::of(&chain(&[
                 "application/json",
                 "application/javascript",
                 "text/plain"
-            ])),
+            ]), none),
             Kind::Text
         );
-        assert_eq!(Kind::of(&chain(&["application/pdf"])), Kind::Document);
-        assert_eq!(Kind::of(&chain(&["application/zip"])), Kind::Other);
-        assert_eq!(Kind::of(&[]), Kind::Other);
+        assert_eq!(Kind::of(&chain(&["application/pdf"]), none), Kind::Document);
+        assert_eq!(Kind::of(&chain(&["application/zip"]), none), Kind::Other);
+        assert_eq!(Kind::of(&[], none), Kind::Other);
+    }
+
+    #[test]
+    fn a_type_a_thumbnailer_takes_is_a_picture() {
+        let takes = |m: &str| matches!(m, "model/stl" | "text/x.gcode" | "application/zip");
+        assert_eq!(Kind::of(&chain(&["model/stl"]), takes), Kind::Picture);
+        assert_eq!(Kind::of(&chain(&["model/stl"]), none), Kind::Other);
+        // Text by its ancestry, but the picture comes first.
+        assert_eq!(
+            Kind::of(&chain(&["text/x.gcode", "text/plain"]), takes),
+            Kind::Picture
+        );
+        // Taken through an ancestor that is not generic.
+        assert_eq!(
+            Kind::of(&chain(&["model/3mf", "application/zip"]), takes),
+            Kind::Picture
+        );
+        // The kinds hoja reads itself stay as they are.
+        assert_eq!(Kind::of(&chain(&["image/png"]), |_| true), Kind::Image);
+        assert_eq!(Kind::of(&chain(&["application/pdf"]), |_| true), Kind::Document);
+    }
+
+    #[test]
+    fn a_thumbnailer_for_all_text_leaves_text_alone() {
+        let takes = |m: &str| m == "text/plain";
+        assert_eq!(
+            Kind::of(&chain(&["text/rust", "text/plain"]), takes),
+            Kind::Text
+        );
     }
 
     #[test]
