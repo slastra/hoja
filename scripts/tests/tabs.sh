@@ -22,6 +22,7 @@ key -M ctrl -k Page_Up -m ctrl
 wait_for 'd["tabs"][0]["active"] == 0'
 expect "p[0]['dir'] == '$ROOT'" "the first tab kept its folder"
 expect 'd["hidden_watching"] == 0' "the tab now hidden stopped watching"
+expect 'd["hidden_walking"] == 0' "the tab now hidden counts no folder sizes"
 
 # Written while its tab is hidden, so no watch sees it: showing the tab must.
 : > "$START_DIR/alpha/new.txt"

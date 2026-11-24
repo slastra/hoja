@@ -2802,6 +2802,11 @@ impl Workspace {
                     .flat_map(|tile| tile.read(cx).list.items().to_vec())
                     .filter(|pane| !shown.contains(pane) && pane.read(cx).watching())
                     .count(),
+                hidden_walking: tiles
+                    .iter()
+                    .flat_map(|tile| tile.read(cx).list.items().to_vec())
+                    .filter(|pane| !shown.contains(pane) && pane.read(cx).walking())
+                    .count(),
                 jobs,
                 modal,
                 notice,

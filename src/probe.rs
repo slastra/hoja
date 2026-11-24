@@ -167,6 +167,8 @@ pub struct Probe {
     pub tabs: Vec<TabsProbe>,
     /// Hidden tabs that still watch a folder or a repository: none should.
     pub hidden_watching: usize,
+    /// Hidden tabs with a folder-size walk running: none should.
+    pub hidden_walking: usize,
     /// Whether something is being dragged inside the window, so a test can
     /// wait for a drag to start before it checks what the drag shows.
     pub dragging: bool,

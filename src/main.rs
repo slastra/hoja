@@ -18,6 +18,7 @@ mod journal;
 mod location;
 mod masonry;
 mod measure;
+mod mime_globs;
 mod notifications;
 mod open_prompt;
 mod opener;

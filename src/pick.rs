@@ -15,6 +15,7 @@
 //! So the request and the selected filter are globals, which every pane
 //! reads, new ones included, with nothing passed down to them.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -139,7 +140,17 @@ pub struct Matcher {
     /// Folder mode: no files at all.
     folders_only: bool,
     /// `None` keeps every file.
-    filter: Option<(GlobSet, Vec<String>)>,
+    filter: Option<Kept>,
+}
+
+/// One filter, made ready for a listing to test every name.
+#[derive(Debug)]
+struct Kept {
+    globs: GlobSet,
+    /// Every type in the database that the filter's types take in, with its
+    /// ancestors weighed once here. Then a name costs one lookup in
+    /// `mime_globs` and a hash, not a walk up the type tree.
+    types: HashSet<String>,
 }
 
 impl Matcher {
@@ -154,7 +165,22 @@ impl Matcher {
                 }
             }
             let globs = globs.build().unwrap_or_else(|_| GlobSet::empty());
-            (globs, filter.mimes.clone())
+            let types = if filter.mimes.is_empty() {
+                HashSet::new()
+            } else {
+                crate::opener::name_globs()
+                    .types()
+                    .filter(|mime| {
+                        let chain = crate::opener::with_ancestors(mime.to_string());
+                        filter
+                            .mimes
+                            .iter()
+                            .any(|pattern| chain.iter().any(|mime| mime_matches(pattern, mime)))
+                    })
+                    .map(str::to_owned)
+                    .collect()
+            };
+            Kept { globs, types }
         });
         Matcher {
             folders_only,
@@ -171,21 +197,21 @@ impl Matcher {
         if self.folders_only {
             return false;
         }
-        let Some((globs, mimes)) = &self.filter else {
+        let Some(kept) = &self.filter else {
             return true;
         };
-        if globs.is_match(name) {
+        if kept.globs.is_match(name) {
             return true;
         }
-        if mimes.is_empty() {
+        if kept.types.is_empty() {
             return false;
         }
         // By name only: the listing runs this for every row, and reading each
         // file to sniff it would make a large folder slow to open.
-        let chain = crate::opener::mime_chain_by_name(name);
-        mimes
-            .iter()
-            .any(|pattern| chain.iter().any(|mime| mime_matches(pattern, mime)))
+        crate::opener::name_globs()
+            .lookup(name)
+            .into_iter()
+            .any(|mime| kept.types.contains(mime))
     }
 }
 

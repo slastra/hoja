@@ -2930,6 +2930,7 @@ dependencies = [
  "lofty",
  "lzma-rs",
  "md-5",
+ "mime",
  "notify 8.2.1",
  "parking_lot 0.13.0",
  "png 0.18.1",

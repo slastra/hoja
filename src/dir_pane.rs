@@ -715,6 +715,17 @@ impl DirPane {
         if !visible {
             self.watch = None;
             self.git_watch = None;
+            // Nor does a hidden tab count folder sizes. A walk still running
+            // stops here, or it went on to the end, which on `/` is the
+            // whole disk. The read counter set apart from the pane's makes
+            // the next render see a re-read and start the walk again, with
+            // the sizes already settled kept. That render comes when the tab
+            // is shown, with a reload or without one.
+            if self.walking() {
+                self.footer.walk = None;
+                self.footer.poll = None;
+                self.footer.read = self.directory_read.wrapping_sub(1);
+            }
             return;
         }
         if self.searching() || self.has_inline_editor() {
@@ -722,6 +733,14 @@ impl DirPane {
             self.reload_git(cx);
         } else {
             self.reload(cx);
+        }
+    }
+
+    /// Whether a folder-size walk is running or waiting out its debounce.
+    pub fn walking(&self) -> bool {
+        match &self.footer.walk {
+            Some(walk) => !walk.is_done(),
+            None => self.footer.poll.is_some(),
         }
     }
 
