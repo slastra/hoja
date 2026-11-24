@@ -31,7 +31,7 @@ the window is, and everything after it is keystrokes sent somewhere unverified.
 An earlier version carried on, walked a pane up to the root of the filesystem
 and pressed paste there; nothing was written only because root is not writable.
 
-There are thirty-one suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
+There are thirty-two suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
 `archive.sh` and `tar.sh` need fixtures, which `scripts/tests/setup-archives.sh`
 builds and prints the path of:
 
@@ -107,6 +107,16 @@ probe's `dragging` tells the test when the drag has started.
 
 ```sh
 scripts/sway-harness.sh "$(scripts/tests/setup-tabs.sh)" scripts/tests/tab-drag.sh
+```
+
+`cli-start.sh` uses the same fixture. Its `.before.sh` puts a file from each
+folder in `HOJA_ARGS`, and the harness adds the fixture folder last. The suite
+checks that the three paths are three tabs in order, that each file's tab
+shows its folder with the file selected, and that the folder's tab has nothing
+selected.
+
+```sh
+scripts/sway-harness.sh "$(scripts/tests/setup-tabs.sh)" scripts/tests/cli-start.sh
 ```
 
 `drag-external.sh` needs `setup-drag-external.sh` and nemo. It starts nemo in

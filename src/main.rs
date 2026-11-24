@@ -67,7 +67,8 @@ use workspace::{
 
 /// The command line, with the defaults filled in.
 struct Args {
-    dir: PathBuf,
+    /// One for each tab, in order. Never empty.
+    starts: Vec<cli::Start>,
     /// `--theme <name>`, else `$HOJA_THEME`, else the default dark theme.
     theme: Option<String>,
     list_themes: bool,
@@ -93,12 +94,24 @@ fn parse_args() -> Args {
             std::process::exit(2);
         }
     };
-    Args {
-        dir: args.dir.unwrap_or_else(|| {
-            std::env::var_os("HOME")
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let mut starts = match cli::resolve(&args.paths, &cwd) {
+        Ok(starts) => starts,
+        Err(err) => {
+            eprintln!("hoja: {err}");
+            std::process::exit(2);
+        }
+    };
+    if starts.is_empty() {
+        starts.push(cli::Start {
+            dir: std::env::var_os("HOME")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/"))
-        }),
+                .unwrap_or_else(|| PathBuf::from("/")),
+            select: None,
+        });
+    }
+    Args {
+        starts,
         theme: args.theme.or_else(|| std::env::var("HOJA_THEME").ok()),
         list_themes: args.list_themes,
         pick: args.pick,
@@ -123,7 +136,10 @@ fn main() {
         // The folder the request names wins over the one on the command line,
         // when it is there to open.
         if let Some(folder) = request.current_folder.as_ref().filter(|f| f.is_dir()) {
-            args.dir = folder.clone();
+            args.starts = vec![cli::Start {
+                dir: folder.clone(),
+                select: None,
+            }];
         }
         pick::start(request);
     }
@@ -452,7 +468,7 @@ fn main() {
                 app_id: Some(app_id.into()),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| Workspace::new(args.dir.clone(), settings, state, window, cx)),
+            |window, cx| cx.new(|cx| Workspace::new(args.starts, settings, state, window, cx)),
         )
         .unwrap();
         cx.activate(true);

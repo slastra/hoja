@@ -719,8 +719,10 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// `starts` holds one tab each, in order, and the first is shown. It is
+    /// never empty: the command line puts the home folder in when it is.
     pub fn new(
-        start_dir: PathBuf,
+        starts: Vec<crate::cli::Start>,
         settings: Settings,
         state: State,
         window: &mut Window,
@@ -733,9 +735,16 @@ impl Workspace {
 
         let view = config::initial_view(&settings, &state, config::newer());
         let widths = state.column_widths.clone();
+        let mut starts = starts.into_iter();
+        let first = starts
+            .next()
+            .expect("the command line gives one start at least");
         let pane = cx.new(|cx| {
-            let mut pane = DirPane::new(Location::Disk(start_dir), view, window, cx);
+            let mut pane = DirPane::new(Location::Disk(first.dir), view, window, cx);
             pane.set_column_widths(&widths);
+            // A file named on the command line: its row is selected, and the
+            // listing scrolls to it.
+            pane.select_on_next_load(first.select.into_iter().collect());
             pane
         });
         let subscription = Self::subscribe_to_pane(&pane, window, cx);
@@ -815,6 +824,17 @@ impl Workspace {
                 }),
             ],
         };
+        // The other starts, as tabs after the first, left hidden as a middle
+        // click leaves one.
+        for start in starts {
+            let tab = workspace.add_pane(Location::Disk(start.dir), view, window, cx);
+            tab.update(cx, |tab, cx| {
+                tab.select_on_next_load(start.select.into_iter().collect());
+                tab.set_visible(false, cx);
+            });
+            tile.update(cx, |tile, _| tile.list.insert(usize::MAX, tab));
+        }
+        window.focus(&pane.focus_handle(cx), cx);
         workspace.watch_settings(cx);
         // A picker is a dialog for another program, not the place to offer to
         // finish what an earlier Hoja left.

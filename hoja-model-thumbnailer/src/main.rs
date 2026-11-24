@@ -27,12 +27,39 @@ use std::process::ExitCode;
 
 type Error = Box<dyn std::error::Error>;
 
+const HELP: &str = "\
+Draws a thumbnail of a 3D printing file: STL, 3MF or G-code. The file
+manager calls it, through packaging/hoja-model.thumbnailer.
+
+Usage: hoja-model-thumbnailer [-s SIZE] INPUT OUTPUT
+
+Arguments:
+  INPUT   The model, as a path or a file:// URI.
+  OUTPUT  Where to write the PNG.
+
+Options:
+  -s, --size SIZE  The long side of the picture, from 1 to 4096. The
+                   default is 256.
+  -h, --help       Print this help, then exit.
+  -V, --version    Print the version, then exit.
+
+Exits with 1 when INPUT has no picture to give, and 2 on bad arguments.
+";
+
 fn main() -> ExitCode {
     let args = match Args::parse(std::env::args_os().skip(1)) {
-        Ok(args) => args,
+        Ok(Command::Run(args)) => args,
+        Ok(Command::Help) => {
+            print!("{HELP}");
+            return ExitCode::SUCCESS;
+        }
+        Ok(Command::Version) => {
+            println!("{}", version());
+            return ExitCode::SUCCESS;
+        }
         Err(err) => {
             eprintln!("hoja-model-thumbnailer: {err}");
-            eprintln!("usage: hoja-model-thumbnailer -s SIZE INPUT OUTPUT");
+            eprintln!("Try 'hoja-model-thumbnailer --help'.");
             return ExitCode::from(2);
         }
     };
@@ -45,6 +72,24 @@ fn main() -> ExitCode {
     }
 }
 
+/// As `hoja --version` gives it. The PKGBUILD sets `HOJA_REVISION` for the
+/// whole build.
+fn version() -> String {
+    match option_env!("HOJA_REVISION").filter(|rev| !rev.is_empty()) {
+        Some(rev) => format!(
+            "hoja-model-thumbnailer {} ({rev})",
+            env!("CARGO_PKG_VERSION")
+        ),
+        None => format!("hoja-model-thumbnailer {}", env!("CARGO_PKG_VERSION")),
+    }
+}
+
+enum Command {
+    Run(Args),
+    Help,
+    Version,
+}
+
 struct Args {
     size: u32,
     input: PathBuf,
@@ -52,18 +97,24 @@ struct Args {
 }
 
 impl Args {
-    fn parse(args: impl Iterator<Item = OsString>) -> Result<Args, Error> {
+    fn parse(args: impl Iterator<Item = OsString>) -> Result<Command, Error> {
         let mut size = 256;
         let mut paths = Vec::new();
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
-            if arg == "-s" || arg == "--size" {
+            if arg == "-h" || arg == "--help" {
+                return Ok(Command::Help);
+            } else if arg == "-V" || arg == "--version" {
+                return Ok(Command::Version);
+            } else if arg == "-s" || arg == "--size" {
                 let value = args.next().ok_or("-s needs a size")?;
                 size = value
                     .to_str()
                     .and_then(|v| v.parse().ok())
                     .filter(|&s: &u32| (1..=4096).contains(&s))
                     .ok_or("the size is not a number from 1 to 4096")?;
+            } else if arg.to_str().is_some_and(|a| a.starts_with('-') && a != "-") {
+                return Err(format!("unknown option {}", arg.display()).into());
             } else {
                 paths.push(arg);
             }
@@ -71,11 +122,11 @@ impl Args {
         let [input, output]: [OsString; 2] = paths
             .try_into()
             .map_err(|_| "give one input and one output")?;
-        Ok(Args {
+        Ok(Command::Run(Args {
             size,
             input: from_uri(input),
             output: PathBuf::from(output),
-        })
+        }))
     }
 }
 
@@ -172,11 +223,16 @@ mod tests {
 
     #[test]
     fn the_arguments_are_the_spec_s() {
-        let args = ["-s", "512", "in.stl", "out.png"].map(OsString::from);
-        let args = Args::parse(args.into_iter()).unwrap();
+        let parse = |args: &[&str]| Args::parse(args.iter().map(OsString::from));
+        let Ok(Command::Run(args)) = parse(&["-s", "512", "in.stl", "out.png"]) else {
+            panic!("not parsed");
+        };
         assert_eq!(args.size, 512);
         assert_eq!(args.input, PathBuf::from("in.stl"));
         assert_eq!(args.output, PathBuf::from("out.png"));
-        assert!(Args::parse(["in.stl"].map(OsString::from).into_iter()).is_err());
+        assert!(parse(&["in.stl"]).is_err());
+        assert!(parse(&["--sise", "9", "in.stl", "out.png"]).is_err());
+        assert!(matches!(parse(&["in.stl", "--help"]), Ok(Command::Help)));
+        assert!(matches!(parse(&["-V"]), Ok(Command::Version)));
     }
 }

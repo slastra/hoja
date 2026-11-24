@@ -189,9 +189,10 @@ Zed repository does not apply to git dependencies.
 ## Usage
 
 ```sh
-hoja [OPTIONS] [FOLDER]
+hoja [OPTIONS] [PATH]...
 ```
 
+Each path opens in a tab. A file opens its folder with the file selected.
 `hoja --help` lists the options. The `HOJA_THEME` environment variable also
 sets the theme.
 

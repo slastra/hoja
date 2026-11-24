@@ -18,6 +18,10 @@ pane to split a new pane off there, as in Zed. Middle-click a folder to open
 it in a tab, and drop files on a tab to put them in its folder. A tab that is
 not shown stops watching its folder and reads it again when you show it.
 
+`hoja PATH...` opens each path in a tab, in order, and shows the first. A file
+opens its folder with the file selected. A path that is not there is an error,
+and no window opens.
+
 ### Fast directory listings
 
 Rows are virtualized, so even very large directories stay smooth while
@@ -140,8 +144,9 @@ next Hoja to start offers to finish it, as after a crash.
 
 ### `hoja --pick`
 
-`hoja --pick [DIR]` reads one request as JSON on stdin. Every field can be
-left out, and empty stdin is the default request: one file, from `DIR`.
+`hoja --pick [PATH]` reads one request as JSON on stdin. Every field can be
+left out, and empty stdin is the default request: one file, from `PATH`.
+When `PATH` is a file, it starts selected.
 
 ```json
 { "title": "Open File", "accept_label": "_Open", "multiple": false,

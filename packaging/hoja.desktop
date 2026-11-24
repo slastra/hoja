@@ -4,7 +4,8 @@ Version=1.0
 Name=hoja
 GenericName=File Manager
 Comment=Browse files in splittable panes
-Exec=hoja %u
+# %U: a launcher can pass several folders, and each opens in a tab.
+Exec=hoja %U
 # The freedesktop generic name for a file manager, so the icon comes from
 # whatever theme is in use and matches the rest of the desktop. Every real
 # theme carries it — Adwaita through AdwaitaLegacy, and Papirus, breeze and
