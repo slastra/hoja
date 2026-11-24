@@ -23,6 +23,7 @@ mod opener;
 mod owners;
 mod pane_group;
 mod path_editor;
+mod pick;
 mod picker;
 mod place_finder;
 mod places;
@@ -68,19 +69,23 @@ struct Args {
     /// `--theme <name>`, else `$HOJA_THEME`, else the default dark theme.
     theme: Option<String>,
     list_themes: bool,
+    /// `--pick`: answer one request for a file, read from stdin. See `pick`.
+    pick: bool,
 }
 
-/// Usage: `pane [DIR] [--theme NAME] [--list-themes]`
+/// Usage: `hoja [DIR] [--theme NAME] [--list-themes] [--pick]`
 fn parse_args() -> Args {
     let mut dir = None;
     let mut theme = std::env::var("HOJA_THEME").ok();
     let mut list_themes = false;
+    let mut pick = false;
     let mut args = std::env::args().skip(1);
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--theme" => theme = args.next(),
             "--list-themes" => list_themes = true,
+            "--pick" => pick = true,
             // A desktop launcher hands a file manager `file:///…` rather than
             // a path, so accept both.
             other => dir = Some(uri::uri_to_path(other).unwrap_or_else(|| PathBuf::from(other))),
@@ -95,11 +100,32 @@ fn parse_args() -> Args {
         }),
         theme,
         list_themes,
+        pick,
     }
 }
 
 fn main() {
-    let args = parse_args();
+    let mut args = parse_args();
+    if args.pick {
+        let mut text = String::new();
+        if let Err(err) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut text) {
+            eprintln!("[hoja] the pick request could not be read: {err}");
+            std::process::exit(2);
+        }
+        let request = match pick::Request::parse(&text) {
+            Ok(request) => request,
+            Err(err) => {
+                eprintln!("[hoja] the pick request is not valid: {err:#}");
+                std::process::exit(2);
+            }
+        };
+        // The folder the request names wins over the one on the command line,
+        // when it is there to open.
+        if let Some(folder) = request.current_folder.as_ref().filter(|f| f.is_dir()) {
+            args.dir = folder.clone();
+        }
+        pick::start(request);
+    }
     // Read before the window exists: the theme, the first pane's view, and the
     // window size all come from these.
     let settings = config::Settings::load();
@@ -403,16 +429,26 @@ fn main() {
         // What a hoja killed in the middle of making a thumbnail left behind.
         cx.background_spawn(async { preview::sweep() }).detach();
 
-        let window_size = state
-            .window
-            .map(|w| size(px(w.width), px(w.height)))
-            .unwrap_or_else(|| size(px(1100.0), px(700.0)));
+        // A picker is a dialog: a size of its own, never the remembered one,
+        // and its own app_id, so a window rule can float it.
+        let window_size = match pick::active() {
+            true => size(px(960.0), px(640.0)),
+            false => state
+                .window
+                .map(|w| size(px(w.width), px(w.height)))
+                .unwrap_or_else(|| size(px(1100.0), px(700.0))),
+        };
         let bounds = Bounds::centered(None, window_size, cx);
+        let app_id = if pick::active() {
+            "hoja-picker"
+        } else {
+            "hoja"
+        };
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 // Lets Hyprland window rules target this app.
-                app_id: Some("hoja".into()),
+                app_id: Some(app_id.into()),
                 ..Default::default()
             },
             |window, cx| cx.new(|cx| Workspace::new(args.dir.clone(), settings, state, window, cx)),

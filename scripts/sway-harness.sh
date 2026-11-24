@@ -145,17 +145,40 @@ printf '{ "theme": "Rosé Pine" }\n' > "$XDG_CONFIG_HOME/hoja/settings.json"
 # with OUT and the private XDG dirs set. It is for files the app reads once,
 # at its first look at them: a thumbnailer a test installs after the start
 # can lose a race with a tooltip that opens under a pointer resting on a row.
+#
+# It can also set these, for a test of `hoja --pick`:
+#   HOJA_ARGS   arguments before the start folder, split on spaces
+#   HOJA_STDIN  a file for the app's stdin, /dev/null if not set
+#   APP_ID      the app_id to wait for, `hoja` if not set
+#   EXTRA_PIDS  processes it started, stopped with the app at the end
+# The app's stdout goes to $OUT/app.out, and its exit status, once it has
+# exited, to $OUT/app.status.
+HOJA_ARGS=""
+HOJA_STDIN=/dev/null
+APP_ID=hoja
+EXTRA_PIDS=""
 BEFORE="${BODY%.sh}.before.sh"
 # shellcheck disable=SC1090
 [ -f "$BEFORE" ] && . "$BEFORE"
 
-env -u DISPLAY "$BIN" "$START_DIR" >"$OUT/app.log" 2>&1 &
+# shellcheck disable=SC2086
+( env -u DISPLAY "$BIN" $HOJA_ARGS "$START_DIR" <"$HOJA_STDIN" >"$OUT/app.out" 2>"$OUT/app.log"
+  echo $? >"$OUT/app.status" ) &
 APP=$!
-cleanup() { kill -9 "$APP" 2>/dev/null; kill -9 "$SWAY" 2>/dev/null; }
-for _ in $(seq 1 40); do
-    swaymsg -t get_tree 2>/dev/null | grep -q '"app_id": *"hoja"' && break
-    sleep 0.25
+# shellcheck disable=SC2086
+cleanup() {
+    pkill -9 -P "$APP" 2>/dev/null; kill -9 "$APP" 2>/dev/null
+    [ -n "$EXTRA_PIDS" ] && kill $EXTRA_PIDS 2>/dev/null
+    kill -9 "$SWAY" 2>/dev/null
+}
+START_MS=$(date +%s%3N)
+for _ in $(seq 1 200); do
+    swaymsg -t get_tree 2>/dev/null | grep -q "\"app_id\": *\"$APP_ID\"" && break
+    sleep 0.05
 done
+# How long the window took to appear, for a test that cares.
+MAPPED_MS=$(( $(date +%s%3N) - START_MS ))
+export MAPPED_MS
 sleep 1.5
 
 # Where hoja actually sits, so the row arithmetic starts from its top edge
@@ -163,7 +186,7 @@ sleep 1.5
 eval "$(swaymsg -t get_tree 2>/dev/null | python3 -c "
 import sys, json
 def find(n):
-    if n.get('app_id') == 'hoja':
+    if n.get('app_id') == '$APP_ID':
         return n['rect']
     for k in ('nodes', 'floating_nodes'):
         for c in n.get(k, []):
@@ -368,6 +391,19 @@ print(eval(sys.argv[2]))" "$HOJA_PROBE" "$1" 2>/dev/null
 # called `row`: that one is the harness's own y-coordinate helper, and shadowing
 # it makes every click land at a coordinate derived from a python expression.
 named() { probe "p[0][\"rows\"].index(\"$1\")"; }
+
+# shellcheck disable=SC2317
+# wait_exit [SECS]: wait for the app to exit, and print its exit status, or
+# `running` if it has not exited in time. For `hoja --pick`, which exits
+# when it answers.
+wait_exit() {
+    local _
+    for _ in $(seq 1 $(( ${1:-5} * 10 ))); do
+        [ -s "$OUT/app.status" ] && { cat "$OUT/app.status"; return; }
+        sleep 0.1
+    done
+    echo running
+}
 
 # shellcheck disable=SC2317
 # menu_to LABEL: press Down in the open menu until LABEL is the selected row.

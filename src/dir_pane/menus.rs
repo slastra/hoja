@@ -284,7 +284,7 @@ impl DirPane {
 
     /// Shared summoning for the context and settings menus: build, subscribe,
     /// deferred focus, store in the single overlay slot.
-    pub(super) fn show_menu(
+    pub(crate) fn show_menu(
         &mut self,
         items: Vec<MenuItem>,
         position: Point<Pixels>,

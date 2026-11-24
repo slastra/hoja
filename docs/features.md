@@ -102,6 +102,64 @@ immediately, and archive folders report their recursive sizes instantly. Copy
 files out using the keyboard, context menu, or drag and drop. Archives are
 always read-only.
 
+## File picker
+
+### For other applications
+
+With `hoja-portal` installed and named in the portal's config, an
+application that asks the desktop portal for a file gets Hoja. The README
+says how to set it up. Each request starts a Hoja of its own, which answers
+and exits.
+
+The picker is all of Hoja: panes, tabs, search, previews and file operations
+work as usual. A bar along the bottom shows the filter, what the accept
+button would return, Cancel, and the accept button, with the label the
+application gave it.
+
+### What it picks
+
+- To pick one file, select it and press the accept button, or press enter or
+  double-click on it. A click with ctrl or shift selects one file too.
+- To pick several files, select them, then press the accept button or enter.
+- To pick a folder, go into it and press the accept button, or select one
+  folder in it first. A folder picker shows no files.
+- When the selection is one folder, the accept button goes into it, as in the
+  GTK dialog.
+- An archive is a file to pick. The picker does not go into one, because
+  nothing in an archive has a path to give to another application.
+
+The filter menu shows the filters the application gave. A filter hides the
+files that do not match it, by name, and never hides a folder. Escape clears
+the selection, and when nothing is selected it cancels. Closing the window
+cancels too.
+
+Save dialogs still go to the GTK backend until Hoja has its own.
+
+A transfer still running when you pick or cancel stops with the picker. The
+next Hoja to start offers to finish it, as after a crash.
+
+### `hoja --pick`
+
+`hoja --pick [DIR]` reads one request as JSON on stdin. Every field can be
+left out, and empty stdin is the default request: one file, from `DIR`.
+
+```json
+{ "title": "Open File", "accept_label": "_Open", "multiple": false,
+  "directory": false,
+  "filters": [ { "name": "Images", "globs": ["*.png"], "mimes": ["image/*"] } ],
+  "current_filter": 0, "current_folder": "/home/me/Pictures" }
+```
+
+On a pick it writes one line of JSON on stdout and exits with 0. The URIs are
+`file://` URIs, escaped as GLib escapes them. `filter` is the index of the
+filter in use, or `null`.
+
+```json
+{"uris":["file:///home/me/Pictures/photo.png"],"filter":0}
+```
+
+On a cancel it writes nothing and exits with 1.
+
 ## File operations
 
 ### Optimized transfers

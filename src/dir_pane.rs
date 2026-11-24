@@ -116,6 +116,9 @@ const CELL_PADDING: f32 = 16.;
 /// than from separate click plumbing.
 pub enum PaneEvent {
     Focus,
+    /// A file was opened in a picker: the workspace answers with the
+    /// selection. See `pick`.
+    Pick,
     /// Asks the workspace to remove this pane from the tree.
     #[allow(dead_code)]
     Remove,
@@ -1067,6 +1070,9 @@ impl DirPane {
     }
 
     fn select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
+        if crate::pick::picks_one() {
+            return;
+        }
         self.selected.set((0..self.entries.len()).collect());
         if self.cursor_ix.is_none() && !self.entries.is_empty() {
             self.place_cursor(0);
@@ -1089,11 +1095,31 @@ impl DirPane {
             self.end_search(window, cx);
             return;
         }
+        if crate::pick::active() && self.selected.is_empty() {
+            cx.propagate();
+            return;
+        }
         self.selected.clear();
         self.anchor_ix = None;
         self.cursor_ix = None;
         self.type_ahead = None;
         cx.notify();
+    }
+
+    /// The selection and the lead row, as the picker's accept rules see them.
+    /// A row with no real path, a member of an archive, is left out.
+    pub fn pick_selection(&self) -> (Vec<crate::pick::Pick>, Option<crate::pick::Pick>) {
+        let pick = |ix: usize| {
+            let entry = self.entries.get(ix)?;
+            Some(crate::pick::Pick {
+                path: entry.on_disk()?.to_path_buf(),
+                is_dir: entry.is_dir,
+            })
+        };
+        (
+            self.selected.iter().filter_map(pick).collect(),
+            self.cursor_ix.and_then(pick),
+        )
     }
 
     /// Put both ends of the selection on `ix`. Every path except a shift-range
@@ -1196,13 +1222,21 @@ impl DirPane {
         let Some(ix) = self.cursor_ix.filter(|&ix| ix < self.entries.len()) else {
             return;
         };
-        self.selected.toggle(ix);
+        if crate::pick::picks_one() {
+            self.selected.only(ix);
+        } else {
+            self.selected.toggle(ix);
+        }
         self.place_cursor(ix);
         cx.notify();
     }
 
     /// Move the lead, select everything back to the anchor.
     fn extend_cursor(&mut self, motion: Motion, cx: &mut Context<Self>) {
+        // A picker that wants one file has no ranges: the key just moves.
+        if crate::pick::picks_one() {
+            return self.move_cursor(motion, cx);
+        }
         let Some(ix) = self.destination(motion) else {
             return;
         };
@@ -1255,7 +1289,7 @@ impl DirPane {
     /// rows but cannot alter a file's git status, and re-asking costs two
     /// process spawns and a work-tree walk. It also blanks `self.git` first, so
     /// every name would flash back to its default colour and back again.
-    fn relist(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn relist(&mut self, cx: &mut Context<Self>) {
         self.reload_inner(false, cx);
     }
 
@@ -1338,6 +1372,8 @@ impl DirPane {
             return;
         }
 
+        // Taken now: a filter chosen while this read runs re-lists again.
+        let picking = crate::pick::matcher();
         self.load_task = Some(cx.spawn(async move |this, cx| {
             // `read_dir` is blocking and sorting a large listing costs ~100ms, so both
             // run off the foreground executor in the same hop.
@@ -1351,6 +1387,7 @@ impl DirPane {
                         // Archives took the branch above.
                         None => (Vec::new(), 0),
                     };
+                    crate::pick::retain(picking.as_deref(), &mut entries);
                     fs::sort_entries(&mut entries, sort, folders_first);
                     anyhow::Ok((entries, skipped))
                 })
@@ -1803,6 +1840,10 @@ impl DirPane {
                                     // at the top of this task would overwrite
                                     // that on the next batch.
                                     let mut entries = rows.entries;
+                                    crate::pick::retain(
+                                        crate::pick::matcher().as_deref(),
+                                        &mut entries,
+                                    );
                                     fs::sort_entries(
                                         &mut entries,
                                         this.view.sort,
@@ -2441,7 +2482,8 @@ impl DirPane {
                     else {
                         return false;
                     };
-                    let batch = handle.drain();
+                    let mut batch = handle.drain();
+                    crate::pick::retain(crate::pick::matcher().as_deref(), &mut batch);
                     let finished = handle.is_done();
                     if !batch.is_empty() {
                         this.entries.extend(batch);
@@ -2828,6 +2870,7 @@ impl DirPane {
         let found =
             crate::archive::search_in(&held.index, archive, inside, query, self.view.show_hidden);
         self.entries = found.entries;
+        crate::pick::retain(crate::pick::matcher().as_deref(), &mut self.entries);
         // Sorted, unlike the disk search, which leaves results in the order
         // they arrive. That is right there and wrong here: results stream in
         // over the life of a walk, so re-sorting would make rows jump under
@@ -3042,6 +3085,12 @@ impl DirPane {
         let Some(entry) = self.entries.get(ix) else {
             return;
         };
+        // A picker answers with the file. Never opened, and never extracted:
+        // the workspace says why a member cannot be picked.
+        if crate::pick::active() {
+            cx.emit(PaneEvent::Pick);
+            return;
+        }
         // A file inside an archive. `xdg-open` needs a path and there is none,
         // so opening one means extracting a temporary copy first, and that
         // needs the user's say-so: see `open_prompt`, and why it asks rather
@@ -3111,6 +3160,11 @@ impl DirPane {
         let path = entry.on_disk()?.to_path_buf();
         if entry.is_dir {
             return Some(Location::Disk(path));
+        }
+        // A picker answers with the archive itself: what was asked for is a
+        // file, and nothing inside one has a path to give.
+        if crate::pick::active() {
+            return None;
         }
         // Only `.zip` and the tarballs, and deliberately not the many document
         // formats that are zip files underneath: see `archive::is_archive`.

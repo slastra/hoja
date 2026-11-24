@@ -53,6 +53,8 @@ feels like working with ordinary folders.
   G-code files for Hoja and for other file managers
 - Opens `.zip` and tar archives as read-only folders, and shows the members
   of a tar as they stream in
+- Opens files for other applications as their file picker, through the
+  desktop portal, with `hoja-portal`
 
 ### File operations
 
@@ -121,10 +123,55 @@ Hoja starts without any of these, and each adds something:
   and page shape.
 - `hoja-model-thumbnailer`, which `packaging/PKGBUILD` builds with Hoja:
   pictures of STL, 3MF and G-code files.
+- `hoja-portal`, which `packaging/PKGBUILD` builds with Hoja too: Hoja as the
+  file picker of other applications. See below.
 - `git`: names colored by Git status.
 - `udisks2`: mounting drives from the place finder.
 - `wl-clipboard`, `xdg-utils`, `libnotify` and `shared-mime-info`: the
   clipboard, opening files, notifications, and the Open With menu.
+
+### Use Hoja as the file picker
+
+Applications that ask the desktop portal for a file, such as Chrome, Zed,
+Electron applications and Flatpaks, can get Hoja instead of the GTK dialog.
+Install `hoja-portal`, then name it for the file chooser in
+`~/.config/xdg-desktop-portal/hyprland-portals.conf` (or the file for your
+desktop):
+
+```ini
+[preferred]
+default=hyprland;gtk
+org.freedesktop.impl.portal.FileChooser=hoja
+```
+
+Then restart the portal:
+
+```sh
+systemctl --user restart xdg-desktop-portal
+```
+
+Firefox asks the portal only when `widget.use-xdg-desktop-portal.file-picker`
+is `1` in `about:config`.
+
+Hoja opens files and folders. Save dialogs still go to GTK until Hoja has its
+own, so keep `xdg-desktop-portal-gtk` installed.
+
+The picker's window has the app_id `hoja-picker`. A Hyprland rule can float
+it:
+
+```lua
+hl.window_rule({
+	name = "hoja-picker",
+	match = { class = "^(hoja-picker)$" },
+	float = true,
+	size = "960 640",
+	center = true,
+})
+```
+
+`hoja --pick` works without the portal too: it reads a request as JSON on
+stdin and writes what you pick on stdout. See
+[docs/features.md](docs/features.md#file-picker).
 
 ### From source
 
@@ -133,7 +180,8 @@ Hoja starts without any of these, and each adds something:
    `clang cmake pkgconf fontconfig freetype2 wayland wayland-protocols
    libxkbcommon libxkbcommon-x11 vulkan-icd-loader alsa-lib openssl zstd`
 3. Run `cargo build --release`. This builds Hoja only. To build the model
-   thumbnailer too, run `cargo build --release --workspace`.
+   thumbnailer and the portal backend too, run
+   `cargo build --release --workspace`.
 
 Note: Cargo compiles GPUI with your local toolchain. The toolchain file in the
 Zed repository does not apply to git dependencies.
@@ -141,7 +189,7 @@ Zed repository does not apply to git dependencies.
 ## Usage
 
 ```sh
-hoja [DIRECTORY] [--theme NAME] [--list-themes]
+hoja [DIRECTORY] [--theme NAME] [--list-themes] [--pick]
 ```
 
 The `HOJA_THEME` environment variable also sets the theme.

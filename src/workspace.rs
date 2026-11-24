@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -794,6 +795,12 @@ impl Workspace {
                 // already gone, and its callback, which needs `&mut self`,
                 // never fires at all. Measured: the toggle was still lost.
                 cx.on_release(|this, _| {
+                    // A picker closed by its window answers nothing, which
+                    // is a cancel. It never wrote the state, so there is none
+                    // to save either.
+                    if crate::pick::active() {
+                        std::process::exit(1);
+                    }
                     this.state.save_now(this.dirty);
                     // A job still running dies with the process, wherever it
                     // is, so its record stays for the next start to reap and
@@ -809,7 +816,11 @@ impl Workspace {
             ],
         };
         workspace.watch_settings(cx);
-        workspace.scan_task = Some(workspace.find_interrupted(cx));
+        // A picker is a dialog for another program, not the place to offer to
+        // finish what an earlier Hoja left.
+        if !crate::pick::active() {
+            workspace.scan_task = Some(workspace.find_interrupted(cx));
+        }
         workspace
     }
 
@@ -820,6 +831,7 @@ impl Workspace {
     ) -> Subscription {
         cx.subscribe_in(pane, window, |this, pane, event, window, cx| match event {
             PaneEvent::Focus => this.set_active_pane(pane, cx),
+            PaneEvent::Pick => this.pick_accept(window, cx),
             PaneEvent::Remove => this.close_tab(&pane.clone(), window, cx),
             PaneEvent::ViewChanged => this.remember_view(&pane.clone(), cx),
             PaneEvent::Notice { message, problem } => {
@@ -954,7 +966,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let TabDrop { pane, at, split, copy } = drop;
+        let TabDrop {
+            pane,
+            at,
+            split,
+            copy,
+        } = drop;
         // Looked up now, not taken from the drag: the tab may have moved or
         // closed since the drag began.
         let Some(source) = self.tile_of(&pane, cx) else {
@@ -2572,6 +2589,12 @@ impl Workspace {
         column_widths: Option<std::collections::HashMap<String, f32>>,
         cx: &mut Context<Self>,
     ) {
+        // A picker reads the user's view settings and never writes them: it
+        // is another program's dialog, and a filter or a size chosen there is
+        // not a choice about Hoja.
+        if crate::pick::active() {
+            return;
+        }
         let sort = config::SortSetting {
             key: view.sort.key.into(),
             direction: view.sort.dir.into(),
@@ -2707,7 +2730,9 @@ impl Workspace {
             .or(self.conflict_dialog.is_some().then_some("conflict"))
             .or(self.open_prompt.is_some().then_some("open-prompt"));
         let notice = self.notice.as_ref().map(|n| n.text().to_string());
+        let active_pane = self.active_pane.clone();
         window.on_next_frame(move |_, cx| {
+            let pick = pick_probe(active_pane.read(cx));
             let preview = crate::preview::probe(cx);
             let icon_theme = theme::GlobalTheme::icon_theme(cx).name.to_string();
             // One reading for every pane, so two cannot disagree about how long
@@ -2751,6 +2776,7 @@ impl Workspace {
                     })
                     .collect(),
                 dragging: cx.has_active_drag(),
+                pick,
                 hidden_watching: tiles
                     .iter()
                     .flat_map(|tile| tile.read(cx).list.items().to_vec())
@@ -3385,6 +3411,38 @@ impl Workspace {
 
 /// One row of the strip at the foot of the window, spaced as Zed's status bar
 /// spaces its items: six pixels in from the sides, eight between.
+/// What the picker's accept button would do for `pane`. `None` when this
+/// Hoja is not a picker.
+fn pick_outcome(pane: &DirPane) -> Option<crate::pick::Outcome> {
+    let request = crate::pick::request()?;
+    let here = pane.location().disk().map(Path::to_path_buf);
+    let (selected, cursor) = pane.pick_selection();
+    Some(crate::pick::accept(
+        request.mode(),
+        &selected,
+        cursor.as_ref(),
+        here.as_deref(),
+    ))
+}
+
+/// The picker's bar, as the probe reports it.
+fn pick_probe(pane: &DirPane) -> Option<crate::probe::PickProbe> {
+    let request = crate::pick::request()?;
+    let outcome = pick_outcome(pane)?;
+    let enabled = !matches!(outcome, crate::pick::Outcome::Nothing(_));
+    Some(crate::probe::PickProbe {
+        mode: request.mode().name(),
+        filter: crate::pick::filter()
+            .and_then(|ix| request.filters.get(ix))
+            .map(|filter| filter.name.clone()),
+        accept: enabled.then(|| request.accept_label()),
+        note: outcome.describe(),
+    })
+}
+
+/// The picker's bar: room for 22 pixel buttons with air round them.
+const PICK_BAR_H: f32 = 38.;
+
 fn strip_row() -> gpui::Div {
     div()
         .flex()
@@ -3425,6 +3483,154 @@ fn delete_failure_notice(failures: &[(PathBuf, std::io::Error)]) -> Option<Notic
     }))
 }
 
+/// Picker mode. See `pick`.
+impl Workspace {
+    /// What the accept button would do now, for the active pane.
+    fn pick_outcome(&self, cx: &App) -> Option<crate::pick::Outcome> {
+        pick_outcome(self.active_pane.read(cx))
+    }
+
+    /// The accept button, enter on a file, or a double-click on one.
+    fn pick_accept(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.pick_outcome(cx) {
+            Some(crate::pick::Outcome::Answer(paths)) => {
+                let line = crate::pick::response(&paths, crate::pick::filter());
+                let mut out = std::io::stdout().lock();
+                let written = writeln!(out, "{line}").and_then(|_| out.flush());
+                // Straight out, without the release that saves the state:
+                // the picker has none to save, and a transfer still running
+                // keeps its journal record, so the next Hoja offers to finish
+                // it, as after a crash.
+                std::process::exit(if written.is_ok() { 0 } else { 2 });
+            }
+            Some(crate::pick::Outcome::Enter(dir)) => {
+                self.active_pane
+                    .update(cx, |pane, cx| pane.navigate_to(Location::Disk(dir), cx));
+                let focus = self.active_pane.focus_handle(cx);
+                window.focus(&focus, cx);
+            }
+            Some(crate::pick::Outcome::Nothing(_)) | None => {}
+        }
+    }
+
+    fn pick_cancel(&mut self, _cx: &mut Context<Self>) {
+        std::process::exit(1);
+    }
+
+    /// The filters the request offers, as a menu under the filter button.
+    fn open_pick_filters(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(request) = crate::pick::request() else {
+            return;
+        };
+        let current = crate::pick::filter();
+        let workspace = cx.entity().downgrade();
+        let items = request
+            .filters
+            .iter()
+            .enumerate()
+            .map(|(ix, filter)| {
+                let workspace = workspace.clone();
+                crate::file_menu::MenuItem::toggle(
+                    filter.name.clone(),
+                    current == Some(ix),
+                    move |_, cx| {
+                        let _ = workspace.update(cx, |this, cx| this.set_pick_filter(ix, cx));
+                    },
+                )
+            })
+            .collect();
+        // Shown by the active pane, which already draws and dismisses menus.
+        self.active_pane
+            .update(cx, |pane, cx| pane.show_menu(items, position, window, cx));
+    }
+
+    fn set_pick_filter(&mut self, ix: usize, cx: &mut Context<Self>) {
+        crate::pick::set_filter(ix);
+        for pane in &self.panes {
+            pane.update(cx, |pane, cx| pane.relist(cx));
+        }
+        cx.notify();
+    }
+
+    /// The bar along the bottom of a picker: the filter, what the accept
+    /// button would return, Cancel, and the accept button.
+    fn render_pick_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let colors = cx.theme().colors();
+        let request = crate::pick::request();
+        let outcome = self.pick_outcome(cx);
+        let enabled = matches!(
+            outcome,
+            Some(crate::pick::Outcome::Answer(_) | crate::pick::Outcome::Enter(_))
+        );
+        let note = outcome
+            .as_ref()
+            .map(crate::pick::Outcome::describe)
+            .unwrap_or_default();
+        let filter =
+            crate::pick::filter().and_then(|ix| Some(request?.filters.get(ix)?.name.clone()));
+        let label = request
+            .map(crate::pick::Request::accept_label)
+            .unwrap_or_default();
+
+        div()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .h(px(PICK_BAR_H))
+            .px_2()
+            .bg(colors.status_bar_background)
+            .border_t_1()
+            .border_color(colors.border)
+            .when_some(filter, |el, name| {
+                el.child(
+                    ui::button("pick-filter", ButtonStyle::Outlined, cx)
+                        .child(name)
+                        .child(
+                            Icon::from_path("icons/file_icons/chevron_down.svg", colors.text_muted)
+                                .size(px(12.)),
+                        )
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.open_pick_filters(event.position, window, cx);
+                            }),
+                        ),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .text_color(if enabled {
+                        colors.text
+                    } else {
+                        colors.text_muted
+                    })
+                    .child(note),
+            )
+            .child(
+                ui::text_button("pick-cancel", "Cancel", ButtonStyle::Outlined, cx)
+                    .on_click(cx.listener(|this, _, _, cx| this.pick_cancel(cx))),
+            )
+            .child(
+                ui::text_button("pick-accept", label, ButtonStyle::Accent, cx)
+                    .px_2()
+                    .when(!enabled, |el| el.opacity(0.5).cursor_default())
+                    .on_click(cx.listener(|this, _, window, cx| this.pick_accept(window, cx))),
+            )
+    }
+}
+
 impl Focusable for Workspace {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -3436,7 +3642,10 @@ impl Render for Workspace {
         // The window had no title at all, which leaves an empty entry in the
         // task switcher. Name it for the active pane's directory.
         let dir = self.active_pane.read(cx).location().key();
-        let title = file_label(&dir);
+        let title = match crate::pick::request() {
+            Some(request) => request.title(),
+            None => file_label(&dir),
+        };
         if title != self.title {
             window.set_window_title(&title);
             self.title = title;
@@ -3507,6 +3716,11 @@ impl Render for Workspace {
                     || !self.interrupted.is_empty(),
                 |el| el.child(self.render_job_strip(cx)),
             )
+            .when(crate::pick::active(), |el| {
+                el.child(self.render_pick_bar(cx)).on_action(cx.listener(
+                    |this, _: &crate::dir_pane::ClearSelection, _, cx| this.pick_cancel(cx),
+                ))
+            })
             .when_some(self.modal.as_ref().map(Modal::element), |el, modal| {
                 el.child(self.modal_scrim(modal, cx))
             })

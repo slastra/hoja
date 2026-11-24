@@ -31,7 +31,7 @@ the window is, and everything after it is keystrokes sent somewhere unverified.
 An earlier version carried on, walked a pane up to the root of the filesystem
 and pressed paste there; nothing was written only because root is not writable.
 
-There are twenty-six suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
+There are thirty-one suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
 `archive.sh` and `tar.sh` need fixtures, which `scripts/tests/setup-archives.sh`
 builds and prints the path of:
 
@@ -152,6 +152,48 @@ before Hoja starts, with `OUT` and the private XDG directories set.
 the thumbnailers one time, at its first look at a file, and the pointer can
 rest on a row when Hoja starts. A thumbnailer that a suite installs after the
 start is then too late.
+
+A `.before.sh` can also set these, for a suite that does not start Hoja the
+usual way:
+
+- `HOJA_ARGS`: arguments before the start folder, such as `--pick`.
+- `HOJA_STDIN`: a file for Hoja's stdin. The default is `/dev/null`.
+- `APP_ID`: the app_id of the window to wait for. The default is `hoja`.
+- `EXTRA_PIDS`: processes that it started, which the harness stops at the
+  end.
+- `BIN`: the program to start in place of `target/debug/hoja`.
+
+Hoja's stdout goes to `$OUT/app.out` and its stderr to `$OUT/app.log`. When
+Hoja exits, its exit status goes to `$OUT/app.status`. `wait_exit [SECS]`
+waits for that and prints it, or prints `running`. `MAPPED_MS` is the time
+the window took to appear.
+
+`picker-open.sh`, `picker-multiple.sh`, `picker-folder.sh` and
+`picker-cancel.sh` test `hoja --pick`. Each has a `.before.sh` that gives the
+request on stdin. They need `setup-picker.sh`, which makes two pictures, a
+text file, a model, a zip and a folder. They check:
+
+- what a filter shows, and a filter chosen from the bar's menu;
+- that a picker for one file selects one row;
+- that a double-click goes into a folder and picks a file;
+- the accept button for several files, with a zip picked as a file;
+- that a folder picker shows no files and picks the folder;
+- that the first escape clears the selection and the second cancels.
+
+Each one reads the answer from `app.out` and the exit status.
+
+`portal.sh` tests the whole loop through D-Bus. Its `.before.sh` starts a
+private `dbus-daemon` with no service directories, starts
+`target/debug/hoja-portal` on it, and puts a `gdbus call` in place of the
+app. The portal starts the debug Hoja. The suite picks two files and checks
+the reply that the call writes. It needs a debug build of the whole
+workspace.
+
+```sh
+cargo build --workspace
+scripts/sway-harness.sh "$(scripts/tests/setup-picker.sh)" scripts/tests/picker-open.sh
+scripts/sway-harness.sh "$(scripts/tests/setup-picker.sh)" scripts/tests/portal.sh
+```
 
 `grid.sh` needs `setup-grid.sh`, which makes more than a screen of images in
 five shapes, a video in each orientation, a PDF, audio, text and folders. The

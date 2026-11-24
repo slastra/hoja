@@ -620,11 +620,13 @@ impl DirPane {
             )
             .on_click(cx.listener(move |this, event: &ClickEvent, _window, cx| {
                 let mods = event.modifiers();
-                if mods.control {
+                // A picker that wants one file takes every click as plain.
+                let one = crate::pick::picks_one();
+                if mods.control && !one {
                     // Toggle membership; the toggled row becomes the new anchor.
                     this.selected.toggle(ix);
                     this.place_cursor(ix);
-                } else if mods.shift {
+                } else if mods.shift && !one {
                     // Range from the anchor replaces the selection; the anchor
                     // itself stays put so ranges can be re-aimed.
                     let a = this.anchor_ix.unwrap_or(ix);
@@ -634,7 +636,10 @@ impl DirPane {
                 } else {
                     this.selected.only(ix);
                     this.place_cursor(ix);
-                    if event.click_count() >= 2 {
+                    // Two exactly. A third click lands on whatever the
+                    // second one opened: in a folder just entered, that is
+                    // its first row, which nobody aimed at.
+                    if event.click_count() == 2 {
                         this.activate(ix, cx);
                     }
                 }

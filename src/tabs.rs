@@ -6,9 +6,9 @@
 //! active pane and of which panes watch their folders.
 
 use gpui::{
-    AnyElement, App, AppContext, Bounds, ClickEvent, DragMoveEvent, Pixels, Point, Context, Entity, EventEmitter, Focusable, InteractiveElement,
-    IntoElement, ParentElement, Render, ScrollHandle, StatefulInteractiveElement, Styled, Window,
-    div, prelude::FluentBuilder, px, relative,
+    AnyElement, App, AppContext, Bounds, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter,
+    Focusable, InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, ScrollHandle,
+    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px, relative,
 };
 use theme::ActiveTheme;
 
@@ -454,60 +454,55 @@ impl Render for Tabs {
         // The bar only once there is a second tab: one tab is a pane as it
         // was before there were tabs.
         let bar = self.has_bar().then(|| self.render_bar(cx));
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .children(bar)
-            .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .on_drag_move::<DraggedTab>(cx.listener(|this, event, _, cx| {
-                        this.track_drag(event, cx);
-                    }))
-                    // Cached as the tree caches a leaf, so a tab re-renders
-                    // only when it notifies, not each time the bar above it
-                    // does.
-                    .child(self.shown().clone().cached(crate::pane_group::fill_style()))
-                    // Zed's drop target over the pane, clear until a tab is
-                    // dragged over it. Zed hides it until its pane is under a
-                    // drag, but a hidden element takes no drop, and the
-                    // scrollbar along a pane's right edge blocks the pane
-                    // from being under anything: a drop at that edge, the one
-                    // a split to the right is made at, was lost. Drawn last,
-                    // it is above the scrollbar; its hitbox blocks nothing,
-                    // so the rows under it still take clicks and file drops.
-                    .child(
-                        div()
-                            .id("tab-drop-target")
-                            .absolute()
-                            // The whole pane to join it, or the half the new
-                            // pane would take, as in Zed.
-                            .map(|el| match self.drag_split {
-                                None => el.top_0().left_0().size_full(),
-                                Some(SplitDirection::Up) => {
-                                    el.top_0().left_0().w_full().h(relative(0.5))
-                                }
-                                Some(SplitDirection::Down) => {
-                                    el.bottom_0().left_0().w_full().h(relative(0.5))
-                                }
-                                Some(SplitDirection::Left) => {
-                                    el.top_0().left_0().h_full().w(relative(0.5))
-                                }
-                                Some(SplitDirection::Right) => {
-                                    el.top_0().right_0().h_full().w(relative(0.5))
-                                }
-                            })
-                            .drag_over::<DraggedTab>(|el, _, _, cx| {
-                                el.bg(cx.theme().colors().drop_target_background)
-                            })
-                            .on_drop(cx.listener(|this, dragged: &DraggedTab, window, cx| {
-                                this.emit_drop(dragged, None, window, cx);
-                            })),
-                    ),
-            )
+        div().size_full().flex().flex_col().children(bar).child(
+            div()
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .on_drag_move::<DraggedTab>(cx.listener(|this, event, _, cx| {
+                    this.track_drag(event, cx);
+                }))
+                // Cached as the tree caches a leaf, so a tab re-renders
+                // only when it notifies, not each time the bar above it
+                // does.
+                .child(self.shown().clone().cached(crate::pane_group::fill_style()))
+                // Zed's drop target over the pane, clear until a tab is
+                // dragged over it. Zed hides it until its pane is under a
+                // drag, but a hidden element takes no drop, and the
+                // scrollbar along a pane's right edge blocks the pane
+                // from being under anything: a drop at that edge, the one
+                // a split to the right is made at, was lost. Drawn last,
+                // it is above the scrollbar; its hitbox blocks nothing,
+                // so the rows under it still take clicks and file drops.
+                .child(
+                    div()
+                        .id("tab-drop-target")
+                        .absolute()
+                        // The whole pane to join it, or the half the new
+                        // pane would take, as in Zed.
+                        .map(|el| match self.drag_split {
+                            None => el.top_0().left_0().size_full(),
+                            Some(SplitDirection::Up) => {
+                                el.top_0().left_0().w_full().h(relative(0.5))
+                            }
+                            Some(SplitDirection::Down) => {
+                                el.bottom_0().left_0().w_full().h(relative(0.5))
+                            }
+                            Some(SplitDirection::Left) => {
+                                el.top_0().left_0().h_full().w(relative(0.5))
+                            }
+                            Some(SplitDirection::Right) => {
+                                el.top_0().right_0().h_full().w(relative(0.5))
+                            }
+                        })
+                        .drag_over::<DraggedTab>(|el, _, _, cx| {
+                            el.bg(cx.theme().colors().drop_target_background)
+                        })
+                        .on_drop(cx.listener(|this, dragged: &DraggedTab, window, cx| {
+                            this.emit_drop(dragged, None, window, cx);
+                        })),
+                ),
+        )
     }
 }
 
@@ -598,9 +593,18 @@ mod tests {
     fn a_tab_near_an_edge_splits_toward_it() {
         // 400 by 200: the zone is 40 pixels in from each edge.
         assert_eq!(split_side(200., 5., 400., 200.), Some(SplitDirection::Up));
-        assert_eq!(split_side(390., 100., 400., 200.), Some(SplitDirection::Right));
-        assert_eq!(split_side(200., 170., 400., 200.), Some(SplitDirection::Down));
-        assert_eq!(split_side(30., 100., 400., 200.), Some(SplitDirection::Left));
+        assert_eq!(
+            split_side(390., 100., 400., 200.),
+            Some(SplitDirection::Right)
+        );
+        assert_eq!(
+            split_side(200., 170., 400., 200.),
+            Some(SplitDirection::Down)
+        );
+        assert_eq!(
+            split_side(30., 100., 400., 200.),
+            Some(SplitDirection::Left)
+        );
         assert_eq!(split_side(200., 100., 400., 200.), None);
         assert_eq!(split_side(41., 41., 400., 200.), None);
         // In a corner, the nearer edge.

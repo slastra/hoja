@@ -265,13 +265,15 @@ mod tests {
         assert_eq!(Kind::of(&chain(&["image/png"]), none), Kind::Image);
         assert_eq!(Kind::of(&chain(&["video/mp4"]), none), Kind::Video);
         assert_eq!(Kind::of(&chain(&["audio/flac"]), none), Kind::Audio);
-        assert_eq!(Kind::of(&chain(&["text/rust", "text/plain"]), none), Kind::Text);
         assert_eq!(
-            Kind::of(&chain(&[
-                "application/json",
-                "application/javascript",
-                "text/plain"
-            ]), none),
+            Kind::of(&chain(&["text/rust", "text/plain"]), none),
+            Kind::Text
+        );
+        assert_eq!(
+            Kind::of(
+                &chain(&["application/json", "application/javascript", "text/plain"]),
+                none
+            ),
             Kind::Text
         );
         assert_eq!(Kind::of(&chain(&["application/pdf"]), none), Kind::Document);
@@ -296,7 +298,10 @@ mod tests {
         );
         // The kinds hoja reads itself stay as they are.
         assert_eq!(Kind::of(&chain(&["image/png"]), |_| true), Kind::Image);
-        assert_eq!(Kind::of(&chain(&["application/pdf"]), |_| true), Kind::Document);
+        assert_eq!(
+            Kind::of(&chain(&["application/pdf"]), |_| true),
+            Kind::Document
+        );
     }
 
     #[test]

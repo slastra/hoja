@@ -145,6 +145,19 @@ pub struct TabsProbe {
     pub drag_split: Option<&'static str>,
 }
 
+/// The bar of `hoja --pick`. See `crate::pick`.
+#[derive(Serialize, PartialEq, Eq)]
+pub struct PickProbe {
+    /// `"file"`, `"files"` or `"folder"`.
+    pub mode: &'static str,
+    /// The name of the filter selected, if the request has filters.
+    pub filter: Option<String>,
+    /// The accept button's label, or `None` while it is disabled.
+    pub accept: Option<String>,
+    /// The bar's text.
+    pub note: String,
+}
+
 #[derive(Serialize, PartialEq, Eq)]
 pub struct Probe {
     /// The tab each pane shows, in the order the panes were made. A hidden
@@ -176,6 +189,8 @@ pub struct Probe {
     pub preview: Option<String>,
     /// The file icon theme in force, by name.
     pub icon_theme: String,
+    /// The picker's bar, when this Hoja is a picker.
+    pub pick: Option<PickProbe>,
     /// Bumped on every write, so a reader can tell a fresh answer from the same
     /// one twice without comparing the whole object. Set by `write`, which is
     /// the only thing that knows whether a write happened; a caller filling it

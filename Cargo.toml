@@ -1,5 +1,5 @@
 [workspace]
-members = ["hoja-transfer", "hoja-drag", "hoja-model-thumbnailer"]
+members = ["hoja-transfer", "hoja-drag", "hoja-model-thumbnailer", "hoja-portal"]
 
 [package]
 name = "hoja"
@@ -85,6 +85,7 @@ rust-embed = ">=8.11, <8.12"
 # can derive rather than being parsed by hand.
 serde = { version = "1", features = ["derive"] }
 serde_json_lenient = "0.2"
+globset = "0.4.21"
 notify = "8"
 # Browsing a zip. `default-features = false` is load-bearing: the defaults pull
 # aes, bzip2, deflate64, lzma, ppmd, xz and zstd, and of ~50k entries across the

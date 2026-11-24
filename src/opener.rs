@@ -280,6 +280,21 @@ pub fn mime_chain(path: &Path) -> Vec<String> {
     with_ancestors(guess.mime_type().to_string())
 }
 
+/// The types the file's name says it has, and their ancestors, without
+/// reading the file. A name can give several types, and gives
+/// `application/octet-stream` when no glob knows it.
+pub fn mime_chain_by_name(name: &str) -> Vec<String> {
+    let mut chain: Vec<String> = Vec::new();
+    for mime in mime_db().get_mime_types_from_file_name(name) {
+        for each in with_ancestors(mime.to_string()) {
+            if !chain.contains(&each) {
+                chain.push(each);
+            }
+        }
+    }
+    chain
+}
+
 /// `mime` followed by its ancestors, nearest first. Breadth-first so the
 /// closest handlers sort above the generic `text/plain` ones, and cycle-safe
 /// because the database is not guaranteed acyclic.
