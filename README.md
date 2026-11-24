@@ -9,9 +9,10 @@ GPU-accelerated file manager for Linux, built with GPUI.
 
 **Hoja** (OH-hah) is a file manager for Linux. It runs on Wayland and renders
 via [GPUI](https://www.gpui.rs/), the GPU-accelerated framework from the Zed
-editor. It features recursive pane layouts, background folder size
-calculation, optimized file transfers, undoable deletes, live directory
-updates, and archive browsing that feels like working with ordinary folders.
+editor. It features recursive pane layouts with tabs, a list or a grid of
+cards, hover previews, background folder size calculation, optimized file
+transfers, undoable deletes, live directory updates, and archive browsing that
+feels like working with ordinary folders.
 
 > [!WARNING]
 > Hoja is experimental software. Use at your own risk.
@@ -23,7 +24,7 @@ updates, and archive browsing that feels like working with ordinary folders.
 
 ## Features
 
-### Panes
+### Panes and tabs
 
 - **Recursive pane layout.** Split the window into panes. Each pane shows one
   directory, and panes can be split recursively into any layout.
@@ -32,8 +33,8 @@ updates, and archive browsing that feels like working with ordinary folders.
   when the window has more than one pane. Drag a tab to another pane, or to
   the edge of a pane to split a new pane off there, as in Zed. Middle-click a
   folder to open it in a tab, and drop files on a tab to put them in its
-  folder. A tab that is not shown stops watching its folder and
-  reads it again when you show it.
+  folder. A tab that is not shown stops watching its folder and reads it again
+  when you show it.
 - **Fast directory listings.** Rows are virtualized, so even very large
   directories stay smooth while scrolling.
 - **Independent navigation.** Every pane has its own history. Go back,
@@ -45,51 +46,53 @@ updates, and archive browsing that feels like working with ordinary folders.
   and size, selected files, permissions and ownership for a single file, or
   live search progress.
 - **Clear active pane.** The active pane keeps full emphasis while inactive
-  panes dim their names, icons, paths, and selections. Git status colours are
+  panes dim their names, icons, paths, and selections. Git status colors are
   preserved.
 - **Per-pane view settings.** Hidden files, folder grouping, and sort order
   are configured independently for each pane. Hidden files are off by
   default.
-- **Archives as folders.** Browse `.zip`, `.tar`, `.tar.gz`, `.tar.bz2`,
-  `.tar.xz`, and `.tar.zst` archives like directories. Tar archives stream
-  while loading so files appear immediately, and archive folders report their
-  recursive sizes instantly. Copy files out using the keyboard, context menu,
-  or drag and drop. Archives are always read-only.
+- **Live listings.** Hoja watches every directory it displays. If another
+  program changes the contents, the pane refreshes without losing your
+  selection. If the directory disappears, Hoja moves to the nearest existing
+  parent.
+
+### Viewing files
+
+- **List or grid.** A pane shows its entries as a list with columns, or as a
+  grid of cards. Switch with the two buttons in the toolbar, with `ctrl-1`
+  and `ctrl-2`, or in the view menu. In the grid, a file with a picture shows
+  it at the shape of the picture, and other files show their name. The cards
+  keep the sort order from left to right across each band, so the arrow keys
+  move as they read. In the grid, the view menu's Columns list becomes Card
+  Details, and sets which details a card shows under its name. `ctrl-+` and
+  `ctrl--`, or `ctrl` with the scroll wheel, make the cards larger or
+  smaller, and `ctrl-0` puts the default size back.
 - **Hover previews.** Rest the pointer on a file to see it without opening
   it. An image or a video shows a picture, its size and, for a video, its
   length. A PDF shows its first page and its page count. An audio file shows
   its tags and length, and a text file shows its first lines, with syntax
   colors as in Zed for the languages Zed itself bundles: Rust, Python,
   TypeScript and JavaScript, Go, C and C++, shell, CSS, JSON, YAML,
-  Markdown, and diffs. A file of a different type shows a picture when a
-  thumbnailer for its type is installed: fonts, office documents and comics
-  with the usual desktop packages, and 3D models with
-  `hoja-model-thumbnailer`. The pictures come from the thumbnail cache that other file
-  managers share, and from the thumbnailers that the desktop installs. Hoja
-  makes a picture only when the cache does not have one. While it does, the
-  preview keeps a place of the correct shape for the picture. Archive members
-  and folders show no preview.
+  Markdown, and diffs. A file of another type shows a picture when a
+  thumbnailer for its type is installed. The pictures come from the thumbnail
+  cache that other file managers share. Hoja makes a picture only when the
+  cache does not have one, and while it does, the preview keeps a place of
+  the correct shape for the picture. Archive members and folders show no
+  preview.
 - **Previews for more types.** Hoja has no plugins of its own for previews.
   It uses freedesktop thumbnailers: a program, and a `.thumbnailer` file in
   `/usr/share/thumbnailers` or `~/.local/share/thumbnailers` that names the
-  types it takes. Install one, and the next Hoja to start shows pictures of
-  those types. `hoja-model-thumbnailer`, in this repository, is one: it
-  draws STL and 3MF models, and it shows the picture that a slicer puts in a
-  3MF or a G-code file. G-code with no picture shows its text. Other file
-  managers use it too.
-- **List or grid.** A pane shows its entries as a list with columns, or as a
-  grid of cards. Switch with the two buttons in the toolbar, with `ctrl-1`
-  and `ctrl-2`, or in the view menu. In the grid, an image, a video, a PDF
-  or a file that a thumbnailer takes shows its picture at the shape of the
-  picture, and other files show their name. The cards keep the sort order from left to right across each band, so
-  the arrow keys move as they read. In the grid, the view menu's Columns list
-  becomes Card Details, and sets which details a card shows under its name.
-  `ctrl-+` and `ctrl--`, or `ctrl` with the scroll wheel, make the cards
-  larger or smaller, and `ctrl-0` puts the default size back.
-- **Live listings.** Hoja watches every directory it displays. If another
-  program changes the contents, the pane refreshes without losing your
-  selection. If the directory disappears, Hoja moves to the nearest existing
-  parent.
+  types it takes. The usual desktop packages add fonts, office documents and
+  comics. Install one, and the next Hoja to start shows pictures of those
+  types. `hoja-model-thumbnailer`, in this repository, is one: it draws STL
+  and 3MF models, and it shows the picture that a slicer puts in a 3MF or a
+  G-code file. G-code with no picture shows its text. Other file managers use
+  it too.
+- **Archives as folders.** Browse `.zip`, `.tar`, `.tar.gz`, `.tar.bz2`,
+  `.tar.xz`, and `.tar.zst` archives like directories. Tar archives stream
+  while loading so files appear immediately, and archive folders report their
+  recursive sizes instantly. Copy files out using the keyboard, context menu,
+  or drag and drop. Archives are always read-only.
 
 ### File operations
 
@@ -107,7 +110,7 @@ updates, and archive browsing that feels like working with ordinary folders.
   deleted, so an undo can itself be undone.
 - **Drag and drop.** Drag files between panes, onto folders, or into other
   applications. Moves stay on one filesystem, copies cross filesystems, and
-  modifier keys override the default behaviour.
+  modifier keys override the default behavior.
 - **Clipboard integration.** Copy and paste files between Hoja and other file
   managers using the standard GNOME clipboard format.
 - **Transfer progress.** Progress reports bytes copied, transfer speed, time
@@ -131,11 +134,11 @@ updates, and archive browsing that feels like working with ordinary folders.
 - **Recursive search.** Press `ctrl-f` to search every directory below the
   current one. Results appear as they are found. The first result is ready
   immediately: use the arrow keys to move through them and `enter` to open one,
-  all without leaving the search field. It works inside an archive too, where there is nothing
-  to walk: the member list the pane already read answers immediately, and
-  results keep arriving if the archive is still being read. Each result is
-  labelled by where it sits, and copying one out keeps the structure below the
-  folder you searched.
+  all without leaving the search field. It works inside an archive too, where
+  there is nothing to walk: the member list the pane already read answers
+  immediately, and results keep arriving if the archive is still being read.
+  Each result is labeled by where it sits, and copying one out keeps the
+  structure below the folder you searched.
 - **Places.** Press `ctrl-p` to jump to your home directory, bookmarks, or
   attached drives. Hoja reads the same bookmarks used by GTK file dialogs and
   can mount or eject removable drives.
@@ -158,8 +161,8 @@ updates, and archive browsing that feels like working with ordinary folders.
   You can also set the order in the settings file with a list. A column you
   hide keeps its place until you close Hoja. After that it comes back in the
   usual place, because a column that is not shown has no position to record.
-- **Git status.** File names are coloured by Git status, as in Zed's project
-  panel and with the same theme colours: added, modified, deleted, a
+- **Git status.** File names are colored by Git status, as in Zed's project
+  panel and with the same theme colors: added, modified, deleted, a
   conflict, and ignored names dimmed. A folder takes the status of what is in
   it, except that an ignored file does not dim the folder that holds it. The
   status comes from Git itself, so Hoja always matches the command line, and
@@ -167,12 +170,12 @@ updates, and archive browsing that feels like working with ordinary folders.
 - **Themes.** Hoja reads Zed theme files from `~/.config/hoja/themes/` and
   reloads them automatically. Rosé Pine themes are included. The interface
   and number fonts are settings too.
-- **Icons.** File icons follow the Zed icon system and inherit colours from
-  the active theme. Zed icon themes colour them: Hoja loads the icon themes
+- **Icons.** File icons follow the Zed icon system and inherit colors from
+  the active theme. Zed icon themes color them: Hoja loads the icon themes
   of the Zed extensions installed on the machine, and any in
   `~/.config/hoja/icon_themes/`. Name one with `icon_theme`, or leave it out
   and Hoja uses the one Zed is set to. A family name, such as "Colored Zed
-  Icons Theme", takes its dark or light variant to match the colour theme.
+  Icons Theme", takes its dark or light variant to match the color theme.
 - **Settings.** Configure Hoja with `~/.config/hoja/settings.json`. Hoja
   never rewrites the file, preserves your comments, and reloads changes
   automatically.
@@ -216,7 +219,8 @@ Hoja starts without any of these, and each adds something:
 2. On Arch Linux, install these packages:
    `clang cmake pkgconf fontconfig freetype2 wayland wayland-protocols
    libxkbcommon libxkbcommon-x11 vulkan-icd-loader alsa-lib openssl zstd`
-3. Run `cargo build --release`.
+3. Run `cargo build --release`. This builds Hoja only. To build the model
+   thumbnailer too, run `cargo build --release --workspace`.
 
 Note: Cargo compiles GPUI with your local toolchain. The toolchain file in the
 Zed repository does not apply to git dependencies.
