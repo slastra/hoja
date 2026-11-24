@@ -1,0 +1,235 @@
+# Features
+
+What each feature does, in full. The README has the short list.
+
+## Panes and tabs
+
+### Recursive pane layout
+
+Split the window into panes. Each pane shows one directory, and panes can be
+split recursively into any layout.
+
+### Tabs
+
+Each pane can hold tabs, as Zed's panes do, and each tab has its own folder
+and history. The tab bar shows when a pane has a second tab, or when the
+window has more than one pane. Drag a tab to another pane, or to the edge of a
+pane to split a new pane off there, as in Zed. Middle-click a folder to open
+it in a tab, and drop files on a tab to put them in its folder. A tab that is
+not shown stops watching its folder and reads it again when you show it.
+
+### Fast directory listings
+
+Rows are virtualized, so even very large directories stay smooth while
+scrolling.
+
+### Independent navigation
+
+Every pane has its own history. Go back, forward, up, or home, or click the
+path to jump to another location.
+
+### Recursive folder sizes
+
+Folder sizes are calculated in the background and appear only when complete,
+so values never count upward in the listing. Sorting by size happens once,
+after every folder has a final value.
+
+### Pane footer
+
+Each pane summarizes exactly what it contains: total items and size, selected
+files, permissions and ownership for a single file, or live search progress.
+
+### Clear active pane
+
+The active pane keeps full emphasis while inactive panes dim their names,
+icons, paths, and selections. Git status colors are preserved.
+
+### Per-pane view settings
+
+Hidden files, folder grouping, and sort order are configured independently for
+each pane. Hidden files are off by default.
+
+### Live listings
+
+Hoja watches every directory it displays. If another program changes the
+contents, the pane refreshes without losing your selection. If the directory
+disappears, Hoja moves to the nearest existing parent.
+
+## Viewing files
+
+### List or grid
+
+A pane shows its entries as a list with columns, or as a grid of cards. Switch
+with the two buttons in the toolbar, with `ctrl-1` and `ctrl-2`, or in the
+view menu. In the grid, a file with a picture shows it at the shape of the
+picture, and other files show their name. The cards keep the sort order from
+left to right across each band, so the arrow keys move as they read. In the
+grid, the view menu's Columns list becomes Card Details, and sets which
+details a card shows under its name. `ctrl-+` and `ctrl--`, or `ctrl` with the
+scroll wheel, make the cards larger or smaller, and `ctrl-0` puts the default
+size back.
+
+### Hover previews
+
+Rest the pointer on a file to see it without opening it. An image or a video
+shows a picture, its size and, for a video, its length. A PDF shows its first
+page and its page count. An audio file shows its tags and length, and a text
+file shows its first lines, with syntax colors as in Zed for the languages Zed
+itself bundles: Rust, Python, TypeScript and JavaScript, Go, C and C++, shell,
+CSS, JSON, YAML, Markdown, and diffs. A file of another type shows a picture
+when a thumbnailer for its type is installed. The pictures come from the
+thumbnail cache that other file managers share. Hoja makes a picture only when
+the cache does not have one, and while it does, the preview keeps a place of
+the correct shape for the picture. Archive members and folders show no
+preview.
+
+### Previews for more types
+
+Hoja has no plugins of its own for previews. It uses freedesktop thumbnailers:
+a program, and a `.thumbnailer` file in `/usr/share/thumbnailers` or
+`~/.local/share/thumbnailers` that names the types it takes. The usual desktop
+packages add fonts, office documents and comics. Install one, and the next
+Hoja to start shows pictures of those types. `hoja-model-thumbnailer`, in this
+repository, is one: it draws STL and 3MF models, and it shows the picture that
+a slicer puts in a 3MF or a G-code file. G-code with no picture shows its
+text. Other file managers use it too.
+
+### Archives as folders
+
+Browse `.zip`, `.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`, and `.tar.zst`
+archives like directories. Tar archives stream while loading so files appear
+immediately, and archive folders report their recursive sizes instantly. Copy
+files out using the keyboard, context menu, or drag and drop. Archives are
+always read-only.
+
+## File operations
+
+### Optimized transfers
+
+Hoja automatically chooses the fastest correct method for every transfer:
+`rename()` for moves on the same filesystem, reflinks on supported
+filesystems, and `copy_file_range()` elsewhere with fallbacks. Sparse files,
+permissions, timestamps, extended attributes, symlinks, and hardlinks are
+preserved.
+
+### Undo
+
+Press `ctrl-z` to take back the last thing you did, whether that was a delete
+or a transfer. `delete` moves files to the freedesktop trash, which is instant
+on the same filesystem and compatible with other Linux file managers. Undoing
+a transfer removes what it copied and restores anything it replaced. It checks
+first: a file edited since the transfer is left alone and reported, and what
+it removes goes to the trash rather than being deleted, so an undo can itself
+be undone.
+
+### Drag and drop
+
+Drag files between panes, onto folders, or into other applications. Moves stay
+on one filesystem, copies cross filesystems, and modifier keys override the
+default behavior.
+
+### Clipboard integration
+
+Copy and paste files between Hoja and other file managers using the standard
+GNOME clipboard format.
+
+### Transfer progress
+
+Progress reports bytes copied, transfer speed, time remaining, and file counts
+from the start of the operation. Fixed-width columns keep everything from
+shifting while values change.
+
+### Transfer errors
+
+Failed transfers stay in the progress list with a warning. Open the details to
+see every failed file and its error.
+
+### Pause and resume
+
+Every transfer has a pause control, and `ctrl-shift-space` stops or starts
+them all. A transfer pauses between files, so one already in flight finishes
+first; the row says `pausing…` until it has actually stopped.
+
+### Interrupted transfers
+
+If Hoja is killed partway through a transfer, the next start clears up the
+half-written files it left and offers to finish what it had not done.
+
+### Desktop notifications
+
+Long-running transfers notify you when they finish, and failures always
+generate a notification using the standard freedesktop notification service.
+
+## Navigation and search
+
+### Recursive search
+
+Press `ctrl-f` to search every directory below the current one. Results appear
+as they are found. The first result is ready immediately: use the arrow keys
+to move through them and `enter` to open one, all without leaving the search
+field. It works inside an archive too, where there is nothing to walk: the
+member list the pane already read answers immediately, and results keep
+arriving if the archive is still being read. Each result is labeled by where
+it sits, and copying one out keeps the structure below the folder you
+searched.
+
+### Places
+
+Press `ctrl-p` to jump to your home directory, bookmarks, or attached drives.
+Hoja reads the same bookmarks used by GTK file dialogs and can mount or eject
+removable drives.
+
+### Command palette
+
+Press `ctrl-shift-p` to search available commands. Frequently used commands
+naturally rise to the top. Each shows its key binding, and the palette looks
+and behaves like Zed's: the arrow keys move the selection, and a click or
+`enter` runs the command.
+
+## Appearance
+
+### Human-friendly dates
+
+The Modified column shows relative times such as `just now`, `3 hours ago`, or
+`2 months ago`.
+
+### Columns you choose
+
+A pane shows the size, the kind and the modified time. It can also show the
+permissions, the owner and the group. Use the Columns list in the view menu to
+show a column or to hide one. Click a header to sort by that column, and drag
+a header sideways to move the column. A new pane from a split shows the same
+columns as the pane it came from.
+
+You can also set the order in the settings file with a list. A column you hide
+keeps its place until you close Hoja. After that it comes back in the usual
+place, because a column that is not shown has no position to record.
+
+### Git status
+
+File names are colored by Git status, as in Zed's project panel and with the
+same theme colors: added, modified, deleted, a conflict, and ignored names
+dimmed. A folder takes the status of what is in it, except that an ignored
+file does not dim the folder that holds it. The status comes from Git itself,
+so Hoja always matches the command line, and it follows a commit, an add or a
+checkout made in a terminal.
+
+### Themes
+
+Hoja reads Zed theme files from `~/.config/hoja/themes/` and reloads them
+automatically. Rosé Pine themes are included. The interface and number fonts
+are settings too.
+
+### Icons
+
+File icons follow the Zed icon system and inherit colors from the active
+theme. Zed icon themes color them: Hoja loads the icon themes of the Zed
+extensions installed on the machine, and any in `~/.config/hoja/icon_themes/`.
+Name one with `icon_theme`, or leave it out and Hoja uses the one Zed is set
+to. A family name, such as "Colored Zed Icons Theme", takes its dark or light
+variant to match the color theme.
+
+### Settings
+
+Configure Hoja with `~/.config/hoja/settings.json`. Hoja never rewrites the
+file, preserves your comments, and reloads changes automatically.
