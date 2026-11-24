@@ -189,10 +189,11 @@ Zed repository does not apply to git dependencies.
 ## Usage
 
 ```sh
-hoja [DIRECTORY] [--theme NAME] [--list-themes] [--pick]
+hoja [OPTIONS] [FOLDER]
 ```
 
-The `HOJA_THEME` environment variable also sets the theme.
+`hoja --help` lists the options. The `HOJA_THEME` environment variable also
+sets the theme.
 
 Keys work on the pane that has focus. [docs/keys.md](docs/keys.md) lists every
 key and mouse binding.

@@ -1,5 +1,6 @@
 mod archive;
 mod assets;
+mod cli;
 mod clipboard;
 mod command_palette;
 mod config;
@@ -64,6 +65,7 @@ use workspace::{
     Copy, Cut, DismissJobs, FocusNext, FocusPrevious, Paste, PauseJobs, SplitRight, Undo, Workspace,
 };
 
+/// The command line, with the defaults filled in.
 struct Args {
     dir: PathBuf,
     /// `--theme <name>`, else `$HOJA_THEME`, else the default dark theme.
@@ -73,34 +75,33 @@ struct Args {
     pick: bool,
 }
 
-/// Usage: `hoja [DIR] [--theme NAME] [--list-themes] [--pick]`
+/// Reads the command line. `--help`, `--version` and a bad argument end the
+/// process here, before anything else starts.
 fn parse_args() -> Args {
-    let mut dir = None;
-    let mut theme = std::env::var("HOJA_THEME").ok();
-    let mut list_themes = false;
-    let mut pick = false;
-    let mut args = std::env::args().skip(1);
-
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--theme" => theme = args.next(),
-            "--list-themes" => list_themes = true,
-            "--pick" => pick = true,
-            // A desktop launcher hands a file manager `file:///…` rather than
-            // a path, so accept both.
-            other => dir = Some(uri::uri_to_path(other).unwrap_or_else(|| PathBuf::from(other))),
+    let args = match cli::parse(std::env::args_os().skip(1)) {
+        Ok(cli::Command::Run(args)) => args,
+        Ok(cli::Command::Help) => {
+            print!("{}", cli::HELP);
+            std::process::exit(0);
         }
-    }
-
+        Ok(cli::Command::Version) => {
+            println!("{}", cli::version());
+            std::process::exit(0);
+        }
+        Err(err) => {
+            eprintln!("hoja: {err}\nTry 'hoja --help'.");
+            std::process::exit(2);
+        }
+    };
     Args {
-        dir: dir.unwrap_or_else(|| {
+        dir: args.dir.unwrap_or_else(|| {
             std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("/"))
         }),
-        theme,
-        list_themes,
-        pick,
+        theme: args.theme.or_else(|| std::env::var("HOJA_THEME").ok()),
+        list_themes: args.list_themes,
+        pick: args.pick,
     }
 }
 
