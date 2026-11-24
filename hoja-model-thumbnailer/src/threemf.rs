@@ -348,7 +348,15 @@ fn place<R: Read + Seek>(
     for component in components {
         let at = component.part.as_deref().unwrap_or(part).to_string();
         let transform = component.transform.then(&transform);
-        place(zip, parts, &at, &component.object, transform, depth + 1, out);
+        place(
+            zip,
+            parts,
+            &at,
+            &component.object,
+            transform,
+            depth + 1,
+            out,
+        );
     }
 }
 
@@ -380,7 +388,10 @@ mod tests {
     fn png(w: u32, h: u32) -> Vec<u8> {
         let mut bytes = Vec::new();
         image::RgbaImage::new(w, h)
-            .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
             .unwrap();
         bytes
     }
@@ -464,7 +475,10 @@ mod tests {
         let turn = Affine([0., 1., 0., -1., 0., 0., 0., 0., 1., 0., 0., 0.]);
         let shift = Affine([1., 0., 0., 0., 1., 0., 0., 0., 1., 5., 0., 0.]);
         let both = turn.then(&shift);
-        assert_eq!(both.apply([1., 0., 0.]), shift.apply(turn.apply([1., 0., 0.])));
+        assert_eq!(
+            both.apply([1., 0., 0.]),
+            shift.apply(turn.apply([1., 0., 0.]))
+        );
         assert_eq!(both.apply([1., 0., 0.]), [5., 1., 0.]);
     }
 

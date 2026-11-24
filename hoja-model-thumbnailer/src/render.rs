@@ -55,7 +55,10 @@ impl View {
         let right = normalize(cross([-toward[0], -toward[1], -toward[2]], [0., 0., 1.]));
         let up = cross(right, [-toward[0], -toward[1], -toward[2]]);
         // From the upper left, a little in front.
-        let light = normalize(add(add(scale(right, -0.45), scale(up, 0.6)), scale(toward, 0.65)));
+        let light = normalize(add(
+            add(scale(right, -0.45), scale(up, 0.6)),
+            scale(toward, 0.65),
+        ));
         View {
             right,
             up,
@@ -132,7 +135,11 @@ pub fn render(mesh: &dyn Mesh, size: u32) -> Result<image::RgbaImage, Error> {
                 dot(p, view.toward),
             ]
         };
-        let [a, b, c] = [corner(triangle[0]), corner(triangle[1]), corner(triangle[2])];
+        let [a, b, c] = [
+            corner(triangle[0]),
+            corner(triangle[1]),
+            corner(triangle[2]),
+        ];
         let area = edge(a, b, c);
         if area.abs() < 1e-12 {
             return;
