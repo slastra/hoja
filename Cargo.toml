@@ -1,5 +1,5 @@
 [workspace]
-members = ["hoja-transfer", "hoja-drag"]
+members = ["hoja-transfer", "hoja-drag", "hoja-model-thumbnailer"]
 
 [package]
 name = "hoja"
@@ -157,4 +157,9 @@ tempfile = "3"
 opt-level = 0
 
 [profile.dev.package."*"]
+opt-level = 2
+
+# The harness runs the debug build of the model thumbnailer, and a mesh drawn
+# at opt-level 0 is ten times slower than the user will ever see it.
+[profile.dev.package.hoja-model-thumbnailer]
 opt-level = 2

@@ -31,7 +31,7 @@ the window is, and everything after it is keystrokes sent somewhere unverified.
 An earlier version carried on, walked a pane up to the root of the filesystem
 and pressed paste there; nothing was written only because root is not writable.
 
-There are twenty-five suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
+There are twenty-six suites in `scripts/tests/`. `listing.sh` runs against `~/Mock`;
 `archive.sh` and `tar.sh` need fixtures, which `scripts/tests/setup-archives.sh`
 builds and prints the path of:
 
@@ -132,6 +132,26 @@ the out-dir, so the test does not write to the cache that the desktop shares.
 ```sh
 scripts/sway-harness.sh "$(scripts/tests/setup-preview.sh)" scripts/tests/preview.sh
 ```
+
+`model-preview.sh` needs `setup-model-preview.sh` and a debug build of the
+whole workspace (`cargo build --workspace`). The fixture holds STL, 3MF and
+G-code files, written by Python, and a copy of a system font. The suite reads
+the kind of each preview from the probe. It checks the sizes of the pictures
+in the cache, so that a picture embedded in a 3MF cannot pass for a drawn
+mesh, and it checks that G-code with no picture shows its text. It uses the
+model thumbnailer from `target/debug`, not an installed one.
+
+```sh
+cargo build --workspace
+scripts/sway-harness.sh "$(scripts/tests/setup-model-preview.sh)" scripts/tests/model-preview.sh
+```
+
+A suite `NAME.sh` can have a `NAME.before.sh` beside it. The harness runs it
+before Hoja starts, with `OUT` and the private XDG directories set.
+`model-preview.sh` and `preview.sh` use it to install thumbnailers. Hoja reads
+the thumbnailers one time, at its first look at a file, and the pointer can
+rest on a row when Hoja starts. A thumbnailer that a suite installs after the
+start is then too late.
 
 `grid.sh` needs `setup-grid.sh`, which makes more than a screen of images in
 five shapes, a video in each orientation, a PDF, audio, text and folders. The

@@ -1,0 +1,4 @@
+[Thumbnailer Entry]
+TryExec=hoja-model-thumbnailer
+Exec=hoja-model-thumbnailer -s %s %i %o
+MimeType=model/stl;model/x.stl-ascii;model/x.stl-binary;model/3mf;application/vnd.ms-3mfdocument;text/x.gcode;

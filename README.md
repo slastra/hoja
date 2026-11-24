@@ -59,18 +59,29 @@ updates, and archive browsing that feels like working with ordinary folders.
   it. An image or a video shows a picture, its size and, for a video, its
   length. A PDF shows its first page and its page count. An audio file shows
   its tags and length, and a text file shows its first lines, with syntax
-  colours as in Zed for the languages Zed itself bundles: Rust, Python,
+  colors as in Zed for the languages Zed itself bundles: Rust, Python,
   TypeScript and JavaScript, Go, C and C++, shell, CSS, JSON, YAML,
-  Markdown, and diffs. The pictures come from the thumbnail cache that other file
+  Markdown, and diffs. A file of a different type shows a picture when a
+  thumbnailer for its type is installed: fonts, office documents and comics
+  with the usual desktop packages, and 3D models with
+  `hoja-model-thumbnailer`. The pictures come from the thumbnail cache that other file
   managers share, and from the thumbnailers that the desktop installs. Hoja
   makes a picture only when the cache does not have one. While it does, the
   preview keeps a place of the correct shape for the picture. Archive members
   and folders show no preview.
+- **Previews for more types.** Hoja has no plugins of its own for previews.
+  It uses freedesktop thumbnailers: a program, and a `.thumbnailer` file in
+  `/usr/share/thumbnailers` or `~/.local/share/thumbnailers` that names the
+  types it takes. Install one, and the next Hoja to start shows pictures of
+  those types. `hoja-model-thumbnailer`, in this repository, is one: it
+  draws STL and 3MF models, and it shows the picture that a slicer puts in a
+  3MF or a G-code file. G-code with no picture shows its text. Other file
+  managers use it too.
 - **List or grid.** A pane shows its entries as a list with columns, or as a
   grid of cards. Switch with the two buttons in the toolbar, with `ctrl-1`
-  and `ctrl-2`, or in the view menu. In the grid, an image, a video or a PDF
-  shows its picture at the shape of the picture, and other files show their
-  name. The cards keep the sort order from left to right across each band, so
+  and `ctrl-2`, or in the view menu. In the grid, an image, a video, a PDF
+  or a file that a thumbnailer takes shows its picture at the shape of the
+  picture, and other files show their name. The cards keep the sort order from left to right across each band, so
   the arrow keys move as they read. In the grid, the view menu's Columns list
   becomes Card Details, and sets which details a card shows under its name.
   `ctrl-+` and `ctrl--`, or `ctrl` with the scroll wheel, make the cards
@@ -192,6 +203,8 @@ Hoja starts without any of these, and each adds something:
   pictures of videos.
 - `papers` or `evince`: pictures of PDFs. `poppler` adds a PDF's page count
   and page shape.
+- `hoja-model-thumbnailer`, which `packaging/PKGBUILD` builds with Hoja:
+  pictures of STL, 3MF and G-code files.
 - `git`: names colored by Git status.
 - `udisks2`: mounting drives from the place finder.
 - `wl-clipboard`, `xdg-utils`, `libnotify` and `shared-mime-info`: the

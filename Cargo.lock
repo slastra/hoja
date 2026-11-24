@@ -2960,6 +2960,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hoja-model-thumbnailer"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "image",
+ "quick-xml",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
 name = "hoja-transfer"
 version = "0.1.0"
 dependencies = [

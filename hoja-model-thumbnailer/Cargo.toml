@@ -1,0 +1,28 @@
+[package]
+name = "hoja-model-thumbnailer"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "A freedesktop thumbnailer for 3D printing files: STL, 3MF and G-code"
+
+# Not a part of hoja. It is a thumbnailer as the freedesktop spec sets out: a
+# program and a `.thumbnailer` file. hoja finds it as it finds every other
+# thumbnailer, and never links it or names it. Every other file manager can
+# use it too.
+#
+# No gpui and no GPU: the mesh is drawn on the CPU, so the program starts and
+# finishes in the time a GPU context takes to come up.
+#
+# Every dependency is already in the workspace's graph at these versions.
+[dependencies]
+# Deflate alone, as in hoja: a 3MF is a zip, and slicers write it with deflate.
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+# A streaming reader, because the model in a 3MF can hold 100 MB of XML.
+quick-xml = "0.41"
+# PNG and JPEG for the pictures that slicers embed, QOI for the one that
+# PrusaSlicer can write into G-code, and PNG to write the result.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "qoi"] }
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"
