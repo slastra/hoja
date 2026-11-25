@@ -130,10 +130,8 @@ package_hoja-model-thumbnailer-git() {
 }
 
 package_hoja-portal-git() {
-  pkgdesc='Desktop portal backend that opens files with hoja'
+  pkgdesc='Desktop portal backend that opens and saves files with hoja'
   depends=('hoja-git' 'xdg-desktop-portal' 'glibc' 'libgcc')
-  # Save dialogs go on to the GTK backend until hoja has its own.
-  optdepends=('xdg-desktop-portal-gtk: save dialogs')
   provides=('hoja-portal')
   conflicts=('hoja-portal')
   cd "$_pkgname"

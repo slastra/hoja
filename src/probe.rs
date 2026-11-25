@@ -148,8 +148,10 @@ pub struct TabsProbe {
 /// The bar of `hoja --pick`. See `crate::pick`.
 #[derive(Serialize, PartialEq, Eq)]
 pub struct PickProbe {
-    /// `"file"`, `"files"` or `"folder"`.
+    /// `"file"`, `"files"`, `"folder"`, `"save"` or `"save-files"`.
     pub mode: &'static str,
+    /// What the name field of a save holds.
+    pub name: Option<String>,
     /// The name of the filter selected, if the request has filters.
     pub filter: Option<String>,
     /// The accept button's label, or `None` while it is disabled.

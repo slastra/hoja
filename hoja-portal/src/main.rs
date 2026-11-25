@@ -23,7 +23,7 @@ const HELP: &str = "\
 The desktop portal's file chooser, answered by Hoja. D-Bus starts it when
 an application asks for a file, if the portal config names hoja for
 org.freedesktop.impl.portal.FileChooser. It runs `hoja --pick` for each
-request. Save dialogs go on to xdg-desktop-portal-gtk.
+request, to open files and to save them.
 
 Usage: hoja-portal [OPTIONS]
 

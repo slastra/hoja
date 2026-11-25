@@ -179,7 +179,8 @@ waits for that and prints it, or prints `running`. `MAPPED_MS` is the time
 the window took to appear.
 
 `picker-open.sh`, `picker-multiple.sh`, `picker-folder.sh`,
-`picker-open-folder.sh` and `picker-cancel.sh` test `hoja --pick`. Each has a
+`picker-open-folder.sh`, `picker-save.sh` and `picker-cancel.sh` test
+`hoja --pick`. Each has a
 `.before.sh` that gives the request on stdin. They need `setup-picker.sh`,
 which makes two pictures, a text file, a model, a zip and a folder. They
 check:
@@ -191,7 +192,10 @@ check:
 - that a folder picker shows no files and picks the folder;
 - that Open Folder in a file picker names the folder shown, then the folder
   selected, and that ctrl-enter picks it;
-- that the first escape clears the selection and the second cancels.
+- that the first escape clears the selection and the second cancels;
+- that a save starts with the name given, takes the name of a file selected,
+  asks before it replaces one, goes into a folder typed in its field, and
+  answers with a file that does not exist yet.
 
 Each one reads the answer from `app.out` and the exit status.
 
@@ -199,8 +203,10 @@ Each one reads the answer from `app.out` and the exit status.
 private `dbus-daemon` with no service directories, starts
 `target/debug/hoja-portal` on it, and puts a `gdbus call` in place of the
 app. The portal starts the debug Hoja. The suite picks two files and checks
-the reply that the call writes. It needs a debug build of the whole
-workspace.
+the reply that the call writes. `portal-save.sh` does the same with
+`SaveFiles`: two names, one of them there already, so it answers the
+question to replace before it checks the reply. Both need a debug build of
+the whole workspace.
 
 ```sh
 cargo build --workspace

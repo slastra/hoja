@@ -111,7 +111,8 @@ always read-only.
 ### For other applications
 
 With `hoja-portal` installed and named in the portal's config, an
-application that asks the desktop portal for a file gets Hoja. The README
+application that asks the desktop portal for a file, or for where to save
+one, gets Hoja. The README
 says how to set it up. Each request starts a Hoja of its own, which answers
 and exits.
 
@@ -144,7 +145,25 @@ files that do not match it, by name, and never hides a folder. Escape clears
 the selection, and when nothing is selected it cancels. Closing the window
 cancels too.
 
-Save dialogs still go to the GTK backend until Hoja has its own.
+### Where it saves
+
+- A save of one file has a name field in the footer. It starts with the name
+  the application gave, with the name selected and the extension not, and it
+  has the keyboard first. Enter in it saves. Tab moves the keyboard to the
+  files.
+- Select a file to take its name. Enter or a double-click on a file saves
+  over it.
+- Before a save replaces a file, Hoja asks. Cancel goes back to the dialog.
+- The name can be a path: `../draft.txt`, `sub/draft.txt`, or one from `~`.
+  A folder name goes into that folder, and the field gets the name it
+  started with back.
+- The filter menu works as when opening. The application is told the filter
+  in use, and some, Firefox among them, save in the format it names.
+- A save of several files asks for a folder only, and shows no files. The
+  answer is each name the application gave, in the folder you are in, or in
+  the one folder selected. If some of the names are there already, Hoja asks
+  once for all of them.
+- Nothing is saved in an archive.
 
 A transfer still running when you pick or cancel stops with the picker. The
 next Hoja to start offers to finish it, as after a crash.
@@ -171,6 +190,19 @@ filter in use, or `null`.
 ```
 
 On a cancel it writes nothing and exits with 1.
+
+A save adds `"save": true`. `current_name` is the name to start with.
+`current_file` is a file to save over: its folder is where to start, and its
+name the name, unless `current_folder` and `current_name` say otherwise.
+`files` makes it a save of several files, to one folder:
+
+```json
+{ "save": true, "current_name": "notes.txt", "current_folder": "/home/me" }
+{ "save": true, "files": ["a.txt", "b.txt"] }
+```
+
+The answer is the same line, with the path of each file to write. A file
+there may not exist yet.
 
 ## File operations
 

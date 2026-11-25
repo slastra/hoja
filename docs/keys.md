@@ -115,5 +115,7 @@ because they are rare. "pane: close pane" closes a pane and all of its tabs.
 | Keys | Action |
 | :-- | :-- |
 | <kbd>Enter</kbd> | Pick the selected file, or go into the selected folder |
+| <kbd>Enter</kbd>, in a save's name field | Save, or go into the folder named |
+| <kbd>Tab</kbd>, in a save's name field | Move the keyboard to the files |
 | <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | Open Folder: pick the selected folders, or the folder you are in |
 | <kbd>Escape</kbd> | Clear the selection, or cancel when nothing is selected |

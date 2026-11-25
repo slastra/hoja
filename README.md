@@ -158,8 +158,7 @@ systemctl --user restart xdg-desktop-portal
 Firefox asks the portal only when `widget.use-xdg-desktop-portal.file-picker`
 is `1` in `about:config`.
 
-Hoja opens files and folders. Save dialogs still go to GTK until Hoja has its
-own, so keep `xdg-desktop-portal-gtk` installed.
+Hoja answers save dialogs too: you type a name, or pick a file to replace.
 
 The picker's window has the app_id `hoja-picker`. A Hyprland rule can float
 it:

@@ -218,6 +218,21 @@ impl PathEditor {
         &self.content
     }
 
+    /// Put `text` in the field in place of what is there, with `selection` (a
+    /// UTF-8 byte range) selected. A picker's name field takes the name of
+    /// the file selected this way.
+    pub fn set_text(&mut self, text: String, selection: Range<usize>, cx: &mut Context<Self>) {
+        let len = text.len();
+        self.content = text.into();
+        self.selected_range = selection.start.min(len)..selection.end.min(len);
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.scroll_x = px(0.);
+        self.error = false;
+        cx.emit(PathEditorEvent::Edited);
+        cx.notify();
+    }
+
     /// Grey prompt shown while the field is empty.
     pub fn with_placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = placeholder.into();

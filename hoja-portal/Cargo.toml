@@ -3,7 +3,7 @@ name = "hoja-portal"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
-description = "A desktop portal backend that opens files with Hoja"
+description = "A desktop portal backend that opens and saves files with Hoja"
 
 # Not a part of Hoja. It speaks the desktop portal's D-Bus protocol for the
 # file chooser, and for each request starts `hoja --pick`, which reads the

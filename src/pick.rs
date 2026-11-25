@@ -7,6 +7,11 @@
 //! {"uris":["file:///home/u/photo.png"],"filter":0}
 //! ```
 //!
+//! A save works the same way: the request says `"save": true`, and the
+//! answer is the one file to write, which may not exist yet. With `files` as
+//! well, it asks for a folder to save those names in, and the answer is each
+//! name in the folder picked.
+//!
 //! A cancel writes nothing and exits with 1. `hoja-portal` speaks the
 //! desktop portal's D-Bus protocol and turns each request into one of these
 //! runs, so this file is the whole of what Hoja knows about the portal.
@@ -39,6 +44,15 @@ pub struct Request {
     /// An index into `filters`.
     pub current_filter: Option<usize>,
     pub current_folder: Option<PathBuf>,
+    /// Ask where to save, not for files that exist.
+    pub save: bool,
+    /// A save: the name to start with.
+    pub current_name: Option<String>,
+    /// A save of a file that exists already: its folder is where to start,
+    /// and its name the name to start with.
+    pub current_file: Option<PathBuf>,
+    /// A save of these names: the user picks the folder for all of them.
+    pub files: Vec<String>,
 }
 
 /// One entry of the filter menu. A file matches when it matches one glob or
@@ -56,6 +70,10 @@ pub enum Mode {
     File,
     Files,
     Folder,
+    /// A name to save one file as.
+    Save,
+    /// A folder to save the request's `files` in.
+    SaveFiles,
 }
 
 impl Mode {
@@ -64,6 +82,8 @@ impl Mode {
             Mode::File => "file",
             Mode::Files => "files",
             Mode::Folder => "folder",
+            Mode::Save => "save",
+            Mode::SaveFiles => "save-files",
         }
     }
 }
@@ -78,6 +98,12 @@ impl Request {
     }
 
     pub fn mode(&self) -> Mode {
+        if self.save {
+            return match self.files.is_empty() {
+                true => Mode::Save,
+                false => Mode::SaveFiles,
+            };
+        }
         match (self.directory, self.multiple) {
             (true, _) => Mode::Folder,
             (false, true) => Mode::Files,
@@ -91,6 +117,8 @@ impl Request {
                 Mode::File => "Open File",
                 Mode::Files => "Open Files",
                 Mode::Folder => "Select Folder",
+                Mode::Save => "Save File",
+                Mode::SaveFiles => "Save Files",
             }
             .to_string()
         })
@@ -99,9 +127,35 @@ impl Request {
     pub fn accept_label(&self) -> String {
         match &self.accept_label {
             Some(label) if !label.is_empty() => without_mnemonic(label),
+            _ if self.save => "Save".to_string(),
             _ if self.directory => "Select".to_string(),
             _ => "Open".to_string(),
         }
+    }
+
+    /// The folder to start in: the one asked for, else the folder of the file
+    /// a save names.
+    pub fn start_folder(&self) -> Option<PathBuf> {
+        self.current_folder
+            .clone()
+            .or_else(|| self.current_file.as_ref()?.parent().map(Path::to_path_buf))
+    }
+
+    /// The name a save starts with: the one asked for, else the name of the
+    /// file it saves over.
+    pub fn start_name(&self) -> String {
+        self.current_name
+            .clone()
+            .or_else(|| {
+                let name = self.current_file.as_ref()?.file_name()?;
+                Some(name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether the panes show folders and no files.
+    pub fn folders_only(&self) -> bool {
+        matches!(self.mode(), Mode::Folder | Mode::SaveFiles)
     }
 
     /// The filter to start with: the one asked for, else the first.
@@ -237,10 +291,7 @@ static PICKER: OnceLock<Picker> = OnceLock::new();
 /// Make this process a picker. Called once, before the window opens.
 pub fn start(request: Request) {
     let first = request.first_filter();
-    let matcher = Matcher::new(
-        first.map(|ix| &request.filters[ix]),
-        request.mode() == Mode::Folder,
-    );
+    let matcher = Matcher::new(first.map(|ix| &request.filters[ix]), request.folders_only());
     let _ = PICKER.set(Picker {
         request,
         filter: RwLock::new((first, Arc::new(matcher))),
@@ -276,7 +327,7 @@ pub fn set_filter(ix: usize) {
     let Some(filter) = picker.request.filters.get(ix) else {
         return;
     };
-    let matcher = Matcher::new(Some(filter), picker.request.mode() == Mode::Folder);
+    let matcher = Matcher::new(Some(filter), picker.request.folders_only());
     if let Ok(mut slot) = picker.filter.write() {
         *slot = (Some(ix), Arc::new(matcher));
     }
@@ -314,6 +365,12 @@ pub enum Outcome {
     Enter(PathBuf),
     /// Answer with these folders, from Open Folder in a file picker.
     Folders(Vec<PathBuf>),
+    /// Save as these paths. `replaces` of them exist already, and the user
+    /// is asked before they are written over.
+    Save {
+        paths: Vec<PathBuf>,
+        replaces: usize,
+    },
     /// Nothing can be picked here.
     Nothing(Why),
 }
@@ -327,9 +384,16 @@ pub enum Why {
     Archive,
     /// The same, said of Open Folder.
     ArchiveFolder,
+    /// The same, said of a save.
+    ArchiveSave,
+    /// A save with no name typed.
+    NoName,
+    /// A save to a folder that is not there.
+    NoFolder,
 }
 
-/// The accept rules.
+/// The accept rules, for a request to open. A save has its own, in
+/// `accept_save` and `accept_save_files`.
 ///
 /// `selected` is the pane's selection, and `cursor` its lead row. `here` is
 /// the folder the pane shows, `None` inside an archive.
@@ -378,7 +442,7 @@ pub fn accept_folder(
     cursor: Option<&Pick>,
     here: Option<&Path>,
 ) -> Option<Outcome> {
-    if mode == Mode::Folder {
+    if matches!(mode, Mode::Folder | Mode::Save | Mode::SaveFiles) {
         return None;
     }
     let Some(here) = here else {
@@ -396,6 +460,89 @@ pub fn accept_folder(
         all => all.iter().map(|pick| pick.path.clone()).collect(),
     };
     Some(Outcome::Folders(paths))
+}
+
+/// The save rules, for a request to save one file.
+///
+/// `name` is what the name field holds. It can be a path too, relative to
+/// `here` or from `~`, as in the GTK dialog. A name that is a folder goes into
+/// it. `None` for `here` is the inside of an archive.
+pub fn accept_save(name: &str, here: Option<&Path>) -> Outcome {
+    let Some(here) = here else {
+        return Outcome::Nothing(Why::ArchiveSave);
+    };
+    if name.trim().is_empty() {
+        return Outcome::Nothing(Why::NoName);
+    }
+    let path = lexical(&here.join(from_home(name)));
+    if path.is_dir() {
+        return Outcome::Enter(path);
+    }
+    let in_folder = path.parent().is_some_and(Path::is_dir);
+    if name.ends_with('/') || !in_folder || path.file_name().is_none() {
+        return Outcome::Nothing(Why::NoFolder);
+    }
+    let replaces = usize::from(path.symlink_metadata().is_ok());
+    Outcome::Save {
+        paths: vec![path],
+        replaces,
+    }
+}
+
+/// The save rules, for a request to save several names in one folder: the
+/// folder selected, else the folder the pane shows.
+pub fn accept_save_files(files: &[String], selected: &[Pick], here: Option<&Path>) -> Outcome {
+    let Some(here) = here else {
+        return Outcome::Nothing(Why::ArchiveSave);
+    };
+    let folder = match selected {
+        [one] if one.is_dir => one.path.as_path(),
+        _ => here,
+    };
+    // The last part of each name only: a name is put in the folder picked,
+    // never beside it.
+    let paths: Vec<PathBuf> = files
+        .iter()
+        .filter_map(|name| Path::new(name).file_name())
+        .map(|name| folder.join(name))
+        .collect();
+    if paths.is_empty() {
+        return Outcome::Nothing(Why::NoName);
+    }
+    let replaces = paths
+        .iter()
+        .filter(|path| path.symlink_metadata().is_ok())
+        .count();
+    Outcome::Save { paths, replaces }
+}
+
+/// `~` and `~/x` from the home folder.
+fn from_home(name: &str) -> PathBuf {
+    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    match name.strip_prefix('~') {
+        Some("") => home().unwrap_or_else(|| PathBuf::from(name)),
+        Some(rest) if rest.starts_with('/') => match home() {
+            Some(home) => home.join(rest.trim_start_matches('/')),
+            None => PathBuf::from(name),
+        },
+        _ => PathBuf::from(name),
+    }
+}
+
+/// `.` and `..` taken out by the text alone, so the answer is a plain path.
+fn lexical(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 impl Outcome {
@@ -417,11 +564,23 @@ impl Outcome {
             Outcome::Enter(path) => format!("Open {}", name(path)),
             Outcome::Folders(paths) if paths.len() == 1 => name(&paths[0]),
             Outcome::Folders(paths) => format!("{} folders", paths.len()),
+            Outcome::Save { paths, replaces } => {
+                let folder = paths[0].parent().map(name).unwrap_or_default();
+                match (paths.len(), replaces) {
+                    (1, 0) => format!("Saves in {folder}"),
+                    (1, _) => format!("Replaces a file in {folder}"),
+                    (n, 0) => format!("Saves {n} files in {folder}"),
+                    (n, r) => format!("Saves {n} files in {folder}, {r} of them over files there"),
+                }
+            }
             Outcome::Nothing(Why::Empty) => "Select a file".to_string(),
             Outcome::Nothing(Why::Archive) => "Files in an archive cannot be picked".to_string(),
             Outcome::Nothing(Why::ArchiveFolder) => {
                 "Folders in an archive cannot be picked".to_string()
             }
+            Outcome::Nothing(Why::ArchiveSave) => "Nothing can be saved in an archive".to_string(),
+            Outcome::Nothing(Why::NoName) => "Type a name".to_string(),
+            Outcome::Nothing(Why::NoFolder) => "That folder does not exist".to_string(),
         }
     }
 }
@@ -647,6 +806,134 @@ mod tests {
         assert_eq!(
             folders(&["/d/one", "/d/two"]).unwrap().describe(),
             "2 folders"
+        );
+    }
+
+    #[test]
+    fn a_save_request_is_read() {
+        let save =
+            Request::parse(r#"{"save": true, "current_file": "/home/u/Documents/plan.odt"}"#)
+                .unwrap();
+        assert_eq!(save.mode(), Mode::Save);
+        assert_eq!(save.title(), "Save File");
+        assert_eq!(save.accept_label(), "Save");
+        assert_eq!(save.start_name(), "plan.odt");
+        assert_eq!(
+            save.start_folder(),
+            Some(PathBuf::from("/home/u/Documents"))
+        );
+        assert!(!save.folders_only());
+
+        // The name and the folder asked for win over the file's.
+        let named = Request::parse(
+            r#"{"save": true, "current_name": "copy.odt", "current_folder": "/tmp",
+                "current_file": "/home/u/plan.odt"}"#,
+        )
+        .unwrap();
+        assert_eq!(named.start_name(), "copy.odt");
+        assert_eq!(named.start_folder(), Some(PathBuf::from("/tmp")));
+
+        let files = Request::parse(r#"{"save": true, "files": ["a.txt", "b.txt"]}"#).unwrap();
+        assert_eq!(files.mode(), Mode::SaveFiles);
+        assert_eq!(files.title(), "Save Files");
+        assert!(files.folders_only());
+        assert_eq!(
+            accept_folder(Mode::Save, &[], None, Some(Path::new("/"))),
+            None
+        );
+    }
+
+    #[test]
+    fn the_save_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = dir.path();
+        std::fs::create_dir(here.join("sub")).unwrap();
+        std::fs::write(here.join("old.txt"), "x").unwrap();
+
+        assert_eq!(
+            accept_save("a.txt", None),
+            Outcome::Nothing(Why::ArchiveSave)
+        );
+        assert_eq!(accept_save("  ", Some(here)), Outcome::Nothing(Why::NoName));
+        assert_eq!(
+            accept_save("new.txt", Some(here)),
+            Outcome::Save {
+                paths: vec![here.join("new.txt")],
+                replaces: 0
+            }
+        );
+        assert_eq!(
+            accept_save("old.txt", Some(here)),
+            Outcome::Save {
+                paths: vec![here.join("old.txt")],
+                replaces: 1
+            }
+        );
+        // A path in the field: into a folder, out of one, or to one that is
+        // not there.
+        assert_eq!(
+            accept_save("sub/../sub/new.txt", Some(here)),
+            Outcome::Save {
+                paths: vec![here.join("sub/new.txt")],
+                replaces: 0
+            }
+        );
+        assert_eq!(
+            accept_save("sub", Some(here)),
+            Outcome::Enter(here.join("sub"))
+        );
+        assert_eq!(
+            accept_save("..", Some(&here.join("sub"))),
+            Outcome::Enter(here.to_path_buf())
+        );
+        assert_eq!(
+            accept_save("nowhere/new.txt", Some(here)),
+            Outcome::Nothing(Why::NoFolder)
+        );
+        assert_eq!(
+            accept_save("new/", Some(here)),
+            Outcome::Nothing(Why::NoFolder)
+        );
+        assert_eq!(
+            accept_save("old.txt", Some(here)).describe(),
+            format!(
+                "Replaces a file in {}",
+                here.file_name().unwrap().to_string_lossy()
+            )
+        );
+    }
+
+    #[test]
+    fn the_save_files_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = dir.path();
+        std::fs::create_dir(here.join("sub")).unwrap();
+        std::fs::write(here.join("a.txt"), "x").unwrap();
+        let files = vec!["a.txt".to_string(), "../b.txt".to_string()];
+
+        // Where the pane is, and the names alone, never a path out of it.
+        assert_eq!(
+            accept_save_files(&files, &[], Some(here)),
+            Outcome::Save {
+                paths: vec![here.join("a.txt"), here.join("b.txt")],
+                replaces: 1
+            }
+        );
+        // In the one folder selected.
+        let sub = Pick {
+            path: here.join("sub"),
+            is_dir: true,
+        };
+        assert_eq!(
+            accept_save_files(&files, &[sub], Some(here)),
+            Outcome::Save {
+                paths: vec![here.join("sub/a.txt"), here.join("sub/b.txt")],
+                replaces: 0
+            }
+        );
+        assert_eq!(
+            accept_save_files(&files, &[], None),
+            Outcome::Nothing(Why::ArchiveSave)
         );
     }
 

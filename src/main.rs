@@ -4,6 +4,7 @@ mod cli;
 mod clipboard;
 mod command_palette;
 mod config;
+mod confirm_prompt;
 mod conflict_dialog;
 mod dir_pane;
 mod dragging;
@@ -20,7 +21,6 @@ mod masonry;
 mod measure;
 mod mime_globs;
 mod notifications;
-mod open_prompt;
 mod opener;
 mod owners;
 mod pane_group;
@@ -135,10 +135,11 @@ fn main() {
             }
         };
         // The folder the request names wins over the one on the command line,
-        // when it is there to open.
-        if let Some(folder) = request.current_folder.as_ref().filter(|f| f.is_dir()) {
+        // when it is there to open. For a save of a file that exists, that is
+        // the file's folder.
+        if let Some(folder) = request.start_folder().filter(|f| f.is_dir()) {
             args.starts = vec![cli::Start {
-                dir: folder.clone(),
+                dir: folder,
                 select: None,
             }];
         }
@@ -235,6 +236,8 @@ fn main() {
             // by name in the palette, that is what the palette is for, and a
             // command used once a week should not own a chord.
             KeyBinding::new("tab", FocusNext, Some("DirPane && !AddressBar")),
+            // Out of a save's name field and onto the files.
+            KeyBinding::new("tab", workspace::FocusPickPane, Some("PickName")),
             KeyBinding::new("shift-tab", FocusPrevious, Some("DirPane && !AddressBar")),
             KeyBinding::new("f3", SplitRight, Some("DirPane && !AddressBar")),
             // Tabs take the browser keys, which Zed's tabs take too. ctrl-w

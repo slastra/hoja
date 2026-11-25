@@ -18,6 +18,7 @@ use std::sync::Arc;
 use crate::clipboard::{self, ClipboardSet};
 use crate::command_palette::{self, CommandPalette};
 use crate::config::{self, Settings, State};
+use crate::confirm_prompt::{ConfirmEvent, ConfirmPrompt};
 use crate::conflict_dialog::ConflictDialog;
 use crate::dir_pane::{DirPane, PaneEvent};
 use crate::failure_report::{self, Failure, FailureReport};
@@ -27,15 +28,16 @@ use crate::icon::Icon;
 use crate::journal;
 use crate::location::Location;
 use crate::notifications;
-use crate::open_prompt::{OpenPrompt, OpenPromptEvent};
 use crate::pane_group::{PaneGroup, SplitDirection};
+use crate::path_editor::{PathEditor, PathEditorEvent};
+use crate::pick::{Mode as PickMode, Outcome as PickOutcome};
 use crate::place_finder::{self, PlaceEvent, PlaceFinder};
 use crate::tabs::{Tabs, TabsEvent};
 use crate::ui::{self, ButtonStyle};
 
 // The picker's Open Folder. Handled only in picker mode, so it is not in the
 // palette otherwise.
-actions!(pick, [PickFolder]);
+actions!(pick, [PickFolder, FocusPickPane]);
 
 actions!(
     pane,
@@ -716,10 +718,16 @@ pub struct Workspace {
     /// can drop the ones whose worker is gone.
     pending_conflicts: VecDeque<PendingConflict>,
     conflict_dialog: Option<Entity<ConflictDialog>>,
-    /// The one at a time a pane can ask "open this?" about. A second archive
+    /// The one question at a time: "open this?" about an archive member, or
+    /// "replace this?" before a picker saves over a file. A second archive
     /// file activated while one is up would have nowhere sensible to queue,
     /// so `confirm_extract_and_open` just refuses while this is `Some`.
-    open_prompt: Option<Entity<OpenPrompt>>,
+    confirm_prompt: Option<Entity<ConfirmPrompt>>,
+    /// A picker's name field, when it asks where to save one file.
+    save_name: Option<Entity<PathEditor>>,
+    /// The file whose name the name field took last, so a selection fills it
+    /// in once and the user's typing is left alone after that.
+    save_synced: Option<PathBuf>,
 }
 
 impl Workspace {
@@ -779,7 +787,9 @@ impl Workspace {
             poll_task: None,
             pending_conflicts: VecDeque::new(),
             conflict_dialog: None,
-            open_prompt: None,
+            confirm_prompt: None,
+            save_name: None,
+            save_synced: None,
             _lifecycle: vec![
                 // `state.window` was read at startup and never written, so the
                 // size was promised and never remembered. The observer fires on
@@ -839,6 +849,7 @@ impl Workspace {
             tile.update(cx, |tile, _| tile.list.insert(usize::MAX, tab));
         }
         window.focus(&pane.focus_handle(cx), cx);
+        workspace.add_save_name(window, cx);
         workspace.watch_settings(cx);
         // A picker is a dialog for another program, not the place to offer to
         // finish what an earlier Hoja left.
@@ -1647,15 +1658,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.open_prompt.is_some() {
+        if self.confirm_prompt.is_some() {
             return;
         }
 
-        let dialog = cx.new(|cx| OpenPrompt::new(name, window, cx));
+        let dialog = cx.new(|cx| ConfirmPrompt::extract(&name, window, cx));
         cx.subscribe_in(&dialog, window, move |this, _, event, window, cx| {
-            this.open_prompt = None;
+            this.confirm_prompt = None;
             window.focus(&this.active_pane.focus_handle(cx), cx);
-            if matches!(event, OpenPromptEvent::Confirmed) {
+            if matches!(event, ConfirmEvent::Confirmed) {
                 this.extract_and_open(archive.clone(), inside.clone(), member.clone(), window, cx);
             }
             cx.notify();
@@ -1663,7 +1674,7 @@ impl Workspace {
         .detach();
 
         window.focus(&dialog.focus_handle(cx), cx);
-        self.open_prompt = Some(dialog);
+        self.confirm_prompt = Some(dialog);
         cx.notify();
     }
 
@@ -1671,7 +1682,7 @@ impl Workspace {
     /// system temp dir, then hand it to the desktop's default opener.
     ///
     /// Nowhere near the archive and nowhere near anything the pane is
-    /// showing: this is a throwaway copy, not a destination, and `OpenPrompt`
+    /// showing: this is a throwaway copy, not a destination, and `ConfirmPrompt`
     /// already said so before this ran.
     fn extract_and_open(
         &mut self,
@@ -2720,7 +2731,7 @@ impl Workspace {
     /// always have trailed by one, which is worse than useless, because
     /// `sync_footer` deliberately does not notify and so nothing would have
     /// forced the frame that caught up.
-    fn schedule_probe(&self, window: &mut Window) {
+    fn schedule_probe(&self, window: &mut Window, cx: &App) {
         if crate::probe::path().is_none() {
             return;
         }
@@ -2739,7 +2750,7 @@ impl Workspace {
         let undo_depth = self.undo_stack.len();
         let interrupted = self.interrupted.len();
         let extractions = self.extractions.len();
-        // `conflict_dialog` and `open_prompt` sit outside `Modal` (see its own
+        // `conflict_dialog` and `confirm_prompt` sit outside `Modal` (see its own
         // doc comment), so a test that needs to know one is up reads it from
         // here rather than from a field that only ever answers for the three
         // the enum names.
@@ -2752,11 +2763,18 @@ impl Workspace {
                 Modal::Failures(_) => "failures",
             })
             .or(self.conflict_dialog.is_some().then_some("conflict"))
-            .or(self.open_prompt.is_some().then_some("open-prompt"));
+            .or(self
+                .confirm_prompt
+                .as_ref()
+                .map(|prompt| prompt.read(cx).kind));
         let notice = self.notice.as_ref().map(|n| n.text().to_string());
         let active_pane = self.active_pane.clone();
+        let save_name = self.save_name.clone();
         window.on_next_frame(move |_, cx| {
-            let pick = pick_probe(active_pane.read(cx));
+            let name = save_name
+                .as_ref()
+                .map(|field| field.read(cx).text().to_string());
+            let pick = pick_probe(active_pane.read(cx), name);
             let preview = crate::preview::probe(cx);
             let icon_theme = theme::GlobalTheme::icon_theme(cx).name.to_string();
             // One reading for every pane, so two cannot disagree about how long
@@ -3453,29 +3471,33 @@ fn pick_answer(paths: &[PathBuf]) -> ! {
     std::process::exit(if written.is_ok() { 0 } else { 2 });
 }
 
-fn pick_outcome(pane: &DirPane) -> Option<crate::pick::Outcome> {
+/// What the accept button would do for `pane`. `name` is what a save's name
+/// field holds. `None` when this Hoja is not a picker.
+fn pick_outcome(pane: &DirPane, name: Option<&str>) -> Option<PickOutcome> {
     let request = crate::pick::request()?;
     let here = pane.location().disk().map(Path::to_path_buf);
     let (selected, cursor) = pane.pick_selection();
-    Some(crate::pick::accept(
-        request.mode(),
-        &selected,
-        cursor.as_ref(),
-        here.as_deref(),
-    ))
+    Some(match request.mode() {
+        PickMode::Save => crate::pick::accept_save(name.unwrap_or_default(), here.as_deref()),
+        PickMode::SaveFiles => {
+            crate::pick::accept_save_files(&request.files, &selected, here.as_deref())
+        }
+        mode => crate::pick::accept(mode, &selected, cursor.as_ref(), here.as_deref()),
+    })
 }
 
 /// The picker's bar, as the probe reports it.
-fn pick_probe(pane: &DirPane) -> Option<crate::probe::PickProbe> {
+fn pick_probe(pane: &DirPane, name: Option<String>) -> Option<crate::probe::PickProbe> {
     let request = crate::pick::request()?;
-    let outcome = pick_outcome(pane)?;
+    let outcome = pick_outcome(pane, name.as_deref())?;
     let enabled = outcome.enabled();
     let folder = pick_folder_outcome(pane)
-        .filter(crate::pick::Outcome::enabled)
+        .filter(PickOutcome::enabled)
         .map(|outcome| outcome.describe());
     Some(crate::probe::PickProbe {
         folder,
         mode: request.mode().name(),
+        name,
         filter: crate::pick::filter()
             .and_then(|ix| request.filters.get(ix))
             .map(|filter| filter.name.clone()),
@@ -3538,33 +3560,146 @@ fn delete_failure_notice(failures: &[(PathBuf, std::io::Error)]) -> Option<Notic
 /// Picker mode. See `pick`.
 impl Workspace {
     /// What the accept button would do now, for the active pane.
-    fn pick_outcome(&self, cx: &App) -> Option<crate::pick::Outcome> {
-        pick_outcome(self.active_pane.read(cx))
+    fn pick_outcome(&self, cx: &App) -> Option<PickOutcome> {
+        let name = self.save_name.as_ref().map(|field| field.read(cx).text());
+        pick_outcome(self.active_pane.read(cx), name)
     }
 
     /// The accept button, enter on a file, or a double-click on one.
     fn pick_accept(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A file double-clicked in a save: its name goes in the field first,
+        // so it is the file saved over.
+        self.sync_save_name(cx);
         match self.pick_outcome(cx) {
-            Some(crate::pick::Outcome::Answer(paths) | crate::pick::Outcome::Folders(paths)) => {
-                pick_answer(&paths)
+            Some(PickOutcome::Answer(paths) | PickOutcome::Folders(paths)) => pick_answer(&paths),
+            Some(PickOutcome::Save { paths, replaces }) => {
+                if replaces == 0 {
+                    pick_answer(&paths);
+                }
+                self.confirm_replace(paths, window, cx);
             }
-            Some(crate::pick::Outcome::Enter(dir)) => {
+            Some(PickOutcome::Enter(dir)) => {
                 self.active_pane
                     .update(cx, |pane, cx| pane.navigate_to(Location::Disk(dir), cx));
-                let focus = self.active_pane.focus_handle(cx);
-                window.focus(&focus, cx);
+                match self.save_name.clone() {
+                    // A folder typed in the name field: into it, and back to
+                    // the name the save started with.
+                    Some(field) => {
+                        let name = crate::pick::request()
+                            .map(crate::pick::Request::start_name)
+                            .unwrap_or_default();
+                        let stem = fs::stem_range(&name);
+                        field.update(cx, |field, cx| field.set_text(name, stem, cx));
+                        window.focus(&field.focus_handle(cx), cx);
+                    }
+                    None => {
+                        let focus = self.active_pane.focus_handle(cx);
+                        window.focus(&focus, cx);
+                    }
+                }
             }
-            Some(crate::pick::Outcome::Nothing(_)) | None => {}
+            Some(PickOutcome::Nothing(_)) | None => {}
         }
     }
 
     /// Open Folder, or ctrl-enter.
     fn pick_folder(&mut self, cx: &mut Context<Self>) {
-        if let Some(crate::pick::Outcome::Folders(paths)) =
-            pick_folder_outcome(self.active_pane.read(cx))
-        {
+        if let Some(PickOutcome::Folders(paths)) = pick_folder_outcome(self.active_pane.read(cx)) {
             pick_answer(&paths);
         }
+    }
+
+    /// A save of one file gets a name field, which has the keyboard first,
+    /// as in the GTK dialog. Nothing for any other request.
+    fn add_save_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(request) = crate::pick::request().filter(|r| r.mode() == PickMode::Save) else {
+            return;
+        };
+        let name = request.start_name();
+        let stem = fs::stem_range(&name);
+        let field = cx.new(|cx| {
+            PathEditor::new_with_selection(name, stem, window, cx)
+                .with_placeholder("Name")
+                .also_in("PickName")
+        });
+        cx.subscribe_in(&field, window, |this, _, event, window, cx| match event {
+            PathEditorEvent::Committed(_) => this.pick_accept(window, cx),
+            PathEditorEvent::Cancelled => this.pick_cancel(cx),
+            PathEditorEvent::Edited => cx.notify(),
+            // A click in the pane is how a file is chosen to save over.
+            PathEditorEvent::Blurred => {}
+        })
+        .detach();
+        window.focus(&field.focus_handle(cx), cx);
+        self.save_name = Some(field);
+    }
+
+    /// Put the name of the one file selected in the name field, once per
+    /// file, as the GTK dialog does. A folder selected leaves it alone, and so
+    /// does a selection that has not changed, so typing is never undone.
+    fn sync_save_name(&mut self, cx: &mut Context<Self>) {
+        let Some(field) = self.save_name.clone() else {
+            return;
+        };
+        let (selected, _) = self.active_pane.read(cx).pick_selection();
+        let file = match selected.as_slice() {
+            [one] if !one.is_dir => Some(one.path.clone()),
+            _ => None,
+        };
+        if file == self.save_synced {
+            return;
+        }
+        self.save_synced = file.clone();
+        if let Some(name) = file.as_deref().and_then(Path::file_name) {
+            let name = name.to_string_lossy().into_owned();
+            let stem = fs::stem_range(&name);
+            field.update(cx, |field, cx| field.set_text(name, stem, cx));
+        }
+    }
+
+    /// Tab in the name field: the keyboard goes to the files.
+    fn focus_pick_pane(&mut self, _: &FocusPickPane, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self.active_pane.focus_handle(cx);
+        window.focus(&focus, cx);
+    }
+
+    /// Ask before a save writes over files that are there, then answer.
+    fn confirm_replace(
+        &mut self,
+        paths: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.confirm_prompt.is_some() {
+            return;
+        }
+        let names: Vec<String> = paths
+            .iter()
+            .filter(|path| path.symlink_metadata().is_ok())
+            .map(|path| file_label(path))
+            .collect();
+        let folder = paths
+            .first()
+            .and_then(|path| path.parent())
+            .map(file_label)
+            .unwrap_or_default();
+        let dialog = cx.new(|cx| ConfirmPrompt::replace(&names, &folder, window, cx));
+        cx.subscribe_in(&dialog, window, move |this, _, event, window, cx| {
+            if matches!(event, ConfirmEvent::Confirmed) {
+                pick_answer(&paths);
+            }
+            this.confirm_prompt = None;
+            // Back where the save was asked from, to change the name.
+            match this.save_name.clone() {
+                Some(field) => window.focus(&field.focus_handle(cx), cx),
+                None => window.focus(&this.active_pane.focus_handle(cx), cx),
+            }
+            cx.notify();
+        })
+        .detach();
+        window.focus(&dialog.focus_handle(cx), cx);
+        self.confirm_prompt = Some(dialog);
+        cx.notify();
     }
 
     fn pick_cancel(&mut self, _cx: &mut Context<Self>) {
@@ -3622,9 +3757,9 @@ impl Workspace {
     ) -> impl IntoElement + use<> {
         let colors = cx.theme().colors();
         let request = crate::pick::request();
+        let outcome = self.pick_outcome(cx);
         let pane = self.active_pane.read(cx);
         let focus = pane.focus_handle(cx);
-        let outcome = pick_outcome(pane);
         let folder = pick_folder_outcome(pane);
         let note = outcome
             .as_ref()
@@ -3676,7 +3811,30 @@ impl Workspace {
                 el.on_click(cx.listener(|this, _, _, cx| this.pick_folder(cx)))
             })
         });
-        let accept_enabled = outcome.as_ref().is_some_and(crate::pick::Outcome::enabled);
+        let accept_enabled = outcome.as_ref().is_some_and(PickOutcome::enabled);
+        // A save's name field, framed as a field: unlike the address bar it
+        // stands in for no text, so nothing else says it can be typed in.
+        let name_field = self.save_name.clone().map(|field| {
+            let focused = field.focus_handle(cx).is_focused(window);
+            div()
+                .id("pick-name")
+                .flex_none()
+                .w(px(280.))
+                .h(px(24.))
+                .px_1p5()
+                .flex()
+                .items_center()
+                .rounded_sm()
+                .text_sm()
+                .border_1()
+                .border_color(if focused {
+                    colors.border_focused
+                } else {
+                    colors.border
+                })
+                .bg(colors.editor_background)
+                .child(field)
+        });
         let cancel = action_button(
             "pick-cancel",
             "Cancel".into(),
@@ -3737,6 +3895,7 @@ impl Workspace {
                                 ),
                         )
                     })
+                    .children(name_field)
                     .child(
                         div()
                             .min_w_0()
@@ -3780,7 +3939,8 @@ impl Render for Workspace {
             self.title = title;
         }
 
-        self.schedule_probe(window);
+        self.sync_save_name(cx);
+        self.schedule_probe(window, cx);
 
         // Bindings are scoped to the focused pane's "DirPane" context, but the actions
         // bubble from the focused pane up to here, so the handlers live on the
@@ -3853,6 +4013,7 @@ impl Render for Workspace {
                         }),
                     )
                     .on_action(cx.listener(|this, _: &PickFolder, _, cx| this.pick_folder(cx)))
+                    .on_action(cx.listener(Self::focus_pick_pane))
             })
             .when_some(self.modal.as_ref().map(Modal::element), |el, modal| {
                 el.child(self.modal_scrim(modal, cx))
@@ -3860,7 +4021,7 @@ impl Render for Workspace {
             .when_some(self.conflict_dialog.clone(), |el, dialog| {
                 el.child(crate::ui::prompt_scrim(dialog.into_any_element()))
             })
-            .when_some(self.open_prompt.clone(), |el, dialog| {
+            .when_some(self.confirm_prompt.clone(), |el, dialog| {
                 el.child(crate::ui::prompt_scrim(dialog.into_any_element()))
             })
     }

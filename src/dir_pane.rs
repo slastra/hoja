@@ -3086,7 +3086,15 @@ impl DirPane {
     }
 
     fn open_selected(&mut self, _: &OpenSelected, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ix) = self.cursor_ix else { return };
+        let Some(ix) = self.cursor_ix else {
+            // In a picker, Enter is the accept button, as its chip says. With
+            // no row to act on, a folder picker or a save still has an answer:
+            // the folder shown.
+            if crate::pick::active() {
+                cx.emit(PaneEvent::Pick);
+            }
+            return;
+        };
         self.activate(ix, cx);
     }
 
@@ -3112,7 +3120,7 @@ impl DirPane {
         }
         // A file inside an archive. `xdg-open` needs a path and there is none,
         // so opening one means extracting a temporary copy first, and that
-        // needs the user's say-so: see `open_prompt`, and why it asks rather
+        // needs the user's say-so: see `confirm_prompt`, and why it asks rather
         // than just doing it.
         if entry.member().is_some() {
             let Location::Archive { archive, .. } = &self.dir else {

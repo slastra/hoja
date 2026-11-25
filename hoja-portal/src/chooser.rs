@@ -1,25 +1,20 @@
 //! `org.freedesktop.impl.portal.FileChooser`.
 //!
-//! `OpenFile` is Hoja's. `SaveFile` and `SaveFiles` go on to the GTK
-//! backend unchanged until Hoja has a save dialog of its own: the portal's
-//! config names one backend for the whole interface, so a backend that
-//! refused them would break every save dialog.
+//! Each of the three methods runs one `hoja --pick`. A save asks with
+//! `"save": true`, and a save of several files gives their names as `files`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use futures_lite::FutureExt as _;
+use zbus::interface;
 use zbus::object_server::ObjectServer;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
-use zbus::{Connection, interface};
 
 /// The portal's answers.
 const SUCCESS: u32 = 0;
 const CANCELLED: u32 = 1;
 const FAILED: u32 = 2;
-
-const GTK: &str = "org.freedesktop.impl.portal.desktop.gtk";
-const INTERFACE: &str = "org.freedesktop.impl.portal.FileChooser";
 
 type Options = HashMap<String, OwnedValue>;
 type Results = HashMap<String, OwnedValue>;
@@ -42,79 +37,64 @@ impl FileChooser {
         title: String,
         options: Options,
     ) -> (u32, Results) {
-        let request = Request::from_options(&title, &options);
+        let request = Request::from_options(&title, &options, Kind::Open);
+        self.answer(server, handle, request).await
+    }
+
+    async fn save_file(
+        &self,
+        #[zbus(object_server)] server: &ObjectServer,
+        handle: OwnedObjectPath,
+        _app_id: String,
+        _parent_window: String,
+        title: String,
+        options: Options,
+    ) -> (u32, Results) {
+        let request = Request::from_options(&title, &options, Kind::Save);
+        self.answer(server, handle, request).await
+    }
+
+    async fn save_files(
+        &self,
+        #[zbus(object_server)] server: &ObjectServer,
+        handle: OwnedObjectPath,
+        _app_id: String,
+        _parent_window: String,
+        title: String,
+        options: Options,
+    ) -> (u32, Results) {
+        let request = Request::from_options(&title, &options, Kind::SaveFiles);
+        self.answer(server, handle, request).await
+    }
+}
+
+impl FileChooser {
+    /// Run Hoja for `request`, and serve `Close` at its handle meanwhile.
+    async fn answer(
+        &self,
+        server: &ObjectServer,
+        handle: OwnedObjectPath,
+        request: Request,
+    ) -> (u32, Results) {
         let (close, closed) = async_channel::bounded(1);
         // The portal closes the request when the app gives up on it.
-        if server.at(&handle, Close::Kill(close)).await.is_err() {
+        if server.at(&handle, Close(close)).await.is_err() {
             return (FAILED, Results::new());
         }
         let answer = pick(&self.hoja, &request, closed).await;
         let _ = server.remove::<Close, _>(&handle).await;
         answer
     }
-
-    // The arguments are the D-Bus method's.
-    #[allow(clippy::too_many_arguments)]
-    async fn save_file(
-        &self,
-        #[zbus(connection)] connection: &Connection,
-        #[zbus(object_server)] server: &ObjectServer,
-        handle: OwnedObjectPath,
-        app_id: String,
-        parent_window: String,
-        title: String,
-        options: Options,
-    ) -> (u32, Results) {
-        let body = (handle.clone(), app_id, parent_window, title, options);
-        forward(connection, server, &handle, "SaveFile", body).await
-    }
-
-    // The arguments are the D-Bus method's.
-    #[allow(clippy::too_many_arguments)]
-    async fn save_files(
-        &self,
-        #[zbus(connection)] connection: &Connection,
-        #[zbus(object_server)] server: &ObjectServer,
-        handle: OwnedObjectPath,
-        app_id: String,
-        parent_window: String,
-        title: String,
-        options: Options,
-    ) -> (u32, Results) {
-        let body = (handle.clone(), app_id, parent_window, title, options);
-        forward(connection, server, &handle, "SaveFiles", body).await
-    }
 }
 
 /// `org.freedesktop.impl.portal.Request`, served at a request's handle for
-/// as long as the dialog is up.
-enum Close {
-    /// Stop the Hoja that answers it.
-    Kill(async_channel::Sender<()>),
-    /// Close the GTK dialog that answers it, which is the same handle on
-    /// GTK's name.
-    Forward(Connection, OwnedObjectPath),
-}
+/// as long as the dialog is up. Closing it stops the Hoja that answers it.
+struct Close(async_channel::Sender<()>);
 
 #[interface(name = "org.freedesktop.impl.portal.Request")]
 impl Close {
     async fn close(&self) {
-        match self {
-            Close::Kill(close) => {
-                let _ = close.try_send(());
-            }
-            Close::Forward(connection, handle) => {
-                let _ = connection
-                    .call_method(
-                        Some(GTK),
-                        handle,
-                        Some("org.freedesktop.impl.portal.Request"),
-                        "Close",
-                        &(),
-                    )
-                    .await;
-            }
-        }
+        let _ = self.0.try_send(());
     }
 }
 
@@ -164,34 +144,12 @@ async fn pick(
     }
 }
 
-/// Send a call on to the GTK backend with the same arguments, and serve
-/// `Close` at the handle meanwhile, so the portal can still close it.
-async fn forward(
-    connection: &Connection,
-    server: &ObjectServer,
-    handle: &OwnedObjectPath,
-    method: &str,
-    body: (OwnedObjectPath, String, String, String, Options),
-) -> (u32, Results) {
-    let close = Close::Forward(connection.clone(), handle.clone());
-    let _ = server.at(handle, close).await;
-    let reply = connection
-        .call_method(
-            Some(GTK),
-            "/org/freedesktop/portal/desktop",
-            Some(INTERFACE),
-            method,
-            &body,
-        )
-        .await;
-    let _ = server.remove::<Close, _>(handle).await;
-    match reply.and_then(|reply| reply.body().deserialize::<(u32, Results)>()) {
-        Ok(answer) => answer,
-        Err(err) => {
-            eprintln!("hoja-portal: {method} through GTK failed: {err}");
-            (FAILED, Results::new())
-        }
-    }
+/// Which of the three methods a request came by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Open,
+    Save,
+    SaveFiles,
 }
 
 /// A request as `hoja --pick` reads it, and the filters it was made from,
@@ -203,7 +161,7 @@ struct Request {
 }
 
 impl Request {
-    fn from_options(title: &str, options: &Options) -> Request {
+    fn from_options(title: &str, options: &Options, kind: Kind) -> Request {
         let flag = |key: &str| {
             options
                 .get(key)
@@ -231,11 +189,26 @@ impl Request {
                     filters.len() - 1
                 })
         });
-        let current_folder = options
-            .get("current_folder")
-            .and_then(|value| value.try_clone().ok())
-            .and_then(|value| Vec::<u8>::try_from(value).ok())
-            .and_then(|bytes| path_from_bytes(&bytes));
+        let path = |key: &str| {
+            options
+                .get(key)
+                .and_then(|value| value.try_clone().ok())
+                .and_then(|value| Vec::<u8>::try_from(value).ok())
+                .and_then(|bytes| path_from_bytes(&bytes))
+        };
+        // Only for a save of several. A name that is not UTF-8 is left out,
+        // and the answer then names one file fewer than the app asked for.
+        let files: Vec<String> = match kind {
+            Kind::SaveFiles => options
+                .get("files")
+                .and_then(|value| value.try_clone().ok())
+                .and_then(|value| Vec::<Vec<u8>>::try_from(value).ok())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|bytes| path_from_bytes(bytes))
+                .collect(),
+            _ => Vec::new(),
+        };
 
         let json = serde_json::json!({
             "title": (!title.is_empty()).then_some(title),
@@ -250,7 +223,14 @@ impl Request {
                 "mimes": patterns.iter().filter(|(kind, _)| *kind == 1).map(|(_, p)| p).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
             "current_filter": current_filter,
-            "current_folder": current_folder,
+            "current_folder": path("current_folder"),
+            "save": kind != Kind::Open,
+            "current_name": options
+                .get("current_name")
+                .and_then(|value| <&str>::try_from(value).ok())
+                .filter(|_| kind == Kind::Save),
+            "current_file": path("current_file").filter(|_| kind == Kind::Save),
+            "files": files,
         });
         Request {
             json: json.to_string(),
@@ -342,9 +322,11 @@ mod tests {
                     Value::from(b"/home/u/Pictures\0".to_vec()),
                 ),
             ]),
+            Kind::Open,
         );
         let json: serde_json::Value = serde_json::from_str(&request.json).unwrap();
         assert_eq!(json["title"], "Pick");
+        assert_eq!(json["save"], false);
         assert_eq!(json["accept_label"], "_Attach");
         assert_eq!(json["multiple"], true);
         assert_eq!(json["directory"], false);
@@ -360,11 +342,43 @@ mod tests {
         let request = Request::from_options(
             "",
             &options(vec![("current_filter", Value::from(images()))]),
+            Kind::Open,
         );
         let json: serde_json::Value = serde_json::from_str(&request.json).unwrap();
         assert_eq!(json["current_filter"], 0);
         assert_eq!(request.filters, vec![images()]);
         assert!(json["title"].is_null());
+    }
+
+    #[test]
+    fn a_save_becomes_hojas_request() {
+        let request = Request::from_options(
+            "Save As",
+            &options(vec![
+                ("current_name", Value::from("page.html")),
+                ("current_file", Value::from(b"/home/u/page.html\0".to_vec())),
+                ("filters", Value::from(vec![text()])),
+            ]),
+            Kind::Save,
+        );
+        let json: serde_json::Value = serde_json::from_str(&request.json).unwrap();
+        assert_eq!(json["save"], true);
+        assert_eq!(json["current_name"], "page.html");
+        assert_eq!(json["current_file"], "/home/u/page.html");
+        assert_eq!(json["files"], serde_json::json!([]));
+
+        let request = Request::from_options(
+            "",
+            &options(vec![(
+                "files",
+                Value::from(vec![b"a.txt\0".to_vec(), b"b.txt\0".to_vec()]),
+            )]),
+            Kind::SaveFiles,
+        );
+        let json: serde_json::Value = serde_json::from_str(&request.json).unwrap();
+        assert_eq!(json["save"], true);
+        assert_eq!(json["files"], serde_json::json!(["a.txt", "b.txt"]));
+        assert!(json["current_name"].is_null());
     }
 
     #[test]
