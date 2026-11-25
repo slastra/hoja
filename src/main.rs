@@ -177,7 +177,7 @@ fn main() {
         {
             eprintln!("[hoja] theme {name:?} not available: {err}");
         }
-        theming::apply_fonts(settings.font.as_deref(), settings.mono_font.as_deref(), cx);
+        theming::apply_fonts(&settings, cx);
         preview::set_enabled(settings.previews, cx);
         icon_theme::load(cx);
         icon_theme::apply(settings.icon_theme.clone(), cx);

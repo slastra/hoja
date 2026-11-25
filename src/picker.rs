@@ -37,8 +37,9 @@ const MAX_VISIBLE_ROWS: f32 = 10.;
 /// Space above and below the rows, as Zed's picker has (`py_1`).
 const LIST_PADDING: f32 = 4.;
 
-/// The modal's width: Zed's command palette is 38 rems.
-const WIDTH: f32 = 608.;
+/// The modal's width: Zed's command palette is 38 rems, so it follows the
+/// text size as Zed's does.
+const WIDTH: f32 = 38.;
 
 /// The query field, the matches, and where the highlight sits.
 pub struct PickerState {
@@ -173,7 +174,7 @@ pub fn shell(
         .occlude()
         .flex()
         .flex_col()
-        .w(px(WIDTH))
+        .w(gpui::rems(WIDTH))
         .child(
             div()
                 .flex_none()

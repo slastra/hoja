@@ -2566,7 +2566,7 @@ impl Workspace {
         }
         // Unlike the theme, an absent key here does mean the default: removing
         // `"font"` from the file should put the default back.
-        crate::theming::apply_fonts(settings.font.as_deref(), settings.mono_font.as_deref(), cx);
+        crate::theming::apply_fonts(&settings, cx);
         crate::preview::set_enabled(settings.previews, cx);
         // Read again as well: a theme installed in Zed since hoja started
         // is then found by saving the settings file.
@@ -3514,9 +3514,6 @@ fn pick_folder_outcome(pane: &DirPane) -> Option<crate::pick::Outcome> {
     crate::pick::accept_folder(request.mode(), &selected, cursor.as_ref(), here.as_deref())
 }
 
-/// The picker's footer: a 22 pixel button and Zed's `p_1p5` round it.
-const PICK_BAR_H: f32 = 34.;
-
 fn strip_row() -> gpui::Div {
     div()
         .flex()
@@ -3746,10 +3743,16 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The picker's footer, as Zed's pickers end: the filter and what Open
-    /// would return on the left, then the actions on the right as subtle
-    /// buttons with their keys. Open Folder is there for a request for files
-    /// (see `pick::accept_folder`).
+    /// The picker's footer, in two rows, laid out as Zed's `ModalFooter`:
+    /// a border on top and 8 pixels round the inside.
+    ///
+    /// The first row is what is being picked: a save's name field, or what
+    /// the accept button would return, with the filter at its end. The
+    /// second row is a line about it on the left, and the buttons on the
+    /// right. The button Enter takes is filled with the accent color, as in a
+    /// prompt, and no button shows a key: this is a dialog, and Zed's
+    /// dialogs leave keys to the keymap. Open Folder is there for a request
+    /// for files (see `pick::accept_folder`).
     fn render_pick_footer(
         &self,
         window: &Window,
@@ -3757,164 +3760,186 @@ impl Workspace {
     ) -> impl IntoElement + use<> {
         let colors = cx.theme().colors();
         let request = crate::pick::request();
+        let mode = request.map(crate::pick::Request::mode);
         let outcome = self.pick_outcome(cx);
-        let pane = self.active_pane.read(cx);
-        let focus = pane.focus_handle(cx);
-        let folder = pick_folder_outcome(pane);
-        let note = outcome
-            .as_ref()
-            .map(crate::pick::Outcome::describe)
-            .unwrap_or_default();
+        let folder = pick_folder_outcome(self.active_pane.read(cx));
+        let accept_enabled = outcome.as_ref().is_some_and(PickOutcome::enabled);
         let filter =
             crate::pick::filter().and_then(|ix| Some(request?.filters.get(ix)?.name.clone()));
-        let label = request
+        let accept_label = request
             .map(crate::pick::Request::accept_label)
             .unwrap_or_default();
-        // The keys as the keymap has them, so a chip never names a key that
-        // does something else.
-        let keys = |action: &dyn gpui::Action| -> Vec<String> {
-            window
-                .highest_precedence_binding_for_action_in(action, &focus)
-                .map(|binding| {
-                    binding
-                        .keystrokes()
-                        .iter()
-                        .map(crate::picker::key_text)
-                        .collect()
-                })
-                .unwrap_or_default()
+
+        // What the first row says, beside its label.
+        let row_label = match mode {
+            Some(PickMode::Save) => "Name",
+            Some(PickMode::Files | PickMode::SaveFiles) => "Files",
+            Some(PickMode::Folder) => "Folder",
+            _ => "File",
         };
-        let action_button =
-            |id: &'static str, label: gpui::SharedString, keys: Vec<String>, enabled: bool| {
-                let chips = crate::picker::key_binding(&keys, cx).text_xs();
-                if enabled {
-                    ui::button(id, ButtonStyle::Subtle, cx)
-                        .child(label)
-                        .child(chips)
+        // A save says where it goes on the second row. Opening says what it
+        // picks on the first, and has nothing to add below.
+        let saving = matches!(mode, Some(PickMode::Save | PickMode::SaveFiles));
+        let (value, unset) = match (mode, outcome.as_ref()) {
+            (Some(PickMode::SaveFiles), _) => (
+                request.map(|r| r.files.join(", ")).unwrap_or_default(),
+                false,
+            ),
+            (_, Some(outcome)) => (outcome.describe(), !outcome.enabled()),
+            (_, None) => (String::new(), true),
+        };
+        let note = if saving {
+            outcome
+                .as_ref()
+                .map(PickOutcome::describe)
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        // Gives the field and the filter one height, so the row is even.
+        const FIELD_H: f32 = 24.;
+        let what = match self.save_name.clone() {
+            Some(field) => {
+                let focused = field.focus_handle(cx).is_focused(window);
+                div()
+                    .id("pick-name")
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(FIELD_H))
+                    .px_1p5()
+                    .flex()
+                    .items_center()
+                    .rounded_sm()
+                    .text_sm()
+                    .border_1()
+                    .border_color(if focused {
+                        colors.border_focused
+                    } else {
+                        colors.border
+                    })
+                    .bg(colors.editor_background)
+                    .child(field)
+                    .into_any_element()
+            }
+            None => div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_sm()
+                .text_color(if unset {
+                    colors.text_placeholder
                 } else {
-                    ui::disabled_button(id, cx)
-                        .child(label)
-                        .child(chips.text_color(colors.text_disabled))
-                }
-            };
+                    colors.text
+                })
+                .child(value)
+                .into_any_element(),
+        };
+        let filter_button = filter.map(|name| {
+            ui::button("pick-filter", ButtonStyle::Outlined, cx)
+                .h(px(FIELD_H))
+                .px_1p5()
+                .child(name)
+                .child(
+                    Icon::from_path("icons/file_icons/chevron_down.svg", colors.text_muted)
+                        .size(px(12.)),
+                )
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.open_pick_filters(event.position, window, cx);
+                    }),
+                )
+        });
 
         let open_folder = folder.map(|folder| {
             let enabled = folder.enabled();
-            action_button(
-                "pick-folder",
-                "Open Folder".into(),
-                keys(&PickFolder),
-                enabled,
-            )
-            .tooltip(ui::tooltip(folder.describe()))
-            .when(enabled, |el| {
-                el.on_click(cx.listener(|this, _, _, cx| this.pick_folder(cx)))
-            })
+            let button = if enabled {
+                ui::text_button("pick-folder", "Open Folder", ButtonStyle::Subtle, cx)
+                    .on_click(cx.listener(|this, _, _, cx| this.pick_folder(cx)))
+            } else {
+                ui::disabled_button("pick-folder", cx).child("Open Folder")
+            };
+            button.px_2().tooltip(ui::tooltip(folder.describe()))
         });
-        let accept_enabled = outcome.as_ref().is_some_and(PickOutcome::enabled);
-        // A save's name field, framed as a field: unlike the address bar it
-        // stands in for no text, so nothing else says it can be typed in.
-        let name_field = self.save_name.clone().map(|field| {
-            let focused = field.focus_handle(cx).is_focused(window);
-            div()
-                .id("pick-name")
-                .flex_none()
-                .w(px(280.))
-                .h(px(24.))
-                .px_1p5()
-                .flex()
-                .items_center()
-                .rounded_sm()
-                .text_sm()
+        let cancel = ui::text_button("pick-cancel", "Cancel", ButtonStyle::Subtle, cx)
+            .px_2()
+            .on_click(cx.listener(|this, _, _, cx| this.pick_cancel(cx)));
+        let accept = if accept_enabled {
+            ui::text_button("pick-accept", accept_label, ButtonStyle::Accent, cx)
+                .on_click(cx.listener(|this, _, window, cx| this.pick_accept(window, cx)))
+        } else {
+            // Disabled, it keeps the frame it has when it is lit, so the row
+            // does not shift when a file is selected.
+            ui::disabled_button("pick-accept", cx)
                 .border_1()
-                .border_color(if focused {
-                    colors.border_focused
-                } else {
-                    colors.border
-                })
-                .bg(colors.editor_background)
-                .child(field)
-        });
-        let cancel = action_button(
-            "pick-cancel",
-            "Cancel".into(),
-            keys(&crate::dir_pane::ClearSelection),
-            true,
-        )
-        .on_click(cx.listener(|this, _, _, cx| this.pick_cancel(cx)));
-        let accept = action_button(
-            "pick-accept",
-            label.into(),
-            keys(&crate::dir_pane::OpenSelected),
-            accept_enabled,
-        )
-        .when(accept_enabled, |el| {
-            el.on_click(cx.listener(|this, _, window, cx| this.pick_accept(window, cx)))
-        });
+                .border_color(colors.border_variant)
+                .child(accept_label)
+        }
+        .px_2()
+        .min_w(px(64.))
+        .justify_center();
+
+        let label = |text: &'static str| {
+            div()
+                .flex_none()
+                .w(px(48.))
+                .text_sm()
+                .text_color(colors.text_muted)
+                .child(text)
+        };
 
         div()
             .flex_none()
             .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .h(px(PICK_BAR_H))
-            .p_1p5()
-            // Zed's picker footer sits on the modal's raised surface.
+            .flex_col()
+            .gap(px(8.))
+            .p(px(8.))
+            // As the pane's footer above it: the raised surface Zed's picker
+            // footers sit on.
             .bg(colors.elevated_surface_background)
             .border_t_1()
             .border_color(colors.border_variant)
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .when_some(filter, |el, name| {
-                        el.child(
-                            ui::button("pick-filter", ButtonStyle::Subtle, cx)
-                                .child(name)
-                                .child(
-                                    Icon::from_path(
-                                        "icons/file_icons/chevron_down.svg",
-                                        colors.text_muted,
-                                    )
-                                    .size(px(12.)),
-                                )
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(
-                                        |this, event: &gpui::MouseDownEvent, window, cx| {
-                                            cx.stop_propagation();
-                                            this.open_pick_filters(event.position, window, cx);
-                                        },
-                                    ),
-                                ),
-                        )
-                    })
-                    .children(name_field)
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_sm()
-                            .text_color(colors.text_muted)
-                            .child(note),
-                    ),
+                    .h(px(FIELD_H))
+                    .child(label(row_label))
+                    .child(what)
+                    .children(filter_button),
             )
             .child(
                 div()
-                    .flex_none()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap_1()
-                    .children(open_folder)
-                    .child(cancel)
-                    .child(accept),
+                    .justify_between()
+                    .gap_2()
+                    .h(px(22.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(note),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1()
+                            .children(open_folder)
+                            .child(cancel)
+                            .child(accept),
+                    ),
             )
     }
 }
@@ -3941,6 +3966,12 @@ impl Render for Workspace {
 
         self.sync_save_name(cx);
         self.schedule_probe(window, cx);
+        // Zed's rule: the rem is the interface text size, so every `text_*`
+        // here is the size the same element has in Zed.
+        let rem = crate::theming::ui_font_size(cx);
+        if window.rem_size() != rem {
+            window.set_rem_size(rem);
+        }
 
         // Bindings are scoped to the focused pane's "DirPane" context, but the actions
         // bubble from the focused pane up to here, so the handlers live on the

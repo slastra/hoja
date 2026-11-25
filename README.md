@@ -220,6 +220,10 @@ allowed, and Hoja applies a change as soon as you save.
   "font": "Inter",
   "mono_font": "JetBrains Mono",
 
+  // The size of interface text in pixels, as Zed's "ui_font_size". Leave it
+  // out to use Zed's, or 16.
+  "font_size": 14,
+
   // A preview when the pointer rests on a file. On by default.
   "previews": true,
 

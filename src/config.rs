@@ -88,6 +88,9 @@ pub struct Settings {
     /// Figures: sizes, dates, and the transfer strip. Should be monospaced,
     /// since lining digits up is the whole of its job.
     pub mono_font: Option<String>,
+    /// The size of interface text in pixels, as Zed's `ui_font_size`. Unset
+    /// follows Zed's own setting, and 16 without one.
+    pub font_size: Option<f32>,
     /// A preview of an image, video, audio or text file when the pointer
     /// rests on its row. On unless this says `false`.
     pub previews: Option<bool>,

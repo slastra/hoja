@@ -28,7 +28,7 @@ key -k BackSpace
 wait_for 'p[0]["rows"] == ["sub", "photo.png"]'
 
 # The other filter, from the bar's menu.
-at 40 $((WH - 19))
+at $((WW - 40)) $((WH - 50))
 wait_for 'p[0]["menu_open"]'
 menu_to Text
 key -k Return

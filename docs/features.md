@@ -117,10 +117,11 @@ says how to set it up. Each request starts a Hoja of its own, which answers
 and exits.
 
 The picker is all of Hoja: panes, tabs, search, previews and file operations
-work as usual. A footer, as Zed's pickers have, shows the filter and what
-the accept button would return on the left. On the right are Open Folder,
-Cancel, and the accept button with the label the application gave it, each
-with its key.
+work as usual. A footer of two rows ends the window. The first shows what
+you pick, or the name field of a save, with the filter at its end. The
+second shows where a save goes on the left, and on the right Open Folder,
+Cancel, and the accept button with the label the application gave it. The
+accept button is the one enter takes, and it has the accent color.
 
 ### What it picks
 
@@ -147,7 +148,7 @@ cancels too.
 
 ### Where it saves
 
-- A save of one file has a name field in the footer. It starts with the name
+- A save of one file has a name field in the footer's first row. It starts with the name
   the application gave, with the name selected and the extension not, and it
   has the keyboard first. Enter in it saves. Tab moves the keyboard to the
   files.

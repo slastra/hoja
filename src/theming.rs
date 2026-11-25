@@ -159,7 +159,13 @@ struct Fonts {
     /// IBM Plex Sans (or whatever fontconfig substitutes for it).
     ui: Option<gpui::SharedString>,
     mono: Option<gpui::SharedString>,
+    /// The window's rem, as Zed sets it: text sizes are in rems, so this
+    /// scales every one of them.
+    size: Option<f32>,
 }
+
+/// gpui's rem, and Zed's default `ui_font_size`.
+const DEFAULT_SIZE: f32 = 16.;
 
 impl gpui::Global for Fonts {}
 
@@ -181,7 +187,9 @@ const MONO_PREFERRED: [&str; 8] = [
 /// fallback, so a name is checked against the installed families before it is
 /// used. A miss says so and leaves the default: a typo should not blank the
 /// window. Matching ignores case, since "inter" is plainly meant as "Inter".
-pub fn apply_fonts(ui: Option<&str>, mono: Option<&str>, cx: &mut App) {
+pub fn apply_fonts(settings: &crate::config::Settings, cx: &mut App) {
+    let ui = settings.font.as_deref();
+    let mono = settings.mono_font.as_deref();
     let installed = cx.text_system().all_font_names();
     let find = |name: &str| {
         installed
@@ -201,9 +209,35 @@ pub fn apply_fonts(ui: Option<&str>, mono: Option<&str>, cx: &mut App) {
     let fonts = Fonts {
         ui: pick("font", ui),
         mono: pick("mono_font", mono).or_else(|| MONO_PREFERRED.iter().find_map(|name| find(name))),
+        size: settings
+            .font_size
+            .or_else(zed_ui_font_size)
+            .filter(|size| (6.0..=48.0).contains(size)),
     };
     cx.set_global(fonts);
     cx.refresh_windows();
+}
+
+/// The size of interface text, which the window takes as its rem. Zed does
+/// the same with `ui_font_size`, so `text_sm` here is the size it is in Zed.
+pub fn ui_font_size(cx: &App) -> gpui::Pixels {
+    gpui::px(
+        cx.try_global::<Fonts>()
+            .and_then(|fonts| fonts.size)
+            .unwrap_or(DEFAULT_SIZE),
+    )
+}
+
+/// `ui_font_size` from Zed's settings.json, if Zed is configured here and
+/// sets one. Read as `icon_theme` reads Zed's icon theme.
+fn zed_ui_font_size() -> Option<f32> {
+    let path = crate::config::config_home()?.join("zed/settings.json");
+    zed_ui_font_size_in(&std::fs::read_to_string(path).ok()?)
+}
+
+fn zed_ui_font_size_in(text: &str) -> Option<f32> {
+    let settings: serde_json_lenient::Value = serde_json_lenient::from_str(text).ok()?;
+    Some(settings.get("ui_font_size")?.as_f64()? as f32)
 }
 
 /// The family for interface text, or `None` for gpui's default.
@@ -227,4 +261,21 @@ pub fn ui_font(cx: &App) -> Option<gpui::SharedString> {
 /// idea that never reaches the font database, so there is no shortcut there.
 pub fn numeric_font(cx: &App) -> Option<gpui::SharedString> {
     cx.try_global::<Fonts>()?.mono.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zeds_ui_font_size_is_read() {
+        assert_eq!(
+            zed_ui_font_size_in(
+                r#"{ "ui_font_size": 13.3, // Zed allows comments
+            }"#
+            ),
+            Some(13.3)
+        );
+        assert_eq!(zed_ui_font_size_in(r#"{ "buffer_font_size": 15 }"#), None);
+    }
 }

@@ -843,7 +843,7 @@ impl gpui::Element for PathElement {
         let style = window.text_style();
         let colors = cx.theme().colors();
         let text_color = if showing_placeholder {
-            colors.text_muted
+            colors.text_placeholder
         } else {
             colors.text
         };
