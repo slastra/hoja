@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Retake the README's pictures: docs/header.png, docs/preview.png and
-# docs/palette.png.
+# Retake the README's pictures: docs/header.png, docs/preview.png,
+# docs/palette.png and docs/picker.png.
 #
 #   cargo build && scripts/readme-shots/run.sh [DEMO]
 #
@@ -23,8 +23,10 @@ trap 'rm -rf "$DEMO" "$OUT"' EXIT
 scripts/sway-harness.sh "$DEMO/Projects/garden" "$HERE/header.sh" "$OUT/header"
 scripts/sway-harness.sh "$DEMO/Projects/garden/src" "$HERE/preview.sh" "$OUT/preview"
 scripts/sway-harness.sh "$DEMO/Pictures" "$HERE/palette.sh" "$OUT/palette"
+scripts/sway-harness.sh "$DEMO/Pictures" "$HERE/picker.sh" "$OUT/picker"
 
 python3 -I "$HERE/frame.py" "$OUT/header/raw.png" docs/header.png --logo docs/hoja-dark.png 112 300 720
 python3 -I "$HERE/frame.py" "$OUT/preview/raw.png" docs/preview.png
 python3 -I "$HERE/frame.py" "$OUT/palette/raw.png" docs/palette.png
-echo "docs/header.png docs/preview.png docs/palette.png"
+python3 -I "$HERE/frame.py" "$OUT/picker/raw.png" docs/picker.png
+echo "docs/header.png docs/preview.png docs/palette.png docs/picker.png"

@@ -53,7 +53,7 @@ feels like working with ordinary folders.
   G-code files for Hoja and for other file managers
 - Opens `.zip` and tar archives as read-only folders, and shows the members
   of a tar as they stream in
-- Opens files and folders for other applications as their file picker,
+- Opens and saves files for other applications as their file picker,
   through the desktop portal, with `hoja-portal`
 
 ### File operations
@@ -124,7 +124,7 @@ Hoja starts without any of these, and each adds something:
 - `hoja-model-thumbnailer`, which `packaging/PKGBUILD` builds with Hoja:
   pictures of STL, 3MF and G-code files.
 - `hoja-portal`, which `packaging/PKGBUILD` builds with Hoja too: Hoja as the
-  file picker of other applications. See below.
+  open and save dialog of other applications. See below.
 - `git`: names colored by Git status.
 - `udisks2`: mounting drives from the place finder.
 - `wl-clipboard`, `xdg-utils`, `libnotify` and `shared-mime-info`: the
@@ -132,12 +132,15 @@ Hoja starts without any of these, and each adds something:
 
 ### Use Hoja as the file picker
 
-Applications that ask the desktop portal for a file, such as Chrome, Zed,
-Electron applications and Flatpaks, can get Hoja instead of the GTK dialog.
-Install `hoja-portal`, then add one line under `[preferred]` in your portal
-config. That is `~/.config/xdg-desktop-portal/portals.conf`, or
-`hyprland-portals.conf` in the same folder (named for your desktop) when you
-have one, because that file wins. Keep the lines already there:
+![Hoja as a save dialog, over a grid of pictures](docs/picker.png)
+
+Applications that ask the desktop portal for a file, or for where to save
+one, such as Chrome, Firefox, Zed, Electron applications and Flatpaks, can
+get Hoja instead of the GTK dialog. Install `hoja-portal`, then add one line
+under `[preferred]` in your portal config. That is
+`~/.config/xdg-desktop-portal/portals.conf`, or `hyprland-portals.conf` in
+the same folder (named for your desktop) when you have one, because that
+file wins. Keep the lines already there:
 
 ```ini
 [preferred]
