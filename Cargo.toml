@@ -5,6 +5,10 @@ members = ["hoja-transfer", "hoja-drag", "hoja-model-thumbnailer", "hoja-portal"
 name = "hoja"
 version = "0.1.0"
 edition = "2024"
+# GPUI needs this. Zed's rust-toolchain.toml at the pinned rev names 1.98.1, and an
+# older rustc fails inside its crates (Path::is_empty, for one). With this line
+# Cargo stops first and names the version.
+rust-version = "1.98"
 license = "GPL-3.0-or-later"
 description = "A GPU-accelerated file manager with splittable panes"
 
